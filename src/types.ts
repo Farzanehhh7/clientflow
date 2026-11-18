@@ -1,29 +1,166 @@
+export type CustomerLifecycle = 'lead' | 'active' | 'vip' | 'churned';
+export type CustomerPersonType = 'individual' | 'organization';
+
+export type CustomerContact = {
+  id: string;
+  name: string;
+  role: string;
+  phone: string;
+  email?: string;
+  isPrimary?: boolean;
+};
+
+export type CustomerAddress = {
+  id: string;
+  title: string;
+  address: string;
+  postalCode?: string;
+  isDefault?: boolean;
+};
+
+export type CustomerAttachment = {
+  id: string;
+  name: string;
+  category: 'photo_before' | 'photo_after' | 'lab_pdf' | 'consent' | 'other';
+  sizeLabel: string;
+  mimeType: string;
+  dataUrl?: string;
+  uploadedAt: string;
+  note?: string;
+};
+
 export type Customer = {
   id: string;
   name: string;
   phone: string;
   email?: string;
+  nationalId?: string;
+  personType?: CustomerPersonType;
+  companyName?: string;
+  economicCode?: string;
+  registrationNo?: string;
+  contacts?: CustomerContact[];
+  addresses?: CustomerAddress[];
+  lifecycle?: CustomerLifecycle;
   tags: string[];
   source?: string;
   createdAt: string;
   notes?: string;
+  birthDateJalali?: string; // e.g. 1368/08/27
+  anniversaryDateJalali?: string; // e.g. 1402/08/28
+  isAnonymized?: boolean;
   // Clinic pack optional fields
   patientCode?: string;
   birthYear?: string;
   allergies?: string;
   consentSms?: boolean;
   consentPhoto?: boolean;
+  attachments?: CustomerAttachment[];
+  // Software pack optional fields
+  licenseKey?: string;
+  contractExpiresAt?: string;
   // Dynamic custom fields (cfg.FieldDef -> CustomJson)
   customFields?: Record<string, string>;
 };
+
+export type CustomerRelationType = 'referrer' | 'family' | 'colleague';
+export type CustomerRelation = {
+  id: string;
+  fromCustomerId: string;
+  toCustomerId: string;
+  relationType: CustomerRelationType;
+  note?: string;
+  createdAt: string;
+};
+
+export type SegmentCondition = {
+  id: string;
+  field: 'lifecycle' | 'source' | 'personType' | 'tag' | 'minSpent' | 'minScore' | 'consentSms';
+  op: 'eq' | 'neq' | 'contains' | 'gte';
+  value: string;
+};
+
+export type CustomerSegment = {
+  id: string;
+  name: string;
+  description?: string;
+  logic: 'AND' | 'OR';
+  conditions: SegmentCondition[];
+  createdAt: string;
+};
+
+export type CsvImportBatch = {
+  id: string;
+  fileName: string;
+  customerIds: string[];
+  count: number;
+  importedAt: string;
+  rolledBack?: boolean;
+};
+
+export type CustomFieldType =
+  | 'text'
+  | 'number'
+  | 'select'
+  | 'date'
+  | 'multiselect'
+  | 'file'
+  | 'money'
+  | 'phone'
+  | 'nationalId'
+  | 'lookup'
+  | 'formula';
 
 export type CustomFieldDef = {
   id: string;
   key: string;
   label: string;
-  type: 'text' | 'number' | 'select';
+  type: CustomFieldType;
   options?: string[];
   required?: boolean;
+  lookupEntity?: 'customer' | 'product' | 'service' | 'resource';
+  formulaExpr?: string;
+  visibleWhen?: { fieldKey: string; equals: string };
+  order?: number;
+};
+
+export type EntityRelationType = '1:1' | '1:N' | 'N:M';
+export type EntityRelationDef = {
+  id: string;
+  name: string;
+  sourceEntity: string;
+  targetEntity: string;
+  cardinality: EntityRelationType;
+};
+
+export type CustomEntityDef = {
+  id: string;
+  key: string;
+  name: string;
+  pluralName: string;
+  description?: string;
+  fields: CustomFieldDef[];
+  createdAt: string;
+};
+
+export type CustomEntityRecord = {
+  id: string;
+  entityKey: string;
+  values: Record<string, string>;
+  relatedCustomerId?: string;
+  createdAt: string;
+};
+
+export type ConfigSnapshot = {
+  id: string;
+  versionLabel: string;
+  note: string;
+  createdAt: string;
+  customFieldDefs: CustomFieldDef[];
+  customEntityDefs: CustomEntityDef[];
+  entityRelations: EntityRelationDef[];
+  pipelineStages: PipelineStageConfig[];
+  commissionTiers: CommissionTier[];
 };
 
 export type Interaction = {
@@ -34,10 +171,52 @@ export type Interaction = {
   at: string;
 };
 
-export type Service = { id: string; name: string; durationMin: number; price: number };
+export type Service = {
+  id: string;
+  name: string;
+  durationMin: number;
+  price: number;
+  bufferBeforeMin?: number;
+  bufferAfterMin?: number;
+};
+
 export type Resource = { id: string; name: string; type: 'staff' | 'room' };
 
-export type AppointmentStatus = 'booked' | 'confirmed' | 'done' | 'noshow' | 'cancelled';
+export type ResourceTimeOff = {
+  id: string;
+  resourceId: string;
+  startDateKey: string; // YYYY-MM-DD
+  endDateKey: string; // YYYY-MM-DD
+  reason: string;
+};
+
+export type OfficialHoliday = {
+  id: string;
+  dateKey: string; // YYYY-MM-DD
+  jalaliDate: string;
+  title: string;
+};
+
+export type WaitlistEntry = {
+  id: string;
+  customerId: string;
+  serviceId: string;
+  preferredResourceId?: string;
+  preferredDayKey: string;
+  preferredTimeRange: string;
+  notes?: string;
+  status: 'waiting' | 'notified' | 'booked';
+  createdAt: string;
+};
+
+export type AppointmentStatus =
+  | 'booked'
+  | 'confirmed'
+  | 'checked_in'
+  | 'done'
+  | 'noshow'
+  | 'cancelled';
+
 export type Appointment = {
   id: string;
   customerId: string;
@@ -47,9 +226,21 @@ export type Appointment = {
   end: string; // ISO UTC
   status: AppointmentStatus;
   cancelReason?: string;
+  reminder2hSent?: boolean;
 };
 
 export type OrderStatus = 'new' | 'confirmed' | 'shipped' | 'delivered' | 'cancelled';
+export type ShippingCarrier = 'post' | 'tipax' | 'snappbox' | 'chapar' | 'pickup';
+
+export type OrderShipment = {
+  id: string;
+  carrier: ShippingCarrier;
+  trackingCode: string;
+  items: { name: string; qty: number }[];
+  shippedAt: string;
+  note?: string;
+};
+
 export type Order = {
   id: string;
   customerId: string;
@@ -60,7 +251,11 @@ export type Order = {
   promisedAt?: string;
   couponCode?: string;
   discountAmount?: number;
+  trackingCode?: string;
+  carrier?: ShippingCarrier;
+  shipments?: OrderShipment[];
 };
+
 export type OrderStatusLog = { id: string; orderId: string; from: string; to: string; at: string };
 
 export type PaymentMethod = 'cash' | 'card' | 'online' | 'transfer' | 'cheque';
@@ -86,7 +281,20 @@ export type Product = {
   sku: string;
   price: number;
   stock: number;
+  minStock?: number;
   active: boolean;
+};
+
+export type StockMovement = {
+  id: string;
+  productId: string;
+  productName: string;
+  orderId?: string;
+  type: 'out' | 'in' | 'adjust';
+  qtyChange: number;
+  balanceAfter: number;
+  reason: string;
+  at: string;
 };
 
 export type Coupon = {
@@ -98,7 +306,49 @@ export type Coupon = {
   active: boolean;
 };
 
+export type ProjectStatus = 'planning' | 'in_progress' | 'testing' | 'deployed' | 'completed';
+export type ProjectTask = {
+  id: string;
+  title: string;
+  assignee: string;
+  estimatedHours: number;
+  done: boolean;
+};
+export type TimeEntry = {
+  id: string;
+  projectId: string;
+  taskId?: string;
+  userName: string;
+  hours: number;
+  note: string;
+  loggedAt: string;
+};
+export type DeploymentCheckItem = {
+  id: string;
+  title: string;
+  category: 'infra' | 'db' | 'security' | 'training';
+  done: boolean;
+  checkedAt?: string;
+};
+export type Project = {
+  id: string;
+  title: string;
+  customerId: string;
+  status: ProjectStatus;
+  dueAt: string;
+  tasks: ProjectTask[];
+  deploymentChecklist: DeploymentCheckItem[];
+  createdAt: string;
+};
+
 export type PipelineStage = 'lead' | 'contacted' | 'proposal' | 'negotiation' | 'won' | 'lost';
+export type PipelineStageConfig = {
+  key: PipelineStage;
+  label: string;
+  probability: number;
+  slaHours: number;
+};
+
 export type Opportunity = {
   id: string;
   title: string;
@@ -113,6 +363,40 @@ export type Opportunity = {
   lostReason?: string;
   createdAt: string;
   updatedAt: string;
+};
+
+export type QuoteStatus = 'draft' | 'sent' | 'approved' | 'rejected';
+export type Quote = {
+  id: string;
+  quoteNo: string;
+  version: number;
+  parentQuoteId?: string;
+  opportunityId?: string;
+  customerId?: string;
+  contactName: string;
+  phone?: string;
+  items: { name: string; qty: number; price: number }[];
+  discountPct: number;
+  taxPct: number;
+  notes?: string;
+  status: QuoteStatus;
+  shareToken: string;
+  validUntil: string;
+  clientComment?: string;
+  createdAt: string;
+};
+
+export type SalesTarget = {
+  id: string;
+  ownerName: string;
+  periodLabel: string;
+  targetAmount: number;
+};
+
+export type CommissionTier = {
+  id: string;
+  upToAmount: number | null; // null = infinity
+  ratePct: number;
 };
 
 export type WorkflowType = 'discount_approval' | 'order_return' | 'vip_schedule' | 'complaint';
@@ -187,7 +471,7 @@ export type Rule = {
   condition: string;
   action: string;
   active: boolean;
-  pack?: 'all' | 'clinic' | 'shop';
+  pack?: 'all' | 'clinic' | 'shop' | 'software';
 };
 
 export type OutboxMessage = {
@@ -197,6 +481,9 @@ export type OutboxMessage = {
   body: string;
   channel: 'sms';
   ruleName?: string;
+  appointmentId?: string;
+  canSimulateConfirm?: boolean;
+  confirmedByReply?: boolean;
   at: string;
 };
 
@@ -228,7 +515,7 @@ export type AuditLogEntry = {
 };
 
 export type UserRole = 'admin' | 'staff';
-export type IndustryPack = 'clinic' | 'shop' | 'general';
+export type IndustryPack = 'clinic' | 'shop' | 'software' | 'general';
 
 export type BusinessSettings = {
   businessName: string;
@@ -239,21 +526,41 @@ export type BusinessSettings = {
   industryPack: IndustryPack;
   darkMode: boolean;
   commissionPct: number;
+  salesTeam: string[];
+  roundRobinIndex: number;
+  autoAssignLeads: boolean;
 };
 
 export type AppState = {
   customers: Customer[];
+  customerRelations: CustomerRelation[];
+  customerSegments: CustomerSegment[];
+  csvImportBatches: CsvImportBatch[];
   customFieldDefs: CustomFieldDef[];
+  customEntityDefs: CustomEntityDef[];
+  customEntityRecords: CustomEntityRecord[];
+  entityRelations: EntityRelationDef[];
+  configSnapshots: ConfigSnapshot[];
   interactions: Interaction[];
   services: Service[];
   resources: Resource[];
+  resourceTimeOffs: ResourceTimeOff[];
+  officialHolidays: OfficialHoliday[];
+  waitlist: WaitlistEntry[];
   appointments: Appointment[];
   orders: Order[];
   orderLogs: OrderStatusLog[];
   invoices: Invoice[];
   products: Product[];
+  stockMovements: StockMovement[];
   coupons: Coupon[];
+  projects: Project[];
+  timeEntries: TimeEntry[];
+  pipelineStages: PipelineStageConfig[];
   opportunities: Opportunity[];
+  quotes: Quote[];
+  salesTargets: SalesTarget[];
+  commissionTiers: CommissionTier[];
   workflows: WorkflowInstance[];
   contentItems: ContentItem[];
   kbArticles: KbArticle[];

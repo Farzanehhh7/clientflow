@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { BookOpen, Plus, Search, ThumbsUp } from 'lucide-react';
+import { BookOpen, GitBranch, Plus, Search, ThumbsUp } from 'lucide-react';
 import { Modal } from '../components/Modal';
 import { useClientFlow } from '../store/useClientFlowStore';
 import type { Ticket } from '../types';
@@ -31,7 +31,8 @@ const CANNED_RESPONSES = [
 ];
 
 export function TicketsPage() {
-  const { state, addTicket, updateTicket, addKbArticle, voteKbHelpful } = useClientFlow();
+  const { state, addTicket, updateTicket, addKbArticle, voteKbHelpful, createWorkflowInstance } =
+    useClientFlow();
   const [tab, setTab] = useState<'tickets' | 'kb'>('tickets');
   const [statusFilter, setStatusFilter] = useState<'all' | Ticket['status']>('all');
   const [createOpen, setCreateOpen] = useState(false);
@@ -223,16 +224,36 @@ export function TicketsPage() {
                           {formatJalaliDateTime(t.createdAt)}
                         </td>
                         <td className="px-4 py-3 text-left">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setReplyTarget(t);
-                              setReplyNote(t.replyNote ?? '');
-                            }}
-                            className="rounded-md border border-slate-200 px-2.5 py-1 text-xs text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
-                          >
-                            پاسخ و بستن
-                          </button>
+                          <div className="flex items-center justify-end gap-1.5">
+                            {t.status !== 'resolved' && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  createWorkflowInstance({
+                                    title: `رسیدگی به شکایت تیکت: ${t.subject}`,
+                                    type: 'complaint',
+                                    customerId: t.customerId,
+                                    relatedRef: t.id,
+                                  })
+                                }
+                                title="ایجاد گردش کار رسیدگی به شکایت"
+                                className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                              >
+                                <GitBranch size={13} />
+                                گردش کار
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setReplyTarget(t);
+                                setReplyNote(t.replyNote ?? '');
+                              }}
+                              className="rounded-md border border-slate-200 px-2.5 py-1 text-xs text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
+                            >
+                              پاسخ و بستن
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     );

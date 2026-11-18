@@ -6,29 +6,54 @@ import type {
   AppointmentStatus,
   AuditLogEntry,
   BusinessSettings,
+  CommissionTier,
+  ConfigSnapshot,
   ContentItem,
   ContentStatus,
   Coupon,
+  CsvImportBatch,
+  CustomEntityDef,
+  CustomEntityRecord,
   CustomFieldDef,
   Customer,
+  CustomerAttachment,
+  CustomerRelation,
+  CustomerSegment,
+  DeploymentCheckItem,
+  EntityRelationDef,
   Interaction,
   Invoice,
   KbArticle,
   NpsSurvey,
+  OfficialHoliday,
   Opportunity,
   Order,
+  OrderShipment,
   OrderStatus,
+  OutboxMessage,
   PaymentMethod,
   PipelineStage,
+  PipelineStageConfig,
   Product,
+  Project,
+  ProjectStatus,
+  Quote,
+  QuoteStatus,
   Resource,
+  ResourceTimeOff,
+  Rule,
+  SalesTarget,
   Service,
+  StockMovement,
   Task,
   Ticket,
+  TimeEntry,
+  WaitlistEntry,
   WorkflowInstance,
   WorkflowType,
 } from '../types';
-import { hasConflict, isValidIranMobile } from '../utils/overlap';
+import { daysUntilJalaliMonthDay } from '../utils/crmHelpers';
+import { getDateKeyFromIso, hasConflict, isHolidayOrTimeOff, isValidIranMobile, isValidNationalId } from '../utils/overlap';
 
 const STORAGE_KEY = 'clientflow_state_v2';
 
@@ -45,20 +70,51 @@ export type PendingNpsPrompt = {
   label: string;
 };
 
+function mergeLoadedState(parsed: Partial<AppState> | null | undefined): AppState {
+  const fallback = createInitialState();
+  if (!parsed) return fallback;
+
+  const existingRuleIds = new Set((parsed.rules ?? []).map((r) => r.id));
+  const mergedRules = [
+    ...(parsed.rules ?? fallback.rules),
+    ...fallback.rules.filter((r) => !existingRuleIds.has(r.id)),
+  ];
+
+  return {
+    ...fallback,
+    ...parsed,
+    rules: mergedRules,
+    customerRelations: parsed.customerRelations ?? fallback.customerRelations,
+    customerSegments: parsed.customerSegments ?? fallback.customerSegments,
+    csvImportBatches: parsed.csvImportBatches ?? fallback.csvImportBatches,
+    customEntityDefs: parsed.customEntityDefs ?? fallback.customEntityDefs,
+    customEntityRecords: parsed.customEntityRecords ?? fallback.customEntityRecords,
+    entityRelations: parsed.entityRelations ?? fallback.entityRelations,
+    configSnapshots: parsed.configSnapshots ?? fallback.configSnapshots,
+    pipelineStages: parsed.pipelineStages ?? fallback.pipelineStages,
+    quotes: parsed.quotes ?? fallback.quotes,
+    salesTargets: parsed.salesTargets ?? fallback.salesTargets,
+    commissionTiers: parsed.commissionTiers ?? fallback.commissionTiers,
+    stockMovements: parsed.stockMovements ?? fallback.stockMovements,
+    projects: parsed.projects ?? fallback.projects,
+    timeEntries: parsed.timeEntries ?? fallback.timeEntries,
+    resourceTimeOffs: parsed.resourceTimeOffs ?? fallback.resourceTimeOffs,
+    officialHolidays: parsed.officialHolidays ?? fallback.officialHolidays,
+    waitlist: parsed.waitlist ?? fallback.waitlist,
+    settings: {
+      ...fallback.settings,
+      ...(parsed.settings ?? {}),
+      salesTeam: parsed.settings?.salesTeam ?? fallback.settings.salesTeam,
+    },
+  };
+}
+
 function loadInitialState(): AppState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return createInitialState();
     const parsed = JSON.parse(raw) as Partial<AppState>;
-    const fallback = createInitialState();
-    return {
-      ...fallback,
-      ...parsed,
-      settings: {
-        ...fallback.settings,
-        ...(parsed.settings ?? {}),
-      },
-    };
+    return mergeLoadedState(parsed);
   } catch {
     return createInitialState();
   }
@@ -72,17 +128,38 @@ type ClientFlowContextValue = {
   pushToast: (text: string, type?: ToastMessage['type']) => void;
   dismissToast: (id: string) => void;
 
-  // Customers & Custom Fields & Dedup
+  // Customers, Relations, Segments, CSV Rollback, PII Anonymization & Attachments
   addCustomer: (data: Omit<Customer, 'id' | 'createdAt'>) => { ok: boolean; error?: string; customer?: Customer };
   updateCustomer: (id: string, data: Partial<Customer>) => { ok: boolean; error?: string };
   deleteCustomer: (id: string) => { ok: boolean; error?: string };
+  anonymizeCustomer: (id: string) => { ok: boolean; error?: string };
   mergeCustomers: (primaryId: string, duplicateId: string) => { ok: boolean; error?: string };
-  importCustomersBatch: (items: Customer[]) => number;
+  importCustomersBatch: (items: Customer[], fileName?: string) => number;
+  rollbackCsvImportBatch: (batchId: string) => void;
+  addCustomerRelation: (data: Omit<CustomerRelation, 'id' | 'createdAt'>) => void;
+  removeCustomerRelation: (id: string) => void;
+  addCustomerSegment: (seg: Omit<CustomerSegment, 'id' | 'createdAt'>) => void;
+  deleteCustomerSegment: (id: string) => void;
+  addCustomerAttachment: (customerId: string, att: Omit<CustomerAttachment, 'id' | 'uploadedAt'>) => void;
+  removeCustomerAttachment: (customerId: string, attachmentId: string) => void;
+  sendBirthdayGreeting: (customerId: string, kind: 'birthday' | 'anniversary') => void;
   addInteraction: (customerId: string, channel: Interaction['channel'], text: string) => void;
-  addCustomFieldDef: (def: Omit<CustomFieldDef, 'id'>) => void;
-  removeCustomFieldDef: (id: string) => void;
 
-  // Appointments + Services/Resources
+  // Dynamic Configurator (Fields, Entities, Relations, Versioning)
+  addCustomFieldDef: (def: Omit<CustomFieldDef, 'id'>) => void;
+  updateCustomFieldDef: (id: string, patch: Partial<CustomFieldDef>) => void;
+  removeCustomFieldDef: (id: string) => void;
+  reorderCustomFieldDefs: (orderedIds: string[]) => void;
+  addCustomEntityDef: (def: Omit<CustomEntityDef, 'id' | 'createdAt'>) => void;
+  deleteCustomEntityDef: (id: string) => void;
+  addCustomEntityRecord: (rec: Omit<CustomEntityRecord, 'id' | 'createdAt'>) => void;
+  deleteCustomEntityRecord: (id: string) => void;
+  addEntityRelation: (rel: Omit<EntityRelationDef, 'id'>) => void;
+  removeEntityRelation: (id: string) => void;
+  saveConfigSnapshot: (versionLabel: string, note: string) => void;
+  restoreConfigSnapshot: (snapshotId: string) => void;
+
+  // Appointments + Services/Resources + Buffers/TimeOff/Holidays/Waitlist
   addAppointment: (data: Omit<Appointment, 'id'>) => { ok: boolean; error?: string };
   rescheduleAppointment: (
     id: string,
@@ -91,25 +168,51 @@ type ClientFlowContextValue = {
   updateAppointmentStatus: (id: string, status: AppointmentStatus, cancelReason?: string) => void;
   addService: (s: Omit<Service, 'id'>) => void;
   addResource: (r: Omit<Resource, 'id'>) => void;
+  addResourceTimeOff: (off: Omit<ResourceTimeOff, 'id'>) => void;
+  removeResourceTimeOff: (id: string) => void;
+  addOfficialHoliday: (h: Omit<OfficialHoliday, 'id'>) => void;
+  removeOfficialHoliday: (id: string) => void;
+  addWaitlistEntry: (entry: Omit<WaitlistEntry, 'id' | 'createdAt' | 'status'>) => void;
+  bookFromWaitlist: (waitlistId: string, startIso: string, resourceId: string) => { ok: boolean; error?: string };
+  simulateSmsConfirmReply: (appointmentId: string, outboxId?: string) => void;
 
-  // Orders, Shop, Invoices
+  // Orders, Shop, Inventory, Shipments, Invoices, Projects
   addOrder: (data: {
     customerId: string;
     items: { name: string; qty: number; price: number }[];
     promisedAt?: string;
     couponCode?: string;
   }) => { ok: boolean; error?: string };
-  updateOrderStatus: (id: string, nextStatus: OrderStatus) => void;
+  updateOrderStatus: (id: string, nextStatus: OrderStatus, trackingCode?: string) => void;
+  recordOrderShipment: (orderId: string, shipment: Omit<OrderShipment, 'id' | 'shippedAt'>) => void;
+  adjustProductStock: (productId: string, delta: number, reason: string) => void;
   addProduct: (product: Omit<Product, 'id'>) => void;
   toggleCoupon: (id: string) => void;
   addCoupon: (coupon: Omit<Coupon, 'id' | 'usedCount'>) => void;
   createInvoiceForOrder: (orderId: string, method?: PaymentMethod) => void;
   recordInvoicePayment: (invoiceId: string, amount: number, method: PaymentMethod) => void;
+  addProject: (data: { title: string; customerId: string; dueAt: string }) => void;
+  updateProjectStatus: (id: string, status: ProjectStatus) => void;
+  addProjectTask: (projectId: string, task: { title: string; assignee: string; estimatedHours: number }) => void;
+  toggleProjectTask: (projectId: string, taskId: string) => void;
+  addTimeEntry: (entry: Omit<TimeEntry, 'id' | 'loggedAt'>) => void;
+  toggleDeploymentCheck: (projectId: string, checkId: string) => void;
 
-  // Sales Pipeline
-  addOpportunity: (data: Omit<Opportunity, 'id' | 'createdAt' | 'updatedAt'>) => { ok: boolean; error?: string };
+  // Sales Pipeline, Quotes, Targets & Stepped Commissions
+  addOpportunity: (
+    data: Omit<Opportunity, 'id' | 'createdAt' | 'updatedAt'>,
+    useRoundRobin?: boolean,
+  ) => { ok: boolean; error?: string };
   moveOpportunityStage: (id: string, stage: PipelineStage, lostReason?: string) => void;
   convertOpportunityToCustomer: (oppId: string) => void;
+  updatePipelineStages: (stages: PipelineStageConfig[]) => void;
+  updateSalesTargets: (targets: SalesTarget[]) => void;
+  updateCommissionTiers: (tiers: CommissionTier[]) => void;
+  createQuote: (
+    data: Omit<Quote, 'id' | 'quoteNo' | 'version' | 'shareToken' | 'createdAt'>,
+  ) => void;
+  createQuoteVersion: (parentQuoteId: string, patch?: Partial<Pick<Quote, 'items' | 'discountPct' | 'notes'>>) => void;
+  updateQuoteStatus: (id: string, status: QuoteStatus, clientComment?: string) => void;
 
   // Workflows (BPMS)
   createWorkflowInstance: (data: {
@@ -138,6 +241,8 @@ type ClientFlowContextValue = {
 
   // Automation
   toggleRule: (id: string) => void;
+  addRule: (rule: Omit<Rule, 'id'>) => void;
+  sendSimulatedSms: (customerId: string, body: string) => { ok: boolean; error?: string };
   runAutomationNow: (silent?: boolean) => number;
   clearOutbox: () => void;
 
@@ -150,7 +255,7 @@ type ClientFlowContextValue = {
 
 const ClientFlowContext = createContext<ClientFlowContextValue | null>(null);
 
-const STAGE_PROB: Record<PipelineStage, number> = {
+const DEFAULT_STAGE_PROB: Record<PipelineStage, number> = {
   lead: 20,
   contacted: 35,
   proposal: 55,
@@ -212,11 +317,15 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
   const dismissPendingNps = useCallback(() => setPendingNps(null), []);
   const triggerNpsPrompt = useCallback((prompt: PendingNpsPrompt) => setPendingNps(prompt), []);
 
+  // --- CRM & CUSTOMERS ---
   const addCustomer = useCallback(
     (data: Omit<Customer, 'id' | 'createdAt'>) => {
       if (!data.name.trim()) return { ok: false, error: 'نام مشتری الزامی است.' };
       if (!isValidIranMobile(data.phone)) {
         return { ok: false, error: 'شماره موبایل معتبر نیست (فرمت صحیح: ۰۹xxxxxxxxx).' };
+      }
+      if (data.nationalId && !isValidNationalId(data.nationalId)) {
+        return { ok: false, error: 'کد ملی معتبر نیست (باید ۱۰ رقم عددی باشد).' };
       }
       const customer: Customer = {
         ...data,
@@ -239,6 +348,9 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
       if (data.phone !== undefined && !isValidIranMobile(data.phone)) {
         return { ok: false, error: 'شماره موبایل معتبر نیست (فرمت صحیح: ۰۹xxxxxxxxx).' };
       }
+      if (data.nationalId && !isValidNationalId(data.nationalId)) {
+        return { ok: false, error: 'کد ملی معتبر نیست (باید ۱۰ رقم عددی باشد).' };
+      }
       setState((prev) => ({
         ...prev,
         customers: prev.customers.map((c) => (c.id === id ? { ...c, ...data } : c)),
@@ -260,12 +372,62 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
       setState((prev) => ({
         ...prev,
         customers: prev.customers.filter((c) => c.id !== id),
+        customerRelations: prev.customerRelations.filter(
+          (r) => r.fromCustomerId !== id && r.toCustomerId !== id,
+        ),
         auditLogs: [
           makeAudit('مشتری', 'delete', `مشتری «${target?.name ?? id}» حذف شد.`),
           ...prev.auditLogs,
         ].slice(0, 100),
       }));
       pushToast('مشتری حذف شد.', 'info');
+      return { ok: true };
+    },
+    [pushToast],
+  );
+
+  const anonymizeCustomer = useCallback(
+    (id: string) => {
+      if (stateRef.current.settings.role !== 'admin') {
+        pushToast('ناشناس‌سازی داده‌های حساس فقط توسط مدیر مجاز است.', 'error');
+        return { ok: false, error: 'فقط مدیر مجاز است.' };
+      }
+      const target = stateRef.current.customers.find((c) => c.id === id);
+      if (!target) return { ok: false, error: 'مشتری یافت نشد.' };
+
+      const suffix = id.slice(-4).toUpperCase();
+      setState((prev) => ({
+        ...prev,
+        customers: prev.customers.map((c) =>
+          c.id === id
+            ? {
+                ...c,
+                name: `مشتری ناشناس #${suffix}`,
+                phone: `0900000${String(Math.floor(1000 + Math.random() * 8999))}`,
+                email: undefined,
+                nationalId: undefined,
+                companyName: c.companyName ? `شرکت ناشناس #${suffix}` : undefined,
+                economicCode: undefined,
+                registrationNo: undefined,
+                contacts: [],
+                addresses: [],
+                allergies: undefined,
+                notes: 'داده‌های هویتی مطابق درخواست مشتری ناشناس‌سازی (PII Anonymized) شد.',
+                birthDateJalali: undefined,
+                anniversaryDateJalali: undefined,
+                attachments: [],
+                consentSms: false,
+                consentPhoto: false,
+                isAnonymized: true,
+              }
+            : c,
+        ),
+        auditLogs: [
+          makeAudit('مشتری', 'update', `داده‌های هویتی (PII) مشتری «${target.name}» ناشناس‌سازی شد.`),
+          ...prev.auditLogs,
+        ].slice(0, 100),
+      }));
+      pushToast(`اطلاعات هویتی «${target.name}» ناشناس‌سازی شد (سوابق مالی حفظ شد).`, 'info');
       return { ok: true };
     },
     [pushToast],
@@ -292,6 +454,9 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
                   ...c,
                   tags: mergedTags,
                   email: c.email || dup.email,
+                  contacts: [...(c.contacts ?? []), ...(dup.contacts ?? [])],
+                  addresses: [...(c.addresses ?? []), ...(dup.addresses ?? [])],
+                  attachments: [...(c.attachments ?? []), ...(dup.attachments ?? [])],
                   notes: [c.notes, dup.notes].filter(Boolean).join(' | ') || undefined,
                 }
               : c,
@@ -329,18 +494,172 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
   );
 
   const importCustomersBatch = useCallback(
-    (items: Customer[]) => {
+    (items: Customer[], fileName = 'import.csv') => {
       if (items.length === 0) return 0;
+      const batch: CsvImportBatch = {
+        id: `batch_${Date.now()}`,
+        fileName,
+        customerIds: items.map((i) => i.id),
+        count: items.length,
+        importedAt: new Date().toISOString(),
+        rolledBack: false,
+      };
       setState((prev) => ({
         ...prev,
         customers: [...items, ...prev.customers],
+        csvImportBatches: [batch, ...prev.csvImportBatches].slice(0, 20),
         auditLogs: [
-          makeAudit('مشتری', 'create', `${items.length} مشتری از فایل CSV وارد شد.`),
+          makeAudit('مشتری', 'create', `${items.length} مشتری از فایل «${fileName}» وارد شد.`),
           ...prev.auditLogs,
         ].slice(0, 100),
       }));
-      pushToast(`${items.length} مشتری از فایل CSV وارد شد.`);
+      pushToast(`${items.length} مشتری از فایل CSV وارد شد (قابل بازگشت در تاریخچه).`);
       return items.length;
+    },
+    [pushToast],
+  );
+
+  const rollbackCsvImportBatch = useCallback(
+    (batchId: string) => {
+      const batch = stateRef.current.csvImportBatches.find((b) => b.id === batchId);
+      if (!batch || batch.rolledBack) return;
+      const removeSet = new Set(batch.customerIds);
+      setState((prev) => ({
+        ...prev,
+        customers: prev.customers.filter((c) => !removeSet.has(c.id)),
+        csvImportBatches: prev.csvImportBatches.map((b) =>
+          b.id === batchId ? { ...b, rolledBack: true } : b,
+        ),
+        auditLogs: [
+          makeAudit('مشتری', 'delete', `ورود دسته‌ای «${batch.fileName}» (${batch.count} مشتری) بازگشت داده شد.`),
+          ...prev.auditLogs,
+        ].slice(0, 100),
+      }));
+      pushToast(`ایمپورت «${batch.fileName}» (${batch.count} رکورد) به‌صورت کامل بازگشت داده شد.`, 'info');
+    },
+    [pushToast],
+  );
+
+  const addCustomerRelation = useCallback(
+    (data: Omit<CustomerRelation, 'id' | 'createdAt'>) => {
+      if (data.fromCustomerId === data.toCustomerId) return;
+      const rel: CustomerRelation = {
+        ...data,
+        id: `rel_${Date.now()}`,
+        createdAt: new Date().toISOString(),
+      };
+      setState((prev) => ({
+        ...prev,
+        customerRelations: [rel, ...prev.customerRelations],
+      }));
+      pushToast('ارتباط جدید بین مشتریان ثبت شد.');
+    },
+    [pushToast],
+  );
+
+  const removeCustomerRelation = useCallback((id: string) => {
+    setState((prev) => ({
+      ...prev,
+      customerRelations: prev.customerRelations.filter((r) => r.id !== id),
+    }));
+  }, []);
+
+  const addCustomerSegment = useCallback(
+    (seg: Omit<CustomerSegment, 'id' | 'createdAt'>) => {
+      const created: CustomerSegment = {
+        ...seg,
+        id: `seg_${Date.now()}`,
+        createdAt: new Date().toISOString(),
+      };
+      setState((prev) => ({
+        ...prev,
+        customerSegments: [created, ...prev.customerSegments],
+      }));
+      pushToast(`سگمنت پویا «${created.name}» ذخیره شد.`);
+    },
+    [pushToast],
+  );
+
+  const deleteCustomerSegment = useCallback(
+    (id: string) => {
+      setState((prev) => ({
+        ...prev,
+        customerSegments: prev.customerSegments.filter((s) => s.id !== id),
+      }));
+      pushToast('سگمنت حذف شد.', 'info');
+    },
+    [pushToast],
+  );
+
+  const addCustomerAttachment = useCallback(
+    (customerId: string, att: Omit<CustomerAttachment, 'id' | 'uploadedAt'>) => {
+      const created: CustomerAttachment = {
+        ...att,
+        id: `att_${Date.now()}`,
+        uploadedAt: new Date().toISOString(),
+      };
+      setState((prev) => ({
+        ...prev,
+        customers: prev.customers.map((c) =>
+          c.id === customerId ? { ...c, attachments: [created, ...(c.attachments ?? [])] } : c,
+        ),
+      }));
+      pushToast(`مدرک «${created.name}» در پرونده پیوست شد.`);
+    },
+    [pushToast],
+  );
+
+  const removeCustomerAttachment = useCallback((customerId: string, attachmentId: string) => {
+    setState((prev) => ({
+      ...prev,
+      customers: prev.customers.map((c) =>
+        c.id === customerId
+          ? { ...c, attachments: (c.attachments ?? []).filter((a) => a.id !== attachmentId) }
+          : c,
+      ),
+    }));
+  }, []);
+
+  const sendBirthdayGreeting = useCallback(
+    (customerId: string, kind: 'birthday' | 'anniversary') => {
+      const cust = stateRef.current.customers.find((c) => c.id === customerId);
+      if (!cust) return;
+      if (cust.consentSms === false) {
+        pushToast('این مشتری رضایت دریافت پیامک را غیرفعال کرده است.', 'error');
+        return;
+      }
+      const nowIso = new Date().toISOString();
+      const body =
+        kind === 'birthday'
+          ? `${cust.name} عزیز، زادروزتان مبارک! به‌مناسبت تولد شما کد هدیه ۲۰٪ (VIP20) در ${stateRef.current.settings.businessName} برایتان فعال شد.`
+          : `${cust.name} گرامی، سالگرد همراهی ارزشمندتان با ${stateRef.current.settings.businessName} را تبریک می‌گوییم!`;
+
+      setState((prev) => ({
+        ...prev,
+        outbox: [
+          {
+            id: `msg_bday_${Date.now()}`,
+            to: cust.phone,
+            customerName: cust.name,
+            body,
+            channel: 'sms',
+            ruleName: kind === 'birthday' ? 'تبریک تولد' : 'تبریک سالگرد',
+            at: nowIso,
+          },
+          ...prev.outbox,
+        ],
+        interactions: [
+          {
+            id: `int_bday_${Date.now()}`,
+            customerId: cust.id,
+            channel: 'sms',
+            text: body,
+            at: nowIso,
+          },
+          ...prev.interactions,
+        ],
+      }));
+      pushToast(`پیامک تبریک برای «${cust.name}» در صندوق ارسال ثبت شد.`);
     },
     [pushToast],
   );
@@ -364,17 +683,28 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
     [pushToast],
   );
 
+  // --- DYNAMIC CONFIGURATOR ---
   const addCustomFieldDef = useCallback(
     (def: Omit<CustomFieldDef, 'id'>) => {
       setState((prev) => ({
         ...prev,
-        customFieldDefs: [...prev.customFieldDefs, { ...def, id: `cf_${Date.now()}` }],
+        customFieldDefs: [
+          ...prev.customFieldDefs,
+          { ...def, id: `cf_${Date.now()}`, order: prev.customFieldDefs.length + 1 },
+        ],
         auditLogs: [makeAudit('پیکربندی', 'create', `فیلد سفارشی «${def.label}» اضافه شد.`), ...prev.auditLogs].slice(0, 100),
       }));
       pushToast(`فیلد سفارشی «${def.label}» اضافه شد.`);
     },
     [pushToast],
   );
+
+  const updateCustomFieldDef = useCallback((id: string, patch: Partial<CustomFieldDef>) => {
+    setState((prev) => ({
+      ...prev,
+      customFieldDefs: prev.customFieldDefs.map((f) => (f.id === id ? { ...f, ...patch } : f)),
+    }));
+  }, []);
 
   const removeCustomFieldDef = useCallback(
     (id: string) => {
@@ -387,15 +717,157 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
     [pushToast],
   );
 
+  const reorderCustomFieldDefs = useCallback((orderedIds: string[]) => {
+    setState((prev) => {
+      const map = new Map(prev.customFieldDefs.map((f) => [f.id, f]));
+      const reordered: CustomFieldDef[] = orderedIds
+        .map((id, idx): CustomFieldDef | null => {
+          const item = map.get(id);
+          return item ? { ...item, order: idx + 1 } : null;
+        })
+        .filter((x): x is CustomFieldDef => x !== null);
+      return { ...prev, customFieldDefs: reordered };
+    });
+  }, []);
+
+  const addCustomEntityDef = useCallback(
+    (def: Omit<CustomEntityDef, 'id' | 'createdAt'>) => {
+      const created: CustomEntityDef = {
+        ...def,
+        id: `ent_${Date.now()}`,
+        createdAt: new Date().toISOString(),
+      };
+      setState((prev) => ({
+        ...prev,
+        customEntityDefs: [...prev.customEntityDefs, created],
+        auditLogs: [makeAudit('پیکربندی', 'create', `موجودیت سفارشی «${def.name}» ساخته شد.`), ...prev.auditLogs].slice(0, 100),
+      }));
+      pushToast(`موجودیت سفارشی «${def.name}» ایجاد شد.`);
+    },
+    [pushToast],
+  );
+
+  const deleteCustomEntityDef = useCallback(
+    (id: string) => {
+      const target = stateRef.current.customEntityDefs.find((e) => e.id === id);
+      setState((prev) => ({
+        ...prev,
+        customEntityDefs: prev.customEntityDefs.filter((e) => e.id !== id),
+        customEntityRecords: target
+          ? prev.customEntityRecords.filter((r) => r.entityKey !== target.key)
+          : prev.customEntityRecords,
+      }));
+      pushToast('موجودیت سفارشی حذف شد.', 'info');
+    },
+    [pushToast],
+  );
+
+  const addCustomEntityRecord = useCallback(
+    (rec: Omit<CustomEntityRecord, 'id' | 'createdAt'>) => {
+      const created: CustomEntityRecord = {
+        ...rec,
+        id: `er_${Date.now()}`,
+        createdAt: new Date().toISOString(),
+      };
+      setState((prev) => ({
+        ...prev,
+        customEntityRecords: [created, ...prev.customEntityRecords],
+      }));
+      pushToast('رکورد جدید در موجودیت سفارشی ثبت شد.');
+    },
+    [pushToast],
+  );
+
+  const deleteCustomEntityRecord = useCallback((id: string) => {
+    setState((prev) => ({
+      ...prev,
+      customEntityRecords: prev.customEntityRecords.filter((r) => r.id !== id),
+    }));
+  }, []);
+
+  const addEntityRelation = useCallback(
+    (rel: Omit<EntityRelationDef, 'id'>) => {
+      setState((prev) => ({
+        ...prev,
+        entityRelations: [...prev.entityRelations, { ...rel, id: `erel_${Date.now()}` }],
+      }));
+      pushToast(`رابطه ${rel.cardinality} ثبت شد.`);
+    },
+    [pushToast],
+  );
+
+  const removeEntityRelation = useCallback((id: string) => {
+    setState((prev) => ({
+      ...prev,
+      entityRelations: prev.entityRelations.filter((r) => r.id !== id),
+    }));
+  }, []);
+
+  const saveConfigSnapshot = useCallback(
+    (versionLabel: string, note: string) => {
+      const cur = stateRef.current;
+      const snap: ConfigSnapshot = {
+        id: `snap_${Date.now()}`,
+        versionLabel: versionLabel.trim() || `v1.${cur.configSnapshots.length}.0`,
+        note: note.trim() || 'ذخیره دستی پیکربندی',
+        createdAt: new Date().toISOString(),
+        customFieldDefs: cur.customFieldDefs,
+        customEntityDefs: cur.customEntityDefs,
+        entityRelations: cur.entityRelations,
+        pipelineStages: cur.pipelineStages,
+        commissionTiers: cur.commissionTiers,
+      };
+      setState((prev) => ({
+        ...prev,
+        configSnapshots: [snap, ...prev.configSnapshots],
+        auditLogs: [makeAudit('پیکربندی', 'create', `نسخه پیکربندی ${snap.versionLabel} ذخیره شد.`), ...prev.auditLogs].slice(0, 100),
+      }));
+      pushToast(`نسخه پیکربندی ${snap.versionLabel} ذخیره شد.`);
+    },
+    [pushToast],
+  );
+
+  const restoreConfigSnapshot = useCallback(
+    (snapshotId: string) => {
+      const snap = stateRef.current.configSnapshots.find((s) => s.id === snapshotId);
+      if (!snap) return;
+      setState((prev) => ({
+        ...prev,
+        customFieldDefs: snap.customFieldDefs,
+        customEntityDefs: snap.customEntityDefs,
+        entityRelations: snap.entityRelations,
+        pipelineStages: snap.pipelineStages,
+        commissionTiers: snap.commissionTiers,
+        auditLogs: [
+          makeAudit('پیکربندی', 'update', `پیکربندی به نسخه ${snap.versionLabel} بازگردانده شد.`),
+          ...prev.auditLogs,
+        ].slice(0, 100),
+      }));
+      pushToast(`پیکربندی سیستم به نسخه ${snap.versionLabel} بازگشت داده شد.`);
+    },
+    [pushToast],
+  );
+
+  // --- APPOINTMENTS ---
   const addAppointment = useCallback(
     (data: Omit<Appointment, 'id'>) => {
       if (new Date(data.end) <= new Date(data.start)) {
         return { ok: false, error: 'ساعت پایان باید بعد از ساعت شروع باشد.' };
       }
-      if (hasConflict(stateRef.current.appointments, data)) {
+      const dateKey = getDateKeyFromIso(data.start);
+      const blocked = isHolidayOrTimeOff(
+        dateKey,
+        data.resourceId,
+        stateRef.current.officialHolidays,
+        stateRef.current.resourceTimeOffs,
+      );
+      if (blocked.blocked) {
+        return { ok: false, error: blocked.reason ?? 'این روز در دسترس نیست.' };
+      }
+      if (hasConflict(stateRef.current.appointments, data, stateRef.current.services)) {
         return {
           ok: false,
-          error: 'تداخل زمانی! این منبع در بازه انتخاب‌شده نوبت فعال دیگری دارد.',
+          error: 'تداخل زمانی (با احتساب زمان بافر خدمت)! این منبع در بازه انتخاب‌شده نوبت فعال دیگری دارد.',
         };
       }
       const apt: Appointment = { ...data, id: `a_${Date.now()}` };
@@ -415,10 +887,27 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
       if (new Date(patch.end) <= new Date(patch.start)) {
         return { ok: false, error: 'ساعت پایان باید بعد از ساعت شروع باشد.' };
       }
-      if (hasConflict(stateRef.current.appointments, { ...patch, id })) {
+      const existing = stateRef.current.appointments.find((a) => a.id === id);
+      const dateKey = getDateKeyFromIso(patch.start);
+      const blocked = isHolidayOrTimeOff(
+        dateKey,
+        patch.resourceId,
+        stateRef.current.officialHolidays,
+        stateRef.current.resourceTimeOffs,
+      );
+      if (blocked.blocked) {
+        return { ok: false, error: blocked.reason ?? 'این روز در دسترس نیست.' };
+      }
+      if (
+        hasConflict(
+          stateRef.current.appointments,
+          { ...patch, id, serviceId: existing?.serviceId },
+          stateRef.current.services,
+        )
+      ) {
         return {
           ok: false,
-          error: 'تداخل زمانی! منبع انتخاب‌شده در این ساعت نوبت دیگری دارد.',
+          error: 'تداخل زمانی (با احتساب زمان بافر)! منبع انتخاب‌شده در این ساعت نوبت دیگری دارد.',
         };
       }
       setState((prev) => ({
@@ -434,9 +923,10 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
 
   const updateAppointmentStatus = useCallback(
     (id: string, status: AppointmentStatus, cancelReason?: string) => {
-      const target = stateRef.current.appointments.find((a) => a.id === id);
+      const cur = stateRef.current;
+      const target = cur.appointments.find((a) => a.id === id);
       if (!target) return;
-      const customer = stateRef.current.customers.find((c) => c.id === target.customerId);
+      const customer = cur.customers.find((c) => c.id === target.customerId);
       const nowIso = new Date().toISOString();
 
       const autoSms =
@@ -445,9 +935,37 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
               id: `msg_apt_${Date.now()}`,
               to: customer.phone,
               customerName: customer.name,
-              body: `${customer.name} عزیز، نوبت شما در ${stateRef.current.settings.businessName} تأیید شد.`,
+              body: `${customer.name} عزیز، نوبت شما در ${cur.settings.businessName} تأیید شد.`,
               channel: 'sms' as const,
               ruleName: 'تأیید خودکار نوبت',
+              at: nowIso,
+            }
+          : null;
+
+      // Auto-notify waitlist entry if cancelled
+      const cancelDayKey = getDateKeyFromIso(target.start);
+      const matchingWaitlist =
+        status === 'cancelled'
+          ? cur.waitlist.find(
+              (w) =>
+                w.status === 'waiting' &&
+                w.preferredDayKey === cancelDayKey &&
+                (!w.preferredResourceId || w.preferredResourceId === target.resourceId),
+            )
+          : undefined;
+      const waitCust = matchingWaitlist
+        ? cur.customers.find((c) => c.id === matchingWaitlist.customerId)
+        : undefined;
+
+      const waitSms =
+        matchingWaitlist && waitCust && waitCust.consentSms !== false
+          ? {
+              id: `msg_wl_${Date.now()}`,
+              to: waitCust.phone,
+              customerName: waitCust.name,
+              body: `${waitCust.name} عزیز، یک نوبت در تاریخ درخواستی شما خالی شد! برای رزرو با پذیرش تماس بگیرید.`,
+              channel: 'sms' as const,
+              ruleName: 'جایگزینی خودکار لیست انتظار',
               at: nowIso,
             }
           : null;
@@ -457,11 +975,25 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         appointments: prev.appointments.map((a) =>
           a.id === id ? { ...a, status, cancelReason: cancelReason ?? a.cancelReason } : a,
         ),
-        outbox: autoSms ? [autoSms, ...prev.outbox] : prev.outbox,
+        waitlist: matchingWaitlist
+          ? prev.waitlist.map((w) =>
+              w.id === matchingWaitlist.id ? { ...w, status: 'notified' } : w,
+            )
+          : prev.waitlist,
+        outbox: [
+          ...([autoSms, waitSms].filter((x): x is NonNullable<typeof x> => Boolean(x)) as OutboxMessage[]),
+          ...prev.outbox,
+        ],
       }));
-      pushToast('وضعیت نوبت به‌روزرسانی شد.');
+
+      if (matchingWaitlist && waitCust) {
+        pushToast(`نوبت لغو شد و پیامک جای خالی برای «${waitCust.name}» در لیست انتظار ارسال گردید.`, 'info');
+      } else {
+        pushToast('وضعیت نوبت به‌روزرسانی شد.');
+      }
+
       if (status === 'done' && customer) {
-        const alreadyRated = stateRef.current.npsSurveys.some(
+        const alreadyRated = cur.npsSurveys.some(
           (n) => n.refType === 'appointment' && n.refId === id,
         );
         if (!alreadyRated) {
@@ -499,6 +1031,120 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
     [pushToast],
   );
 
+  const addResourceTimeOff = useCallback(
+    (off: Omit<ResourceTimeOff, 'id'>) => {
+      setState((prev) => ({
+        ...prev,
+        resourceTimeOffs: [{ ...off, id: `off_${Date.now()}` }, ...prev.resourceTimeOffs],
+      }));
+      pushToast('مرخصی / بازه عدم حضور منبع ثبت شد.');
+    },
+    [pushToast],
+  );
+
+  const removeResourceTimeOff = useCallback((id: string) => {
+    setState((prev) => ({
+      ...prev,
+      resourceTimeOffs: prev.resourceTimeOffs.filter((t) => t.id !== id),
+    }));
+  }, []);
+
+  const addOfficialHoliday = useCallback(
+    (h: Omit<OfficialHoliday, 'id'>) => {
+      setState((prev) => ({
+        ...prev,
+        officialHolidays: [{ ...h, id: `hol_${Date.now()}` }, ...prev.officialHolidays],
+      }));
+      pushToast(`تعطیل رسمی «${h.title}» ثبت شد.`);
+    },
+    [pushToast],
+  );
+
+  const removeOfficialHoliday = useCallback((id: string) => {
+    setState((prev) => ({
+      ...prev,
+      officialHolidays: prev.officialHolidays.filter((h) => h.id !== id),
+    }));
+  }, []);
+
+  const addWaitlistEntry = useCallback(
+    (entry: Omit<WaitlistEntry, 'id' | 'createdAt' | 'status'>) => {
+      const created: WaitlistEntry = {
+        ...entry,
+        id: `wl_${Date.now()}`,
+        status: 'waiting',
+        createdAt: new Date().toISOString(),
+      };
+      setState((prev) => ({
+        ...prev,
+        waitlist: [created, ...prev.waitlist],
+      }));
+      pushToast('درخواست به لیست انتظار اضافه شد.');
+    },
+    [pushToast],
+  );
+
+  const bookFromWaitlist = useCallback(
+    (waitlistId: string, startIso: string, resourceId: string) => {
+      const cur = stateRef.current;
+      const entry = cur.waitlist.find((w) => w.id === waitlistId);
+      if (!entry) return { ok: false, error: 'رکورد لیست انتظار یافت نشد.' };
+      const srv = cur.services.find((s) => s.id === entry.serviceId);
+      if (!srv) return { ok: false, error: 'خدمت یافت نشد.' };
+      const endIso = new Date(new Date(startIso).getTime() + srv.durationMin * 60_000).toISOString();
+
+      const res = addAppointment({
+        customerId: entry.customerId,
+        serviceId: entry.serviceId,
+        resourceId,
+        start: startIso,
+        end: endIso,
+        status: 'confirmed',
+      });
+      if (!res.ok) return res;
+
+      setState((prev) => ({
+        ...prev,
+        waitlist: prev.waitlist.map((w) => (w.id === waitlistId ? { ...w, status: 'booked' } : w)),
+      }));
+      return { ok: true };
+    },
+    [addAppointment],
+  );
+
+  const simulateSmsConfirmReply = useCallback(
+    (appointmentId: string, outboxId?: string) => {
+      const cur = stateRef.current;
+      const apt = cur.appointments.find((a) => a.id === appointmentId);
+      if (!apt) return;
+      const cust = cur.customers.find((c) => c.id === apt.customerId);
+      setState((prev) => ({
+        ...prev,
+        appointments: prev.appointments.map((a) =>
+          a.id === appointmentId && a.status === 'booked' ? { ...a, status: 'confirmed' } : a,
+        ),
+        outbox: outboxId
+          ? prev.outbox.map((m) => (m.id === outboxId ? { ...m, confirmedByReply: true } : m))
+          : prev.outbox,
+        interactions: cust
+          ? [
+              {
+                id: `int_reply_${Date.now()}`,
+                customerId: cust.id,
+                channel: 'sms',
+                text: 'پاسخ شبیه‌سازی‌شده مشتری: «تأیید» به پیامک یادآور نوبت.',
+                at: new Date().toISOString(),
+              },
+              ...prev.interactions,
+            ]
+          : prev.interactions,
+      }));
+      pushToast(`پاسخ «تأیید» از ${cust?.name ?? 'مشتری'} شبیه‌سازی شد و نوبت به وضعیت تأییدشده درآمد.`);
+    },
+    [pushToast],
+  );
+
+  // --- ORDERS, INVENTORY, INVOICES, PROJECTS ---
   const addOrder = useCallback(
     (data: {
       customerId: string;
@@ -536,6 +1182,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         promisedAt: data.promisedAt,
         couponCode: validCoupon,
         discountAmount,
+        shipments: [],
       };
 
       setState((prev) => ({
@@ -557,15 +1204,19 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
   );
 
   const updateOrderStatus = useCallback(
-    (id: string, nextStatus: OrderStatus) => {
-      const target = stateRef.current.orders.find((o) => o.id === id);
+    (id: string, nextStatus: OrderStatus, trackingCode?: string) => {
+      const cur = stateRef.current;
+      const target = cur.orders.find((o) => o.id === id);
       if (!target || target.status === nextStatus) return;
       const nowIso = new Date().toISOString();
-      const customer = stateRef.current.customers.find((c) => c.id === target.customerId);
+      const customer = cur.customers.find((c) => c.id === target.customerId);
+      const cleanTracking = trackingCode?.trim() || target.trackingCode;
 
       const statusMsgMap: Partial<Record<OrderStatus, string>> = {
         confirmed: 'سفارش شما تأیید شد و در صف آماده‌سازی قرار گرفت.',
-        shipped: 'سفارش شما ارسال شد و به‌زودی به دستتان می‌رسد.',
+        shipped: cleanTracking
+          ? `سفارش شما ارسال شد. کد رهگیری مرسوله: ${cleanTracking}`
+          : 'سفارش شما ارسال شد و به‌زودی به دستتان می‌رسد.',
         delivered: 'سفارش شما تحویل داده شد. از خرید شما سپاسگزاریم!',
       };
 
@@ -583,10 +1234,52 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
             }
           : null;
 
+      // Auto-decrement stock when confirming from 'new', or restore when cancelling from confirmed/shipped
+      const shouldDecrement = target.status === 'new' && nextStatus === 'confirmed';
+      const shouldRestore =
+        (target.status === 'confirmed' || target.status === 'shipped') && nextStatus === 'cancelled';
+
+      const newMovements: StockMovement[] = [];
+      let updatedProducts = cur.products;
+
+      if (shouldDecrement || shouldRestore) {
+        updatedProducts = cur.products.map((prod) => {
+          const matchedQty = target.items
+            .filter((it) => it.name === prod.name)
+            .reduce((s, it) => s + it.qty, 0);
+          if (matchedQty <= 0) return prod;
+          const delta = shouldDecrement ? -matchedQty : matchedQty;
+          const nextStock = Math.max(0, prod.stock + delta);
+          newMovements.push({
+            id: `sm_${Date.now()}_${prod.id}`,
+            productId: prod.id,
+            productName: prod.name,
+            orderId: id,
+            type: shouldDecrement ? 'out' : 'in',
+            qtyChange: delta,
+            balanceAfter: nextStock,
+            reason: shouldDecrement
+              ? `کسر خودکار بابت تأیید سفارش ${id}`
+              : `بازگشت موجودی بابت لغو سفارش ${id}`,
+            at: nowIso,
+          });
+          return { ...prod, stock: nextStock };
+        });
+      }
+
       setState((prev) => ({
         ...prev,
+        products: updatedProducts,
+        stockMovements: [...newMovements, ...prev.stockMovements],
         orders: prev.orders.map((o) =>
-          o.id === id ? { ...o, status: nextStatus, updatedAt: nowIso } : o,
+          o.id === id
+            ? {
+                ...o,
+                status: nextStatus,
+                updatedAt: nowIso,
+                trackingCode: cleanTracking,
+              }
+            : o,
         ),
         orderLogs: [
           { id: `ol_${Date.now()}`, orderId: id, from: target.status, to: nextStatus, at: nowIso },
@@ -598,10 +1291,19 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
           ...prev.auditLogs,
         ].slice(0, 100),
       }));
-      pushToast('وضعیت سفارش تغییر کرد.');
+
+      if (newMovements.length > 0) {
+        pushToast(
+          shouldDecrement
+            ? 'وضعیت سفارش تأیید و موجودی انبار به‌صورت خودکار کسر شد.'
+            : 'سفارش لغو و موجودی به انبار بازگردانده شد.',
+        );
+      } else {
+        pushToast('وضعیت سفارش تغییر کرد.');
+      }
 
       if (nextStatus === 'delivered' && customer) {
-        const alreadyRated = stateRef.current.npsSurveys.some(
+        const alreadyRated = cur.npsSurveys.some(
           (n) => n.refType === 'order' && n.refId === id,
         );
         if (!alreadyRated) {
@@ -617,11 +1319,75 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
     [pushToast],
   );
 
+  const recordOrderShipment = useCallback(
+    (orderId: string, shipment: Omit<OrderShipment, 'id' | 'shippedAt'>) => {
+      const nowIso = new Date().toISOString();
+      const created: OrderShipment = {
+        ...shipment,
+        id: `shp_${Date.now()}`,
+        shippedAt: nowIso,
+      };
+      setState((prev) => ({
+        ...prev,
+        orders: prev.orders.map((o) =>
+          o.id === orderId
+            ? {
+                ...o,
+                carrier: shipment.carrier,
+                trackingCode: shipment.trackingCode || o.trackingCode,
+                status: o.status === 'new' || o.status === 'confirmed' ? 'shipped' : o.status,
+                updatedAt: nowIso,
+                shipments: [...(o.shipments ?? []), created],
+              }
+            : o,
+        ),
+        orderLogs: [
+          {
+            id: `ol_shp_${Date.now()}`,
+            orderId,
+            from: 'مرسوله جزئی',
+            to: `${shipment.carrier} (${shipment.trackingCode})`,
+            at: nowIso,
+          },
+          ...prev.orderLogs,
+        ],
+      }));
+      pushToast('مرسوله جزئی ثبت و کد رهگیری ذخیره شد.');
+    },
+    [pushToast],
+  );
+
+  const adjustProductStock = useCallback(
+    (productId: string, delta: number, reason: string) => {
+      if (delta === 0) return;
+      const prod = stateRef.current.products.find((p) => p.id === productId);
+      if (!prod) return;
+      const nextStock = Math.max(0, prod.stock + delta);
+      const mv: StockMovement = {
+        id: `sm_adj_${Date.now()}`,
+        productId,
+        productName: prod.name,
+        type: delta > 0 ? 'in' : 'adjust',
+        qtyChange: delta,
+        balanceAfter: nextStock,
+        reason: reason.trim() || (delta > 0 ? 'ورود دستی به انبار' : 'تعدیل دستی انبار'),
+        at: new Date().toISOString(),
+      };
+      setState((prev) => ({
+        ...prev,
+        products: prev.products.map((p) => (p.id === productId ? { ...p, stock: nextStock } : p)),
+        stockMovements: [mv, ...prev.stockMovements],
+      }));
+      pushToast(`موجودی «${prod.name}» به‌روزرسانی شد.`);
+    },
+    [pushToast],
+  );
+
   const addProduct = useCallback(
     (product: Omit<Product, 'id'>) => {
       setState((prev) => ({
         ...prev,
-        products: [{ ...product, id: `p_${Date.now()}` }, ...prev.products],
+        products: [{ minStock: 8, ...product, id: `p_${Date.now()}` }, ...prev.products],
       }));
       pushToast(`محصول «${product.name}» افزوده شد.`);
     },
@@ -710,28 +1476,165 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
     [pushToast],
   );
 
+  // --- PROJECTS & DEPLOYMENT ---
+  const addProject = useCallback(
+    (data: { title: string; customerId: string; dueAt: string }) => {
+      if (!data.title.trim()) return;
+      const defaultChecklist: DeploymentCheckItem[] = [
+        { id: `dc_${Date.now()}_1`, title: 'تأمین سرور و گواهی SSL', category: 'infra', done: false },
+        { id: `dc_${Date.now()}_2`, title: 'پیکربندی پایگاه داده و بکاپ خودکار', category: 'db', done: false },
+        { id: `dc_${Date.now()}_3`, title: 'تنظیم سطح دسترسی نقش‌ها و امنیت', category: 'security', done: false },
+        { id: `dc_${Date.now()}_4`, title: 'جلسه آموزش کاربران و تحویل مستندات', category: 'training', done: false },
+      ];
+      const prj: Project = {
+        id: `prj_${Date.now()}`,
+        title: data.title.trim(),
+        customerId: data.customerId,
+        status: 'planning',
+        dueAt: data.dueAt,
+        tasks: [],
+        deploymentChecklist: defaultChecklist,
+        createdAt: new Date().toISOString(),
+      };
+      setState((prev) => ({
+        ...prev,
+        projects: [prj, ...prev.projects],
+      }));
+      pushToast(`پروژه «${prj.title}» با چک‌لیست استقرار ایجاد شد.`);
+    },
+    [pushToast],
+  );
+
+  const updateProjectStatus = useCallback((id: string, status: ProjectStatus) => {
+    setState((prev) => ({
+      ...prev,
+      projects: prev.projects.map((p) => (p.id === id ? { ...p, status } : p)),
+    }));
+  }, []);
+
+  const addProjectTask = useCallback(
+    (projectId: string, task: { title: string; assignee: string; estimatedHours: number }) => {
+      if (!task.title.trim()) return;
+      setState((prev) => ({
+        ...prev,
+        projects: prev.projects.map((p) =>
+          p.id === projectId
+            ? {
+                ...p,
+                tasks: [
+                  ...p.tasks,
+                  {
+                    id: `pt_${Date.now()}`,
+                    title: task.title.trim(),
+                    assignee: task.assignee,
+                    estimatedHours: Math.max(0.5, task.estimatedHours),
+                    done: false,
+                  },
+                ],
+              }
+            : p,
+        ),
+      }));
+      pushToast('زیرتسک پروژه اضافه شد.');
+    },
+    [pushToast],
+  );
+
+  const toggleProjectTask = useCallback((projectId: string, taskId: string) => {
+    setState((prev) => ({
+      ...prev,
+      projects: prev.projects.map((p) =>
+        p.id === projectId
+          ? {
+              ...p,
+              tasks: p.tasks.map((t) => (t.id === taskId ? { ...t, done: !t.done } : t)),
+            }
+          : p,
+      ),
+    }));
+  }, []);
+
+  const addTimeEntry = useCallback(
+    (entry: Omit<TimeEntry, 'id' | 'loggedAt'>) => {
+      if (entry.hours <= 0) return;
+      const created: TimeEntry = {
+        ...entry,
+        id: `te_${Date.now()}`,
+        loggedAt: new Date().toISOString(),
+      };
+      setState((prev) => ({
+        ...prev,
+        timeEntries: [created, ...prev.timeEntries],
+      }));
+      pushToast(`${entry.hours} ساعت کارکرد ثبت شد.`);
+    },
+    [pushToast],
+  );
+
+  const toggleDeploymentCheck = useCallback((projectId: string, checkId: string) => {
+    const nowIso = new Date().toISOString();
+    setState((prev) => ({
+      ...prev,
+      projects: prev.projects.map((p) =>
+        p.id === projectId
+          ? {
+              ...p,
+              deploymentChecklist: p.deploymentChecklist.map((dc) =>
+                dc.id === checkId
+                  ? { ...dc, done: !dc.done, checkedAt: !dc.done ? nowIso : undefined }
+                  : dc,
+              ),
+            }
+          : p,
+      ),
+    }));
+  }, []);
+
+  // --- SALES PIPELINE & QUOTES ---
   const addOpportunity = useCallback(
-    (data: Omit<Opportunity, 'id' | 'createdAt' | 'updatedAt'>) => {
+    (data: Omit<Opportunity, 'id' | 'createdAt' | 'updatedAt'>, useRoundRobin = false) => {
       if (!data.title.trim() || !data.contactName.trim()) {
         return { ok: false, error: 'عنوان فرصت و نام مخاطب الزامی است.' };
       }
       if (!isValidIranMobile(data.phone)) {
         return { ok: false, error: 'شماره موبایل معتبر نیست (فرمت صحیح: ۰۹xxxxxxxxx).' };
       }
+
+      const cur = stateRef.current;
+      const team = cur.settings.salesTeam.length > 0 ? cur.settings.salesTeam : ['مریم (فروش)'];
+      const rrIdx = cur.settings.roundRobinIndex % team.length;
+      const assignedOwner = useRoundRobin ? team[rrIdx] : data.ownerName;
+
+      const stageCfg = cur.pipelineStages.find((s) => s.key === data.stage);
       const nowIso = new Date().toISOString();
       const opp: Opportunity = {
         ...data,
+        ownerName: assignedOwner,
         id: `opp_${Date.now()}`,
-        probability: STAGE_PROB[data.stage],
+        probability: stageCfg?.probability ?? DEFAULT_STAGE_PROB[data.stage],
         createdAt: nowIso,
         updatedAt: nowIso,
       };
       setState((prev) => ({
         ...prev,
         opportunities: [opp, ...prev.opportunities],
-        auditLogs: [makeAudit('فروش', 'create', `فرصت فروش «${opp.title}» ثبت شد.`), ...prev.auditLogs].slice(0, 100),
+        settings: useRoundRobin
+          ? { ...prev.settings, roundRobinIndex: (rrIdx + 1) % team.length }
+          : prev.settings,
+        auditLogs: [
+          makeAudit(
+            'فروش',
+            'create',
+            `فرصت «${opp.title}» ثبت${useRoundRobin ? ` و به‌صورت چرخشی به ${assignedOwner} تخصیص داده` : ''} شد.`,
+          ),
+          ...prev.auditLogs,
+        ].slice(0, 100),
       }));
-      pushToast('فرصت فروش جدید در قیف ثبت شد.');
+      pushToast(
+        useRoundRobin
+          ? `فرصت جدید ثبت و به ${assignedOwner} تخصیص داده شد.`
+          : 'فرصت فروش جدید در قیف ثبت شد.',
+      );
       return { ok: true };
     },
     [pushToast],
@@ -739,6 +1642,8 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
 
   const moveOpportunityStage = useCallback(
     (id: string, stage: PipelineStage, lostReason?: string) => {
+      const stageCfg = stateRef.current.pipelineStages.find((s) => s.key === stage);
+      const nextProb = stageCfg?.probability ?? DEFAULT_STAGE_PROB[stage];
       setState((prev) => ({
         ...prev,
         opportunities: prev.opportunities.map((o) =>
@@ -746,7 +1651,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
             ? {
                 ...o,
                 stage,
-                probability: STAGE_PROB[stage],
+                probability: nextProb,
                 lostReason: stage === 'lost' ? lostReason : o.lostReason,
                 updatedAt: new Date().toISOString(),
               }
@@ -794,6 +1699,97 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
     [pushToast],
   );
 
+  const updatePipelineStages = useCallback(
+    (stages: PipelineStageConfig[]) => {
+      setState((prev) => ({ ...prev, pipelineStages: stages }));
+      pushToast('مراحل و SLA قیف فروش به‌روزرسانی شد.');
+    },
+    [pushToast],
+  );
+
+  const updateSalesTargets = useCallback(
+    (targets: SalesTarget[]) => {
+      setState((prev) => ({ ...prev, salesTargets: targets }));
+      pushToast('تارگت‌های فروش ذخیره شد.');
+    },
+    [pushToast],
+  );
+
+  const updateCommissionTiers = useCallback(
+    (tiers: CommissionTier[]) => {
+      setState((prev) => ({ ...prev, commissionTiers: tiers }));
+      pushToast('پلکان پورسانت ذخیره شد.');
+    },
+    [pushToast],
+  );
+
+  const createQuote = useCallback(
+    (data: Omit<Quote, 'id' | 'quoteNo' | 'version' | 'shareToken' | 'createdAt'>) => {
+      const seq = 101 + stateRef.current.quotes.length;
+      const quote: Quote = {
+        ...data,
+        id: `q_${Date.now()}`,
+        quoteNo: `QT-1405-${seq}`,
+        version: 1,
+        shareToken: `qt-share-${seq}-v1`,
+        createdAt: new Date().toISOString(),
+      };
+      setState((prev) => ({
+        ...prev,
+        quotes: [quote, ...prev.quotes],
+        auditLogs: [makeAudit('فروش', 'create', `پیش‌فاکتور ${quote.quoteNo} (نسخه ۱) صادر شد.`), ...prev.auditLogs].slice(0, 100),
+      }));
+      pushToast(`پیش‌فاکتور ${quote.quoteNo} نسخه ۱ ایجاد شد.`);
+    },
+    [pushToast],
+  );
+
+  const createQuoteVersion = useCallback(
+    (parentQuoteId: string, patch?: Partial<Pick<Quote, 'items' | 'discountPct' | 'notes'>>) => {
+      const parent = stateRef.current.quotes.find((q) => q.id === parentQuoteId);
+      if (!parent) return;
+      const siblings = stateRef.current.quotes.filter((q) => q.quoteNo === parent.quoteNo);
+      const nextVersion = Math.max(...siblings.map((s) => s.version)) + 1;
+      const newQuote: Quote = {
+        ...parent,
+        ...patch,
+        id: `q_${Date.now()}`,
+        version: nextVersion,
+        parentQuoteId: parent.id,
+        status: 'draft',
+        clientComment: undefined,
+        shareToken: `${parent.quoteNo.toLowerCase()}-v${nextVersion}`,
+        createdAt: new Date().toISOString(),
+      };
+      setState((prev) => ({
+        ...prev,
+        quotes: [newQuote, ...prev.quotes],
+      }));
+      pushToast(`نسخه ${nextVersion} پیش‌فاکتور ${parent.quoteNo} ایجاد شد.`);
+    },
+    [pushToast],
+  );
+
+  const updateQuoteStatus = useCallback(
+    (id: string, status: QuoteStatus, clientComment?: string) => {
+      setState((prev) => ({
+        ...prev,
+        quotes: prev.quotes.map((q) =>
+          q.id === id ? { ...q, status, clientComment: clientComment ?? q.clientComment } : q,
+        ),
+      }));
+      pushToast(
+        status === 'approved'
+          ? 'پیش‌فاکتور توسط مشتری تأیید شد.'
+          : status === 'rejected'
+            ? 'پیش‌فاکتور رد شد.'
+            : 'وضعیت پیش‌فاکتور به‌روزرسانی شد.',
+      );
+    },
+    [pushToast],
+  );
+
+  // --- WORKFLOWS, MARKETING, TASKS, TICKETS, KB, NPS, AUTOMATION ---
   const createWorkflowInstance = useCallback(
     (data: { title: string; type: WorkflowType; customerId?: string; relatedRef?: string }) => {
       const templateSteps: Record<WorkflowType, WorkflowInstance['steps']> = {
@@ -1021,6 +2017,56 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
     }));
   }, []);
 
+  const addRule = useCallback(
+    (rule: Omit<Rule, 'id'>) => {
+      const created: Rule = { ...rule, id: `u_custom_${Date.now()}` };
+      setState((prev) => ({
+        ...prev,
+        rules: [created, ...prev.rules],
+        auditLogs: [makeAudit('اتوماسیون', 'create', `قانون «${created.name}» ایجاد شد.`), ...prev.auditLogs].slice(0, 100),
+      }));
+      pushToast(`قانون «${created.name}» ثبت شد.`);
+    },
+    [pushToast],
+  );
+
+  const sendSimulatedSms = useCallback(
+    (customerId: string, body: string) => {
+      const cust = stateRef.current.customers.find((c) => c.id === customerId);
+      if (!cust) return { ok: false, error: 'مشتری انتخاب‌شده یافت نشد.' };
+      if (!body.trim()) return { ok: false, error: 'متن پیامک نمی‌تواند خالی باشد.' };
+      if (cust.consentSms === false) {
+        return { ok: false, error: 'این مشتری رضایت دریافت پیامک را غیرفعال کرده است.' };
+      }
+      const nowIso = new Date().toISOString();
+      const msg = {
+        id: `msg_manual_${Date.now()}`,
+        to: cust.phone,
+        customerName: cust.name,
+        body: body.trim(),
+        channel: 'sms' as const,
+        ruleName: 'ارسال دستی کارشناس',
+        at: nowIso,
+      };
+      const interaction: Interaction = {
+        id: `int_sms_${Date.now()}`,
+        customerId: cust.id,
+        channel: 'sms',
+        text: `پیامک شبیه‌سازی‌شده: ${body.trim()}`,
+        at: nowIso,
+      };
+      setState((prev) => ({
+        ...prev,
+        outbox: [msg, ...prev.outbox],
+        interactions: [interaction, ...prev.interactions],
+        auditLogs: [makeAudit('پیامک', 'create', `پیامک دستی برای «${cust.name}» ثبت شد.`), ...prev.auditLogs].slice(0, 100),
+      }));
+      pushToast(`پیامک شبیه‌سازی‌شده برای «${cust.name}» در صندوق ارسال ثبت شد.`);
+      return { ok: true };
+    },
+    [pushToast],
+  );
+
   const runAutomationNow = useCallback(
     (silent = false) => {
       const cur = stateRef.current;
@@ -1056,6 +2102,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
                   body: `${cust.name} عزیز، یادآوری نوبت تأییدشده شما در ${cur.settings.businessName} برای ۲۴ ساعت آینده ثبت شده است.`,
                   channel: 'sms',
                   ruleName: rule.name,
+                  appointmentId: apt.id,
                   at: nowIso,
                 });
               }
@@ -1066,7 +2113,94 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
               id: `al_${Date.now()}_u1`,
               ruleId: rule.id,
               ruleName: rule.name,
-              summary: `${count} پیامک یادآوری نوبت در صندوق ارسال ثبت شد.`,
+              summary: `${count} پیامک یادآوری نوبت ۲۴ ساعته ثبت شد.`,
+              at: nowIso,
+            });
+          }
+        }
+
+        if (rule.id === 'u7') {
+          let count = 0;
+          for (const apt of cur.appointments) {
+            if (apt.status !== 'booked' && apt.status !== 'confirmed') continue;
+            const diffH = (new Date(apt.start).getTime() - nowMs) / 3600_000;
+            const key = `u7_${apt.id}`;
+            if (diffH > 0 && diffH <= 2.5 && !processed.has(key)) {
+              const cust = cur.customers.find((c) => c.id === apt.customerId);
+              if (cust && cust.consentSms !== false) {
+                processed.add(key);
+                count++;
+                newOutbox.push({
+                  id: `msg_2h_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+                  to: cust.phone,
+                  customerName: cust.name,
+                  body: `${cust.name} عزیز، تا ۲ ساعت دیگر نوبت شما در ${cur.settings.businessName} شروع می‌شود. لطفاً عدد ۱ یا کلمه «تأیید» را ارسال کنید.`,
+                  channel: 'sms',
+                  ruleName: rule.name,
+                  appointmentId: apt.id,
+                  canSimulateConfirm: apt.status === 'booked',
+                  at: nowIso,
+                });
+              }
+            }
+          }
+          if (count > 0) {
+            newLogs.push({
+              id: `al_${Date.now()}_u7`,
+              ruleId: rule.id,
+              ruleName: rule.name,
+              summary: `${count} پیامک یادآور ۲ ساعت قبل از نوبت ثبت شد.`,
+              at: nowIso,
+            });
+          }
+        }
+
+        if (rule.id === 'u6') {
+          let count = 0;
+          const todayKey = new Date().toISOString().slice(0, 10);
+          for (const cust of cur.customers) {
+            if (cust.consentSms === false) continue;
+            const bDays = daysUntilJalaliMonthDay(cust.birthDateJalali);
+            const aDays = daysUntilJalaliMonthDay(cust.anniversaryDateJalali);
+            if (bDays === 0) {
+              const key = `u6_b_${cust.id}_${todayKey}`;
+              if (!processed.has(key)) {
+                processed.add(key);
+                count++;
+                newOutbox.push({
+                  id: `msg_b_${Date.now()}_${cust.id}`,
+                  to: cust.phone,
+                  customerName: cust.name,
+                  body: `${cust.name} عزیز، تولدتان مبارک! هدیه ۲۰٪ (کد VIP20) از طرف ${cur.settings.businessName} تقدیم شما می‌شود.`,
+                  channel: 'sms',
+                  ruleName: rule.name,
+                  at: nowIso,
+                });
+              }
+            }
+            if (aDays === 0) {
+              const key = `u6_a_${cust.id}_${todayKey}`;
+              if (!processed.has(key)) {
+                processed.add(key);
+                count++;
+                newOutbox.push({
+                  id: `msg_a_${Date.now()}_${cust.id}`,
+                  to: cust.phone,
+                  customerName: cust.name,
+                  body: `${cust.name} گرامی، سالگرد همراهی شما با ${cur.settings.businessName} را صمیمانه تبریک می‌گوییم!`,
+                  channel: 'sms',
+                  ruleName: rule.name,
+                  at: nowIso,
+                });
+              }
+            }
+          }
+          if (count > 0) {
+            newLogs.push({
+              id: `al_${Date.now()}_u6`,
+              ruleId: rule.id,
+              ruleName: rule.name,
+              summary: `${count} پیامک خودکار تبریک تولد/سالگرد ارسال شد.`,
               at: nowIso,
             });
           }
@@ -1181,6 +2315,47 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
             });
           }
         }
+
+        if (rule.id === 'u5') {
+          let count = 0;
+          for (const cust of cur.customers) {
+            if (!cust.contractExpiresAt) continue;
+            const diffDays = (new Date(cust.contractExpiresAt).getTime() - nowMs) / (24 * 3600_000);
+            const key = `u5_${cust.id}`;
+            if (diffDays >= 0 && diffDays <= 7 && !processed.has(key) && count < 3) {
+              processed.add(key);
+              count++;
+              newTasks.push({
+                id: `t_auto_${Date.now()}_u5_${count}`,
+                title: `تمدید قرارداد و لایسنس ${cust.name} (${cust.licenseKey ?? 'پشتیبانی'})`,
+                customerId: cust.id,
+                dueAt: cust.contractExpiresAt,
+                done: false,
+                createdByRuleId: rule.id,
+              });
+              if (cust.consentSms !== false) {
+                newOutbox.push({
+                  id: `msg_${Date.now()}_u5_${count}`,
+                  to: cust.phone,
+                  customerName: cust.name,
+                  body: `${cust.name} گرامی، اعتبار قرارداد پشتیبانی شما در ${cur.settings.businessName} طی روزهای آینده به پایان می‌رسد.`,
+                  channel: 'sms',
+                  ruleName: rule.name,
+                  at: nowIso,
+                });
+              }
+            }
+          }
+          if (count > 0) {
+            newLogs.push({
+              id: `al_${Date.now()}_u5`,
+              ruleId: rule.id,
+              ruleName: rule.name,
+              summary: `${count} هشدار تمدید قرارداد و پیامک یادآوری ثبت شد.`,
+              at: nowIso,
+            });
+          }
+        }
       }
 
       const totalActions = newOutbox.length + newTasks.length;
@@ -1245,7 +2420,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
     return JSON.stringify(
       {
         exportedAt: new Date().toISOString(),
-        schemaVersion: '2.0',
+        schemaVersion: '3.0',
         data: stateRef.current,
       },
       null,
@@ -1261,12 +2436,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         if (!payload || !Array.isArray(payload.customers)) {
           return { ok: false, error: 'ساختار فایل JSON معتبر نیست.' };
         }
-        const fallback = createInitialState();
-        const next: AppState = {
-          ...fallback,
-          ...payload,
-          settings: { ...fallback.settings, ...(payload.settings ?? {}) },
-        };
+        const next = mergeLoadedState(payload);
         setState(next);
         pushToast('پشتیبان JSON با موفقیت بازیابی شد.');
         return { ok: true };
@@ -1289,26 +2459,66 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         addCustomer,
         updateCustomer,
         deleteCustomer,
+        anonymizeCustomer,
         mergeCustomers,
         importCustomersBatch,
+        rollbackCsvImportBatch,
+        addCustomerRelation,
+        removeCustomerRelation,
+        addCustomerSegment,
+        deleteCustomerSegment,
+        addCustomerAttachment,
+        removeCustomerAttachment,
+        sendBirthdayGreeting,
         addInteraction,
         addCustomFieldDef,
+        updateCustomFieldDef,
         removeCustomFieldDef,
+        reorderCustomFieldDefs,
+        addCustomEntityDef,
+        deleteCustomEntityDef,
+        addCustomEntityRecord,
+        deleteCustomEntityRecord,
+        addEntityRelation,
+        removeEntityRelation,
+        saveConfigSnapshot,
+        restoreConfigSnapshot,
         addAppointment,
         rescheduleAppointment,
         updateAppointmentStatus,
         addService,
         addResource,
+        addResourceTimeOff,
+        removeResourceTimeOff,
+        addOfficialHoliday,
+        removeOfficialHoliday,
+        addWaitlistEntry,
+        bookFromWaitlist,
+        simulateSmsConfirmReply,
         addOrder,
         updateOrderStatus,
+        recordOrderShipment,
+        adjustProductStock,
         addProduct,
         toggleCoupon,
         addCoupon,
         createInvoiceForOrder,
         recordInvoicePayment,
+        addProject,
+        updateProjectStatus,
+        addProjectTask,
+        toggleProjectTask,
+        addTimeEntry,
+        toggleDeploymentCheck,
         addOpportunity,
         moveOpportunityStage,
         convertOpportunityToCustomer,
+        updatePipelineStages,
+        updateSalesTargets,
+        updateCommissionTiers,
+        createQuote,
+        createQuoteVersion,
+        updateQuoteStatus,
         createWorkflowInstance,
         decideWorkflowStep,
         addContentItem,
@@ -1322,6 +2532,8 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         submitNpsSurvey,
         triggerNpsPrompt,
         toggleRule,
+        addRule,
+        sendSimulatedSms,
         runAutomationNow,
         clearOutbox,
         updateSettings,

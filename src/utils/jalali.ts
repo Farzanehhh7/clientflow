@@ -27,8 +27,8 @@ export function isSameDay(aIso: string, bIso: string): boolean {
   return dayjs(aIso).format('YYYY-MM-DD') === dayjs(bIso).format('YYYY-MM-DD');
 }
 
-const PERSIAN_WEEKDAYS = ['یکشنبه', 'دوشنبه', 'سه‌شنبه', 'چهارشنبه', 'پنج‌شنبه', 'جمعه', 'شنبه'];
-const JALALI_MONTHS = [
+export const PERSIAN_WEEKDAYS = ['یکشنبه', 'دوشنبه', 'سه‌شنبه', 'چهارشنبه', 'پنج‌شنبه', 'جمعه', 'شنبه'];
+export const JALALI_MONTHS = [
   'فروردین',
   'اردیبهشت',
   'خرداد',
@@ -44,8 +44,9 @@ const JALALI_MONTHS = [
 ];
 
 export interface JalaliDayInfo {
-  dateKey: string; // YYYY-MM-DD (Gregorian for easy matching)
+  dateKey: string; // YYYY-MM-DD (Gregorian local for easy matching)
   isoStart: string;
+  dayIndex: number; // 0=Sun..6=Sat
   weekdayName: string;
   jalaliDayLabel: string; // e.g. ۲۶ آبان
   jalaliFull: string;
@@ -71,12 +72,99 @@ export function getJalaliWeekDays(weekOffset = 0): JalaliDayInfo[] {
     return {
       dateKey: d.format('YYYY-MM-DD'),
       isoStart: d.toISOString(),
+      dayIndex: d.day(),
       weekdayName,
       jalaliDayLabel: `${toFa(dayNum)} ${JALALI_MONTHS[monthIdx] ?? ''}`,
       jalaliFull: `${toFa(yearNum)}/${toFa(String(monthIdx + 1).padStart(2, '0'))}/${toFa(String(dayNum).padStart(2, '0'))}`,
       isToday: d.format('YYYY-MM-DD') === todayKey,
     };
   });
+}
+
+export function getJalaliWeekRangeLabel(days: JalaliDayInfo[]): string {
+  if (days.length === 0) return '';
+  const first = days[0];
+  const last = days[days.length - 1];
+  const year = last.jalaliFull.slice(0, 4);
+  return `${first.jalaliDayLabel} تا ${last.jalaliDayLabel} ${year}`;
+}
+
+export interface JalaliMonthCell {
+  dateKey: string;
+  jalaliDay: number;
+  jalaliFull: string;
+  dayIndex: number;
+  isCurrentMonth: boolean;
+  isToday: boolean;
+}
+
+/** Returns a full Jalali month grid (Saturday -> Friday columns) for monthOffset relative to current month */
+export function getJalaliMonthGrid(monthOffset = 0): {
+  title: string;
+  year: number;
+  month: number; // 0..11
+  cells: JalaliMonthCell[];
+} {
+  let cursor = dayjs().startOf('day');
+  while (cursor.calendar('jalali').date() > 1) {
+    cursor = cursor.subtract(1, 'day');
+  }
+
+  if (monthOffset > 0) {
+    for (let m = 0; m < monthOffset; m++) {
+      cursor = cursor.add(32, 'day');
+      while (cursor.calendar('jalali').date() > 1) {
+        cursor = cursor.subtract(1, 'day');
+      }
+    }
+  } else if (monthOffset < 0) {
+    for (let m = 0; m < Math.abs(monthOffset); m++) {
+      cursor = cursor.subtract(1, 'day');
+      while (cursor.calendar('jalali').date() > 1) {
+        cursor = cursor.subtract(1, 'day');
+      }
+    }
+  }
+
+  const targetJ = cursor.calendar('jalali');
+  const targetYear = targetJ.year();
+  const targetMonth = targetJ.month(); // 0..11
+
+  const leadingDays = (cursor.day() + 1) % 7;
+  const gridStart = cursor.subtract(leadingDays, 'day');
+  const todayKey = dayjs().format('YYYY-MM-DD');
+
+  const allCells: JalaliMonthCell[] = Array.from({ length: 42 }, (_, i) => {
+    const d = gridStart.add(i, 'day');
+    const j = d.calendar('jalali');
+    const jYear = j.year();
+    const jMonth = j.month();
+    const jDay = j.date();
+    return {
+      dateKey: d.format('YYYY-MM-DD'),
+      jalaliDay: jDay,
+      jalaliFull: `${toFa(jYear)}/${toFa(String(jMonth + 1).padStart(2, '0'))}/${toFa(String(jDay).padStart(2, '0'))}`,
+      dayIndex: d.day(),
+      isCurrentMonth: jYear === targetYear && jMonth === targetMonth,
+      isToday: d.format('YYYY-MM-DD') === todayKey,
+    };
+  });
+
+  // Trim 6th row if completely outside the target Jalali month
+  const sixthRowHasCurrent = allCells.slice(35).some((c) => c.isCurrentMonth);
+  const cells = sixthRowHasCurrent ? allCells : allCells.slice(0, 35);
+
+  return {
+    title: `${JALALI_MONTHS[targetMonth] ?? ''} ${toFa(targetYear)}`,
+    year: targetYear,
+    month: targetMonth,
+    cells,
+  };
+}
+
+export function getTodayJalaliAscii(): string {
+  const j = dayjs().calendar('jalali');
+  return `${j.year()}/${String(j.month() + 1).padStart(2, '0')}/${String(j.date()).padStart(2, '0')}`;
 }
 
 export { toFa };

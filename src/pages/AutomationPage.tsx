@@ -1,11 +1,71 @@
 import { useState } from 'react';
-import { Play, Trash2 } from 'lucide-react';
+import { CheckCircle2, MessageSquarePlus, MessageSquareReply, Play, Plus, Trash2 } from 'lucide-react';
+import { Modal } from '../components/Modal';
 import { useClientFlow } from '../store/useClientFlowStore';
+import type { Rule } from '../types';
 import { formatJalaliDateTime, toFa } from '../utils/jalali';
 
+const PACK_NAME: Record<NonNullable<Rule['pack']>, string> = {
+  all: 'همه بسته‌ها',
+  clinic: 'کلینیک',
+  shop: 'فروشگاه',
+  software: 'نرم‌افزاری / IT',
+};
+
 export function AutomationPage() {
-  const { state, toggleRule, runAutomationNow, clearOutbox } = useClientFlow();
+  const {
+    state,
+    toggleRule,
+    addRule,
+    sendSimulatedSms,
+    runAutomationNow,
+    clearOutbox,
+    simulateSmsConfirmReply,
+  } = useClientFlow();
   const [tab, setTab] = useState<'rules' | 'outbox' | 'logs'>('rules');
+
+  // New rule modal
+  const [ruleOpen, setRuleOpen] = useState(false);
+  const [ruleName, setRuleName] = useState('');
+  const [ruleTrigger, setRuleTrigger] = useState('زمان‌بندی (هر ۳۰ ثانیه)');
+  const [ruleCondition, setRuleCondition] = useState('');
+  const [ruleAction, setRuleAction] = useState('ارسال پیامک شبیه‌سازی‌شده + ثبت وظیفه');
+  const [rulePack, setRulePack] = useState<NonNullable<Rule['pack']>>('all');
+
+  // Manual simulated SMS modal
+  const [smsOpen, setSmsOpen] = useState(false);
+  const [smsCustomerId, setSmsCustomerId] = useState(state.customers[0]?.id ?? '');
+  const [smsBody, setSmsBody] = useState('');
+  const [smsError, setSmsError] = useState('');
+
+  const handleCreateRule = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!ruleName.trim() || !ruleCondition.trim()) return;
+    addRule({
+      name: ruleName.trim(),
+      trigger: ruleTrigger.trim() || 'دستی / زمان‌بندی',
+      condition: ruleCondition.trim(),
+      action: ruleAction.trim() || 'ثبت در صندوق پیامک',
+      active: true,
+      pack: rulePack,
+    });
+    setRuleName('');
+    setRuleCondition('');
+    setRuleOpen(false);
+  };
+
+  const handleSendManualSms = (e: React.FormEvent) => {
+    e.preventDefault();
+    setSmsError('');
+    const res = sendSimulatedSms(smsCustomerId, smsBody);
+    if (!res.ok) {
+      setSmsError(res.error ?? 'خطا در ثبت پیامک');
+      return;
+    }
+    setSmsBody('');
+    setSmsOpen(false);
+    setTab('outbox');
+  };
 
   return (
     <div className="space-y-4">
@@ -46,14 +106,35 @@ export function AutomationPage() {
           </button>
         </div>
 
-        <button
-          type="button"
-          onClick={() => runAutomationNow(false)}
-          className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg bg-indigo-600 px-4 py-2 text-xs font-medium text-white hover:bg-indigo-700"
-        >
-          <Play size={15} />
-          اجرای فوری قوانین
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              setSmsError('');
+              setSmsOpen(true);
+            }}
+            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+          >
+            <MessageSquarePlus size={15} />
+            ارسال پیامک شبیه‌سازی‌شده
+          </button>
+          <button
+            type="button"
+            onClick={() => setRuleOpen(true)}
+            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+          >
+            <Plus size={15} />
+            قانون جدید
+          </button>
+          <button
+            type="button"
+            onClick={() => runAutomationNow(false)}
+            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg bg-indigo-600 px-4 py-2 text-xs font-medium text-white hover:bg-indigo-700"
+          >
+            <Play size={15} />
+            اجرای فوری قوانین
+          </button>
+        </div>
       </div>
 
       {tab === 'rules' && (
@@ -68,7 +149,7 @@ export function AutomationPage() {
                     <span>{rule.name}</span>
                     {rule.pack && rule.pack !== 'all' && (
                       <span className="text-xs font-normal text-indigo-600 dark:text-indigo-400">
-                        · مخصوص بسته {rule.pack === 'clinic' ? 'کلینیک' : 'فروشگاه'}
+                        · مخصوص بسته {PACK_NAME[rule.pack]}
                         {!matchesPack && ' (غیرفعال در بسته فعلی)'}
                       </span>
                     )}
@@ -139,6 +220,25 @@ export function AutomationPage() {
                     </span>
                   </div>
                   <p className="mt-1.5 text-sm text-slate-700 dark:text-slate-300">{msg.body}</p>
+                  {msg.canSimulateConfirm && msg.appointmentId && (
+                    <div className="mt-2.5 flex flex-wrap items-center gap-2">
+                      {msg.confirmedByReply ? (
+                        <span className="inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-400">
+                          <CheckCircle2 size={14} />
+                          تأیید نوبت با پیامک مشتری ثبت شد
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => simulateSmsConfirmReply(msg.appointmentId!, msg.id)}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100 dark:border-indigo-800 dark:bg-indigo-950/40 dark:text-indigo-300 dark:hover:bg-indigo-900/50"
+                        >
+                          <MessageSquareReply size={14} />
+                          شبیه‌سازی پاسخ «تأیید» مشتری
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -166,6 +266,138 @@ export function AutomationPage() {
           )}
         </div>
       )}
+
+      {/* New Rule Modal */}
+      <Modal open={ruleOpen} onClose={() => setRuleOpen(false)} title="ایجاد قانون اتوماسیون جدید" maxWidth="md">
+        <form onSubmit={handleCreateRule} className="space-y-4">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">نام قانون *</label>
+            <input
+              type="text"
+              required
+              value={ruleName}
+              onChange={(e) => setRuleName(e.target.value)}
+              placeholder="مثلاً: پیگیری مشتریان غیرفعال بیش از ۳۰ روز"
+              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800"
+            />
+          </div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">محرک (Trigger)</label>
+              <input
+                type="text"
+                value={ruleTrigger}
+                onChange={(e) => setRuleTrigger(e.target.value)}
+                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">بسته صنعتی</label>
+              <select
+                value={rulePack}
+                onChange={(e) => setRulePack(e.target.value as NonNullable<Rule['pack']>)}
+                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800"
+              >
+                <option value="all">همه بسته‌ها</option>
+                <option value="clinic">کلینیک</option>
+                <option value="shop">فروشگاه</option>
+                <option value="software">نرم‌افزاری / IT</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">شرط اجرا *</label>
+            <input
+              type="text"
+              required
+              value={ruleCondition}
+              onChange={(e) => setRuleCondition(e.target.value)}
+              placeholder="مثلاً: عدم ثبت سفارش یا نوبت جدید در ۳۰ روز گذشته"
+              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">اقدام (Action)</label>
+            <input
+              type="text"
+              value={ruleAction}
+              onChange={(e) => setRuleAction(e.target.value)}
+              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800"
+            />
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <button
+              type="button"
+              onClick={() => setRuleOpen(false)}
+              className="rounded-lg border border-slate-200 px-4 py-2 text-sm dark:border-slate-700"
+            >
+              انصراف
+            </button>
+            <button
+              type="submit"
+              className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
+            >
+              ثبت قانون
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Manual Simulated SMS Modal */}
+      <Modal
+        open={smsOpen}
+        onClose={() => setSmsOpen(false)}
+        title="ارسال پیامک شبیه‌سازی‌شده به مشتری"
+        maxWidth="md"
+      >
+        <form onSubmit={handleSendManualSms} className="space-y-4">
+          {smsError && (
+            <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-300">
+              {smsError}
+            </div>
+          )}
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">مخاطب</label>
+            <select
+              value={smsCustomerId}
+              onChange={(e) => setSmsCustomerId(e.target.value)}
+              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800"
+            >
+              {state.customers.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name} ({toFa(c.phone)})
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">متن پیامک *</label>
+            <textarea
+              rows={3}
+              required
+              value={smsBody}
+              onChange={(e) => setSmsBody(e.target.value)}
+              placeholder="متن پیامک یادآوری یا اطلاع‌رسانی..."
+              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800"
+            />
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <button
+              type="button"
+              onClick={() => setSmsOpen(false)}
+              className="rounded-lg border border-slate-200 px-4 py-2 text-sm dark:border-slate-700"
+            >
+              انصراف
+            </button>
+            <button
+              type="submit"
+              className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
+            >
+              ثبت در صندوق پیامک
+            </button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 }

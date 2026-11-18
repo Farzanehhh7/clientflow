@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import dayjs from 'dayjs';
 import {
   Bar,
   BarChart,
@@ -25,6 +26,8 @@ export type NavPageKey =
   | 'tasks'
   | 'tickets'
   | 'nps'
+  | 'custom_entities'
+  | 'reports'
   | 'automation'
   | 'settings';
 
@@ -87,7 +90,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
     const days = getJalaliWeekDays(0);
     return days.map((d) => {
       const count = state.appointments.filter(
-        (a) => a.status !== 'cancelled' && a.start.slice(0, 10) === d.dateKey,
+        (a) => a.status !== 'cancelled' && dayjs(a.start).format('YYYY-MM-DD') === d.dateKey,
       ).length;
       return {
         name: d.weekdayName,

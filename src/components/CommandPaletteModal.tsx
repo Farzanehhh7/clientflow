@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Search, Users, ShoppingBag, LifeBuoy, ArrowLeft } from 'lucide-react';
+import { Search, Users, ShoppingBag, LifeBuoy, ArrowLeft, Database } from 'lucide-react';
 import type { NavPageKey } from '../pages/DashboardPage';
 import { useClientFlow } from '../store/useClientFlowStore';
 import { toFa } from '../utils/jalali';
+import { fuzzyMatchPersian } from '../utils/persianSearch';
 import { Modal } from './Modal';
 
 interface CommandPaletteModalProps {
@@ -25,21 +26,29 @@ export function CommandPaletteModal({
     if (open) setQuery('');
   }, [open]);
 
-  const q = query.trim().toLowerCase();
+  const q = query.trim();
 
   const matchedPages = useMemo(() => {
     if (!q) return pages.slice(0, 6);
-    return pages.filter((p) => p.label.toLowerCase().includes(q));
+    return pages.filter((p) => fuzzyMatchPersian([p.label], q));
   }, [pages, q]);
 
   const matchedCustomers = useMemo(() => {
     if (!q) return state.customers.slice(0, 4);
     return state.customers
-      .filter(
-        (c) =>
-          c.name.toLowerCase().includes(q) ||
-          c.phone.includes(q) ||
-          (c.patientCode ?? '').toLowerCase().includes(q),
+      .filter((c) =>
+        fuzzyMatchPersian(
+          [
+            c.name,
+            c.companyName,
+            c.phone,
+            c.email,
+            c.patientCode,
+            c.licenseKey,
+            ...(c.contacts ?? []).map((ct) => `${ct.name} ${ct.phone}`),
+          ],
+          q,
+        ),
       )
       .slice(0, 5);
   }, [state.customers, q]);
@@ -47,16 +56,23 @@ export function CommandPaletteModal({
   const matchedOrders = useMemo(() => {
     if (!q) return [];
     return state.orders
-      .filter((o) => o.id.toLowerCase().includes(q))
+      .filter((o) => fuzzyMatchPersian([o.id, o.trackingCode, ...o.items.map((i) => i.name)], q))
       .slice(0, 4);
   }, [state.orders, q]);
 
   const matchedTickets = useMemo(() => {
     if (!q) return [];
     return state.tickets
-      .filter((t) => t.subject.toLowerCase().includes(q) || t.id.toLowerCase().includes(q))
+      .filter((t) => fuzzyMatchPersian([t.subject, t.id], q))
       .slice(0, 4);
   }, [state.tickets, q]);
+
+  const matchedCustomRecords = useMemo(() => {
+    if (!q) return [];
+    return state.customEntityRecords
+      .filter((r) => fuzzyMatchPersian(Object.values(r.values), q))
+      .slice(0, 4);
+  }, [state.customEntityRecords, q]);
 
   const go = (page: NavPageKey) => {
     onNavigate(page);
@@ -64,7 +80,7 @@ export function CommandPaletteModal({
   };
 
   return (
-    <Modal open={open} onClose={onClose} title="جستجوی سراسری و دسترسی سریع (Ctrl+K)" maxWidth="lg">
+    <Modal open={open} onClose={onClose} title="جستجوی فازی سراسری و دسترسی سریع (Ctrl+K)" maxWidth="lg">
       <div className="space-y-4">
         <div className="relative">
           <Search
@@ -76,7 +92,7 @@ export function CommandPaletteModal({
             autoFocus
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="نام مشتری، شماره موبایل، شماره سفارش، تیکت یا نام بخش را بنویسید..."
+            placeholder="جستجوی فازی نام مشتری، شرکت، موبایل، سفارش، تیکت یا موجودیت‌های سفارشی..."
             className="w-full rounded-lg border border-slate-200 bg-white py-2.5 pr-9 pl-3 text-sm focus:border-indigo-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800"
           />
         </div>
@@ -114,7 +130,8 @@ export function CommandPaletteModal({
                   >
                     <span className="flex items-center gap-2 font-medium">
                       <Users size={14} className="text-indigo-500" />
-                      {c.name}
+                      <span>{c.name}</span>
+                      {c.companyName && <span className="text-[11px] text-slate-400">({c.companyName})</span>}
                     </span>
                     <span className="tabular-nums text-slate-500" dir="ltr">
                       {toFa(c.phone)}
@@ -165,6 +182,31 @@ export function CommandPaletteModal({
                     <span className="text-slate-500">{t.status}</span>
                   </button>
                 ))}
+              </div>
+            </div>
+          )}
+
+          {matchedCustomRecords.length > 0 && (
+            <div>
+              <div className="mb-1.5 text-xs font-semibold text-slate-500 dark:text-slate-400">موجودیت‌های سفارشی</div>
+              <div className="divide-y divide-slate-200 rounded-lg border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
+                {matchedCustomRecords.map((r) => {
+                  const ent = state.customEntityDefs.find((e) => e.key === r.entityKey);
+                  return (
+                    <button
+                      key={r.id}
+                      type="button"
+                      onClick={() => go('custom_entities')}
+                      className="flex w-full items-center justify-between px-3 py-2 text-right text-xs hover:bg-slate-50 dark:hover:bg-slate-800/60"
+                    >
+                      <span className="flex items-center gap-2 font-medium">
+                        <Database size={14} className="text-violet-500" />
+                        {Object.values(r.values).slice(0, 2).join(' · ')}
+                      </span>
+                      <span className="text-slate-400">{ent?.name ?? r.entityKey}</span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           )}

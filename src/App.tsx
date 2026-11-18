@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import {
+  BarChart3,
   CalendarDays,
+  Database,
   GitBranch,
   LayoutDashboard,
   LifeBuoy,
@@ -22,11 +24,13 @@ import { CommandPaletteModal } from './components/CommandPaletteModal';
 import { NpsSurveyModal } from './components/NpsSurveyModal';
 import { AppointmentsPage } from './pages/AppointmentsPage';
 import { AutomationPage } from './pages/AutomationPage';
+import { CustomEntitiesPage } from './pages/CustomEntitiesPage';
 import { CustomersPage } from './pages/CustomersPage';
 import { DashboardPage, type NavPageKey } from './pages/DashboardPage';
 import { MarketingPage } from './pages/MarketingPage';
 import { NpsPage } from './pages/NpsPage';
 import { OrdersPage } from './pages/OrdersPage';
+import { ReportsPage } from './pages/ReportsPage';
 import { SalesPage } from './pages/SalesPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { TasksPage } from './pages/TasksPage';
@@ -53,6 +57,8 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'tasks', label: 'پیگیری‌ها', icon: ListChecks },
   { key: 'tickets', label: 'تیکت و پایگاه دانش', icon: LifeBuoy },
   { key: 'nps', label: 'رضایت‌سنجی (NPS)', icon: Star },
+  { key: 'custom_entities', label: 'موجودیت‌های سفارشی', icon: Database },
+  { key: 'reports', label: 'گزارش‌ها و تحلیل', icon: BarChart3 },
   { key: 'automation', label: 'اتوماسیون و پیامک', icon: Zap, adminOnly: true },
   { key: 'settings', label: 'تنظیمات', icon: Settings, adminOnly: true },
 ];
@@ -60,6 +66,7 @@ const NAV_ITEMS: NavItem[] = [
 const PACK_LABEL = {
   clinic: 'بسته کلینیک',
   shop: 'بسته فروشگاه',
+  software: 'بسته نرم‌افزاری',
   general: 'بسته عمومی',
 } as const;
 
@@ -117,6 +124,10 @@ function AppShell() {
         return <TicketsPage />;
       case 'nps':
         return <NpsPage />;
+      case 'custom_entities':
+        return <CustomEntitiesPage />;
+      case 'reports':
+        return <ReportsPage />;
       case 'automation':
         return isAdmin ? <AutomationPage /> : <DashboardPage onNavigate={setPage} />;
       case 'settings':

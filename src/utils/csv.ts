@@ -179,3 +179,19 @@ export function exportCustomersToCsv(customers: Customer[]): string {
   );
   return '\uFEFF' + [header, ...lines].join('\n');
 }
+
+export function exportRowsToCsv(
+  headers: string[],
+  rows: (string | number | boolean | null | undefined)[][],
+): string {
+  const esc = (v: string | number | boolean | null | undefined) => {
+    const s = v === null || v === undefined ? '' : String(v);
+    if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+      return `"${s.replace(/"/g, '""')}"`;
+    }
+    return s;
+  };
+  const headerLine = headers.map(esc).join(',');
+  const dataLines = rows.map((row) => row.map(esc).join(','));
+  return '\uFEFF' + [headerLine, ...dataLines].join('\n');
+}

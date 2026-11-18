@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Upload, AlertTriangle, CheckCircle2, FileSpreadsheet } from 'lucide-react';
+import { Upload, AlertTriangle, CheckCircle2, FileSpreadsheet, RotateCcw } from 'lucide-react';
 import { useClientFlow } from '../store/useClientFlowStore';
 import {
   type CsvImportMapping,
@@ -7,7 +7,7 @@ import {
   parseCsv,
   validateAndBuildCustomers,
 } from '../utils/csv';
-import { toFa } from '../utils/jalali';
+import { formatJalaliDateTime, toFa } from '../utils/jalali';
 import { Modal } from './Modal';
 
 interface CsvImportModalProps {
@@ -23,7 +23,7 @@ const SAMPLE_CSV = `نام و نام خانوادگی,شماره تماس,ایم
 مریم صالحی تکراری,09121110001,,,اینستاگرام`;
 
 export function CsvImportModal({ open, onClose }: CsvImportModalProps) {
-  const { state, importCustomersBatch } = useClientFlow();
+  const { state, importCustomersBatch, rollbackCsvImportBatch } = useClientFlow();
   const [headers, setHeaders] = useState<string[]>([]);
   const [rows, setRows] = useState<string[][]>([]);
   const [fileName, setFileName] = useState('');
@@ -71,7 +71,7 @@ export function CsvImportModal({ open, onClose }: CsvImportModalProps) {
 
   const handleConfirmImport = () => {
     if (!previewResult || previewResult.validCustomers.length === 0) return;
-    importCustomersBatch(previewResult.validCustomers);
+    importCustomersBatch(previewResult.validCustomers, fileName || 'import.csv');
     handleReset();
     onClose();
   };
@@ -84,7 +84,7 @@ export function CsvImportModal({ open, onClose }: CsvImportModalProps) {
   };
 
   return (
-    <Modal open={open} onClose={onClose} title="ورود مشتریان از فایل CSV (با نگاشت ستون‌ها)" maxWidth="2xl">
+    <Modal open={open} onClose={onClose} title="ورود مشتریان از CSV و بازگشت دسته‌ای (Rollback)" maxWidth="2xl">
       <div className="space-y-5">
         {headers.length === 0 ? (
           <div className="space-y-4">
@@ -102,7 +102,7 @@ export function CsvImportModal({ open, onClose }: CsvImportModalProps) {
             <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-900">
               <div className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
                 <FileSpreadsheet size={16} className="text-slate-400" />
-                <span>برای آزمایش سریع نگاشت و گزارش خطا می‌توانید از فایل نمونه استفاده کنید.</span>
+                <span>برای آزمایش سریع نگاشت، گزارش خطا و تست بازگشت دسته‌ای از نمونه استفاده کنید.</span>
               </div>
               <button
                 type="button"
@@ -112,6 +112,51 @@ export function CsvImportModal({ open, onClose }: CsvImportModalProps) {
                 بارگذاری نمونه تست
               </button>
             </div>
+
+            {/* Import Batch History & Rollback */}
+            {state.csvImportBatches.length > 0 && (
+              <div className="space-y-2 border-t border-slate-200 pt-4 dark:border-slate-800">
+                <h3 className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                  تاریخچه ورودهای دسته‌ای و بازگشت (Rollback)
+                </h3>
+                <div className="divide-y divide-slate-200 rounded-lg border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
+                  {state.csvImportBatches.map((batch) => (
+                    <div
+                      key={batch.id}
+                      className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5 text-xs"
+                    >
+                      <div>
+                        <span className="font-semibold text-slate-800 dark:text-slate-100">
+                          {batch.fileName}
+                        </span>
+                        <span className="mx-2 text-slate-400">·</span>
+                        <span className="tabular-nums text-slate-600 dark:text-slate-300">
+                          {toFa(batch.count)} رکورد
+                        </span>
+                        <span className="mx-2 text-slate-400">·</span>
+                        <span className="tabular-nums text-slate-400">
+                          {formatJalaliDateTime(batch.importedAt)}
+                        </span>
+                      </div>
+                      {batch.rolledBack ? (
+                        <span className="rounded bg-slate-100 px-2.5 py-1 text-[11px] text-slate-500 dark:bg-slate-800">
+                          بازگشت‌داده‌شده
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => rollbackCsvImportBatch(batch.id)}
+                          className="inline-flex items-center gap-1 rounded border border-rose-200 bg-rose-50 px-2.5 py-1 text-[11px] font-medium text-rose-700 hover:bg-rose-100 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-300"
+                        >
+                          <RotateCcw size={12} />
+                          بازگشت کامل این ایمپورت
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           <div className="space-y-5">

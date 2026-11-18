@@ -1,36 +1,60 @@
 import dayjs from 'dayjs';
+import jalaliday from 'jalaliday';
 import type {
   AppState,
   Appointment,
   AppointmentStatus,
   AuditLogEntry,
   AutomationRunLog,
+  CommissionTier,
+  ConfigSnapshot,
   ContentItem,
   Coupon,
+  CustomEntityDef,
+  CustomEntityRecord,
   CustomFieldDef,
   Customer,
+  CustomerRelation,
+  CustomerSegment,
+  EntityRelationDef,
   Interaction,
   Invoice,
   KbArticle,
   NpsSurvey,
+  OfficialHoliday,
   Opportunity,
   Order,
   OrderStatus,
   OrderStatusLog,
   OutboxMessage,
+  PipelineStageConfig,
   Product,
+  Project,
+  Quote,
   Resource,
+  ResourceTimeOff,
   Rule,
+  SalesTarget,
   Service,
+  StockMovement,
   Task,
   Ticket,
+  TimeEntry,
+  WaitlistEntry,
   WorkflowInstance,
 } from '../types';
+
+dayjs.extend(jalaliday);
 
 const now = dayjs();
 const iso = (offsetHours: number) => now.add(offsetHours, 'hour').toISOString();
 const dayAt = (offsetDays: number, hour: number, minute = 0) =>
   now.add(offsetDays, 'day').hour(hour).minute(minute).second(0).millisecond(0).toISOString();
+
+const jalaliWithOffset = (year: number, dayOffset: number) => {
+  const j = now.add(dayOffset, 'day').calendar('jalali');
+  return `${year}/${String(j.month() + 1).padStart(2, '0')}/${String(j.date()).padStart(2, '0')}`;
+};
 
 const CUSTOMER_NAMES = [
   'مریم صالحی',
@@ -76,51 +100,275 @@ export const customFieldDefs: CustomFieldDef[] = [
     label: 'کانال تماس ترجیحی',
     type: 'select',
     options: ['واتساپ', 'تماس تلفنی', 'پیامک'],
+    order: 1,
   },
   {
     id: 'cf2',
     key: 'skin_type',
     label: 'نوع پوست / نیاز اصلی',
     type: 'text',
+    order: 2,
+  },
+  {
+    id: 'cf3',
+    key: 'insurance_credit',
+    label: 'سقف اعتبار / بودجه (تومان)',
+    type: 'money',
+    order: 3,
   },
 ];
 
 export const customers: Customer[] = CUSTOMER_NAMES.map((name, idx) => {
   const num = String(idx + 1).padStart(2, '0');
   const prefix = ['0912', '0913', '0917', '0935', '0919'][idx % 5];
+  const lifecycles = ['vip', 'active', 'active', 'lead', 'active', 'churned'] as const;
+  const isOrg = idx === 3 || idx === 23 || idx === 27;
+
+  // Give first few customers birthdays/anniversaries near today so the calendar & automation shine immediately
+  const birthDayOffset = idx === 0 ? 0 : idx === 1 ? 2 : idx === 5 ? 5 : (idx * 17) % 300;
+  const birthYearNum = 1365 + (idx % 18);
+
   return {
     id: `c${idx + 1}`,
-    name,
+    name: isOrg ? (idx === 3 ? 'کلینیک تخصصی مهر (شرکتی)' : idx === 23 ? 'گروه فناوری پارس‌داده' : 'هلدینگ بازرگانی نیکان') : name,
     phone: `${prefix}11100${num}`,
     email: idx % 3 === 0 ? `client${idx + 1}@example.ir` : undefined,
+    nationalId: !isOrg && idx % 2 === 0 ? `001${String(4501000 + idx * 37)}` : undefined,
+    personType: isOrg ? 'organization' : 'individual',
+    companyName: isOrg ? (idx === 3 ? 'شرکت سلامت گستر مهر' : idx === 23 ? 'فناوری اطلاعات پارس‌داده' : 'تجارت الکترونیک نیکان') : undefined,
+    economicCode: isOrg ? `4111${String(52000000 + idx * 91)}` : undefined,
+    registrationNo: isOrg ? String(452000 + idx * 13) : undefined,
+    contacts: isOrg
+      ? [
+          { id: `cnt_${idx}_1`, name, role: 'مدیر خرید / هماهنگی', phone: `${prefix}11100${num}`, isPrimary: true },
+          { id: `cnt_${idx}_2`, name: 'مهندس سهرابی', role: 'مسئول مالی', phone: '09124445566' },
+        ]
+      : idx === 0
+        ? [{ id: 'cnt_0_1', name: 'رضا صالحی', role: 'همراه / همسر', phone: '09122223344' }]
+        : [],
+    addresses:
+      idx % 4 === 0 || isOrg
+        ? [
+            {
+              id: `adr_${idx}_1`,
+              title: isOrg ? 'دفتر مرکزی' : 'منزل',
+              address: 'تهران، خیابان ولیعصر، بالاتر از پارک ساعی، پلاک ۲۱۰',
+              postalCode: '1511914511',
+              isDefault: true,
+            },
+          ]
+        : [],
+    lifecycle: lifecycles[idx % lifecycles.length],
     tags: TAG_POOL[idx % TAG_POOL.length],
     source: SOURCES[idx % SOURCES.length],
     createdAt: iso(-600 + idx * 18),
     notes: idx % 4 === 0 ? 'مشتری پیگیر و منظم، ترجیح تماس عصرها.' : undefined,
+    birthDateJalali: !isOrg ? jalaliWithOffset(birthYearNum, birthDayOffset) : undefined,
+    anniversaryDateJalali: idx === 2 ? jalaliWithOffset(1402, 1) : idx === 6 ? jalaliWithOffset(1401, 4) : undefined,
     patientCode: `CF-${140500 + idx + 1}`,
-    birthYear: String(1365 + (idx % 18)),
+    birthYear: String(birthYearNum),
     allergies: ALLERGIES[idx % ALLERGIES.length] || undefined,
     consentSms: idx % 7 !== 0,
     consentPhoto: idx % 2 === 0,
+    attachments:
+      idx === 0
+        ? [
+            {
+              id: 'att1',
+              name: 'رضایت‌نامه_تکمیلی_فیشیال.pdf',
+              category: 'consent',
+              sizeLabel: '240 KB',
+              mimeType: 'application/pdf',
+              uploadedAt: iso(-90),
+              note: 'تأیید کتبی مراقبت‌های پوستی',
+            },
+            {
+              id: 'att2',
+              name: 'نتیجه_آزمایش_پوست.pdf',
+              category: 'lab_pdf',
+              sizeLabel: '410 KB',
+              mimeType: 'application/pdf',
+              uploadedAt: iso(-40),
+            },
+          ]
+        : [],
+    licenseKey: idx < 10 ? `LIC-CF-${2026}-${100 + idx}` : undefined,
+    contractExpiresAt: idx < 4 ? iso(72 + idx * 24) : idx < 10 ? iso(600 + idx * 48) : undefined,
     customFields: {
       preferred_channel: ['واتساپ', 'تماس تلفنی', 'پیامک'][idx % 3],
       skin_type: ['مختلط', 'چرب', 'خشک', 'حساس'][idx % 4],
+      insurance_credit: String((idx % 5 + 1) * 1500000),
     },
   };
 });
 
+export const customerRelations: CustomerRelation[] = [
+  { id: 'rel1', fromCustomerId: 'c1', toCustomerId: 'c2', relationType: 'referrer', note: 'معرفی از اینستاگرام', createdAt: iso(-120) },
+  { id: 'rel2', fromCustomerId: 'c1', toCustomerId: 'c5', relationType: 'family', note: 'خواهر', createdAt: iso(-90) },
+  { id: 'rel3', fromCustomerId: 'c4', toCustomerId: 'c7', relationType: 'colleague', note: 'همکار مجموعه مهر', createdAt: iso(-60) },
+];
+
+export const customerSegments: CustomerSegment[] = [
+  {
+    id: 'seg1',
+    name: 'مشتریان VIP ارزشمند',
+    description: 'مشتریان VIP با امتیاز بالای ۶۰',
+    logic: 'AND',
+    conditions: [
+      { id: 'sc1', field: 'lifecycle', op: 'eq', value: 'vip' },
+      { id: 'sc2', field: 'minScore', op: 'gte', value: '55' },
+    ],
+    createdAt: iso(-100),
+  },
+  {
+    id: 'seg2',
+    name: 'مشتریان حقوقی / شرکتی',
+    description: 'کسب‌وکارها و کلینیک‌های طرف قرارداد',
+    logic: 'AND',
+    conditions: [{ id: 'sc3', field: 'personType', op: 'eq', value: 'organization' }],
+    createdAt: iso(-80),
+  },
+];
+
+export const customEntityDefs: CustomEntityDef[] = [
+  {
+    id: 'ent_equip',
+    key: 'equipment_asset',
+    name: 'دستگاه و تجهیز',
+    pluralName: 'تجهیزات و دستگاه‌ها',
+    description: 'مدیریت دستگاه‌های تخصصی یا سرورهای تحویلی به مشتریان',
+    createdAt: iso(-200),
+    fields: [
+      { id: 'ef1', key: 'device_name', label: 'نام دستگاه / سرور', type: 'text', required: true, order: 1 },
+      { id: 'ef2', key: 'serial_no', label: 'شماره سریال', type: 'text', order: 2 },
+      { id: 'ef3', key: 'warranty_date', label: 'پایان گارانتی', type: 'date', order: 3 },
+      { id: 'ef4', key: 'service_fee', label: 'هزینه سرویس دوره‌ای', type: 'money', order: 4 },
+    ],
+  },
+];
+
+export const customEntityRecords: CustomEntityRecord[] = [
+  {
+    id: 'er1',
+    entityKey: 'equipment_asset',
+    relatedCustomerId: 'c4',
+    values: {
+      device_name: 'دستگاه هیدرودرم آبریژن پرو',
+      serial_no: 'HD-2026-881',
+      warranty_date: '2027-03-20',
+      service_fee: '3500000',
+    },
+    createdAt: iso(-50),
+  },
+  {
+    id: 'er2',
+    entityKey: 'equipment_asset',
+    relatedCustomerId: 'c24',
+    values: {
+      device_name: 'سرور اختصاصی پردازش CRM',
+      serial_no: 'SRV-IR-405',
+      warranty_date: '2026-12-30',
+      service_fee: '6200000',
+    },
+    createdAt: iso(-20),
+  },
+];
+
+export const entityRelations: EntityRelationDef[] = [
+  { id: 'erel1', name: 'تجهیزات هر مشتری', sourceEntity: 'Customer', targetEntity: 'equipment_asset', cardinality: '1:N' },
+  { id: 'erel2', name: 'فاکتورهای سفارش', sourceEntity: 'Order', targetEntity: 'Invoice', cardinality: '1:1' },
+];
+
+export const pipelineStages: PipelineStageConfig[] = [
+  { key: 'lead', label: 'سرنخ جدید', probability: 20, slaHours: 24 },
+  { key: 'contacted', label: 'تماس اولیه', probability: 35, slaHours: 48 },
+  { key: 'proposal', label: 'ارسال پیش‌فاکتور', probability: 55, slaHours: 72 },
+  { key: 'negotiation', label: 'مذاکره', probability: 75, slaHours: 96 },
+  { key: 'won', label: 'برنده‌شده', probability: 100, slaHours: 0 },
+  { key: 'lost', label: 'ازدست‌رفته', probability: 0, slaHours: 0 },
+];
+
+export const commissionTiers: CommissionTier[] = [
+  { id: 'ct1', upToAmount: 10_000_000, ratePct: 5 },
+  { id: 'ct2', upToAmount: 25_000_000, ratePct: 8 },
+  { id: 'ct3', upToAmount: null, ratePct: 12 },
+];
+
+export const salesTargets: SalesTarget[] = [
+  { id: 'st1', ownerName: 'مریم (فروش)', periodLabel: 'آبان ۱۴۰۵', targetAmount: 25_000_000 },
+  { id: 'st2', ownerName: 'علی (استقرار)', periodLabel: 'آبان ۱۴۰۵', targetAmount: 22_000_000 },
+  { id: 'st3', ownerName: 'سارا (پذیرش)', periodLabel: 'آبان ۱۴۰۵', targetAmount: 12_000_000 },
+];
+
+export const configSnapshots: ConfigSnapshot[] = [
+  {
+    id: 'snap_init',
+    versionLabel: 'v1.0.0',
+    note: 'پیکربندی پایه سیستم و فیلدهای اولیه',
+    createdAt: iso(-240),
+    customFieldDefs,
+    customEntityDefs,
+    entityRelations,
+    pipelineStages,
+    commissionTiers,
+  },
+];
+
 export const services: Service[] = [
-  { id: 's1', name: 'ویزیت اولیه', durationMin: 30, price: 500000 },
-  { id: 's2', name: 'ویزیت کنترل', durationMin: 15, price: 250000 },
-  { id: 's3', name: 'مشاوره پوست و مو', durationMin: 30, price: 650000 },
-  { id: 's4', name: 'فیشیال تخصصی', durationMin: 60, price: 1450000 },
-  { id: 's5', name: 'لیزر درمانی', durationMin: 45, price: 1200000 },
+  { id: 's1', name: 'ویزیت اولیه', durationMin: 30, price: 500000, bufferBeforeMin: 0, bufferAfterMin: 5 },
+  { id: 's2', name: 'ویزیت کنترل', durationMin: 15, price: 250000, bufferBeforeMin: 0, bufferAfterMin: 0 },
+  { id: 's3', name: 'مشاوره پوست و مو', durationMin: 30, price: 650000, bufferBeforeMin: 5, bufferAfterMin: 5 },
+  { id: 's4', name: 'فیشیال تخصصی', durationMin: 60, price: 1450000, bufferBeforeMin: 5, bufferAfterMin: 10 },
+  { id: 's5', name: 'لیزر درمانی', durationMin: 45, price: 1200000, bufferBeforeMin: 5, bufferAfterMin: 15 },
 ];
 
 export const resources: Resource[] = [
   { id: 'r1', name: 'دکتر کشاورز', type: 'staff' },
   { id: 'r2', name: 'دکتر راد', type: 'staff' },
   { id: 'r3', name: 'اتاق ۱ (پروسیجر)', type: 'room' },
+];
+
+export const resourceTimeOffs: ResourceTimeOff[] = [
+  {
+    id: 'off1',
+    resourceId: 'r2',
+    startDateKey: now.add(3, 'day').format('YYYY-MM-DD'),
+    endDateKey: now.add(3, 'day').format('YYYY-MM-DD'),
+    reason: 'شرکت در همایش تخصصی پوست',
+  },
+];
+
+export const officialHolidays: OfficialHoliday[] = [
+  {
+    id: 'hol1',
+    dateKey: now.add(6, 'day').format('YYYY-MM-DD'),
+    jalaliDate: jalaliWithOffset(now.calendar('jalali').year(), 6),
+    title: 'تعطیل رسمی نمونه (تقویم شمسی)',
+  },
+];
+
+export const waitlist: WaitlistEntry[] = [
+  {
+    id: 'wl1',
+    customerId: 'c8',
+    serviceId: 's4',
+    preferredResourceId: 'r1',
+    preferredDayKey: now.format('YYYY-MM-DD'),
+    preferredTimeRange: '۱۶:۰۰ تا ۱۹:۰۰',
+    notes: 'در صورت کنسلی سریعاً پیامک ارسال شود',
+    status: 'waiting',
+    createdAt: iso(-12),
+  },
+  {
+    id: 'wl2',
+    customerId: 'c13',
+    serviceId: 's1',
+    preferredResourceId: 'r2',
+    preferredDayKey: now.add(1, 'day').format('YYYY-MM-DD'),
+    preferredTimeRange: '۱۰:۰۰ تا ۱۳:۰۰',
+    status: 'waiting',
+    createdAt: iso(-6),
+  },
 ];
 
 const APT_STATUS_PAST: AppointmentStatus[] = ['done', 'done', 'done', 'noshow', 'cancelled'];
@@ -139,7 +387,7 @@ export const appointments: Appointment[] = Array.from({ length: 40 }, (_, i) => 
   if (dayOffset < 0) {
     status = APT_STATUS_PAST[i % APT_STATUS_PAST.length];
   } else if (dayOffset === 0) {
-    status = slotInDay === 0 ? 'done' : slotInDay === 1 ? 'confirmed' : 'booked';
+    status = slotInDay === 0 ? 'done' : slotInDay === 1 ? 'checked_in' : slotInDay === 2 ? 'confirmed' : 'booked';
   } else {
     status = APT_STATUS_FUTURE[i % APT_STATUS_FUTURE.length];
   }
@@ -163,13 +411,46 @@ appointments[24] = {
   resourceId: 'r1',
 };
 
+// Appointment ~1.5h from now to allow immediate testing of 2-hour reminder & client confirmation simulation
+appointments[25] = {
+  ...appointments[25],
+  start: iso(1.5),
+  end: iso(2),
+  status: 'booked',
+  resourceId: 'r2',
+};
+
 export const products: Product[] = [
-  { id: 'p1', name: 'کرم مرطوب‌کننده هیالورونیک', sku: 'SK-101', price: 420000, stock: 24, active: true },
-  { id: 'p2', name: 'ضدآفتاب بی‌رنگ SPF50', sku: 'SK-102', price: 580000, stock: 18, active: true },
-  { id: 'p3', name: 'سرم ویتامین C تخصصی', sku: 'SK-103', price: 890000, stock: 11, active: true },
-  { id: 'p4', name: 'ژل شست‌وشوی ملایم صورت', sku: 'SK-104', price: 340000, stock: 30, active: true },
-  { id: 'p5', name: 'ماسک ترمیم‌کننده شب', sku: 'SK-105', price: 640000, stock: 9, active: true },
-  { id: 'p6', name: 'کیت مراقبت پس از لیزر', sku: 'SK-106', price: 1150000, stock: 15, active: true },
+  { id: 'p1', name: 'کرم مرطوب‌کننده هیالورونیک', sku: 'SK-101', price: 420000, stock: 24, minStock: 8, active: true },
+  { id: 'p2', name: 'ضدآفتاب بی‌رنگ SPF50', sku: 'SK-102', price: 580000, stock: 18, minStock: 8, active: true },
+  { id: 'p3', name: 'سرم ویتامین C تخصصی', sku: 'SK-103', price: 890000, stock: 5, minStock: 8, active: true },
+  { id: 'p4', name: 'ژل شست‌وشوی ملایم صورت', sku: 'SK-104', price: 340000, stock: 30, minStock: 10, active: true },
+  { id: 'p5', name: 'ماسک ترمیم‌کننده شب', sku: 'SK-105', price: 640000, stock: 6, minStock: 10, active: true },
+  { id: 'p6', name: 'کیت مراقبت پس از لیزر', sku: 'SK-106', price: 1150000, stock: 15, minStock: 5, active: true },
+];
+
+export const stockMovements: StockMovement[] = [
+  {
+    id: 'sm1',
+    productId: 'p3',
+    productName: 'سرم ویتامین C تخصصی',
+    orderId: 'o3',
+    type: 'out',
+    qtyChange: -2,
+    balanceAfter: 5,
+    reason: 'تأیید و خروج سفارش o3',
+    at: iso(-28),
+  },
+  {
+    id: 'sm2',
+    productId: 'p5',
+    productName: 'ماسک ترمیم‌کننده شب',
+    type: 'adjust',
+    qtyChange: -3,
+    balanceAfter: 6,
+    reason: 'کسری انبارگردانی دوره آبان',
+    at: iso(-12),
+  },
 ];
 
 export const coupons: Coupon[] = [
@@ -213,6 +494,23 @@ export const orders: Order[] = Array.from({ length: 25 }, (_, i) => {
     promisedAt: iso(promisedOffset),
     couponCode: i % 7 === 0 ? 'WELCOME10' : undefined,
     discountAmount: i % 7 === 0 ? Math.round(pA.price * 0.1) : 0,
+    carrier: status === 'shipped' || status === 'delivered' ? (i % 2 === 0 ? 'post' : 'tipax') : undefined,
+    trackingCode:
+      status === 'shipped' || status === 'delivered'
+        ? `TRK-${4058100 + i * 17}`
+        : undefined,
+    shipments:
+      status === 'shipped' || status === 'delivered'
+        ? [
+            {
+              id: `shp_${i + 1}`,
+              carrier: i % 2 === 0 ? 'post' : 'tipax',
+              trackingCode: `TRK-${4058100 + i * 17}`,
+              items: [{ name: pA.name, qty: 1 }],
+              shippedAt: iso(createdOffset + 10),
+            },
+          ]
+        : [],
   };
 });
 
@@ -274,6 +572,49 @@ export const invoices: Invoice[] = orders.slice(0, 10).map((o, idx) => {
   };
 });
 
+export const projects: Project[] = [
+  {
+    id: 'prj1',
+    title: 'راه‌اندازی و استقرار پورتال نوبت‌دهی کلینیک مهر',
+    customerId: 'c4',
+    status: 'testing',
+    dueAt: iso(120),
+    createdAt: iso(-240),
+    tasks: [
+      { id: 'pt1', title: 'نصب پایگاه داده و تنظیم پشتیبان‌گیری', assignee: 'علی (استقرار)', estimatedHours: 6, done: true },
+      { id: 'pt2', title: 'پیکربندی درگاه پیامک و نوبت‌دهی آنلاین', assignee: 'سارا (پذیرش)', estimatedHours: 8, done: true },
+      { id: 'pt3', title: 'تست بار و آموزش کاربران نهایی', assignee: 'علی (استقرار)', estimatedHours: 5, done: false },
+    ],
+    deploymentChecklist: [
+      { id: 'dc1', title: 'گواهی SSL و دامنه فعال شد', category: 'infra', done: true, checkedAt: iso(-96) },
+      { id: 'dc2', title: 'بکاپ خودکار شبانه SQL پیکربندی شد', category: 'db', done: true, checkedAt: iso(-72) },
+      { id: 'dc3', title: 'اسکن امنیتی و محدودیت دسترسی نقش‌ها', category: 'security', done: false },
+      { id: 'dc4', title: 'برگزاری جلسه آموزش کارشناسان پذیرش', category: 'training', done: false },
+    ],
+  },
+  {
+    id: 'prj2',
+    title: 'ارتقای لایسنس و مهاجرت داده گروه پارس‌داده',
+    customerId: 'c24',
+    status: 'in_progress',
+    dueAt: iso(240),
+    createdAt: iso(-72),
+    tasks: [
+      { id: 'pt4', title: 'انتقال مشتریان و تیکت‌های قبلی از اکسل', assignee: 'علی (استقرار)', estimatedHours: 10, done: false },
+    ],
+    deploymentChecklist: [
+      { id: 'dc5', title: 'تحویل کلید لایسنس سازمانی', category: 'infra', done: true, checkedAt: iso(-24) },
+      { id: 'dc6', title: 'تأیید صحت داده‌های مهاجرت‌یافته', category: 'db', done: false },
+    ],
+  },
+];
+
+export const timeEntries: TimeEntry[] = [
+  { id: 'te1', projectId: 'prj1', taskId: 'pt1', userName: 'علی (استقرار)', hours: 5.5, note: 'پیکربندی کامل کلاستر و زمان‌بندی بکاپ', loggedAt: iso(-120) },
+  { id: 'te2', projectId: 'prj1', taskId: 'pt2', userName: 'سارا (پذیرش)', hours: 6, note: 'تست پیامک یادآور و رزرو آزمایشی', loggedAt: iso(-48) },
+  { id: 'te3', projectId: 'prj2', taskId: 'pt4', userName: 'علی (استقرار)', hours: 3.5, note: 'پاکسازی شماره موبایل‌ها و نگاشت ستون‌ها', loggedAt: iso(-10) },
+];
+
 export const opportunities: Opportunity[] = [
   {
     id: 'opp1',
@@ -286,8 +627,8 @@ export const opportunities: Opportunity[] = [
     amount: 7800000,
     probability: 75,
     ownerName: 'مریم (فروش)',
-    createdAt: iso(-90),
-    updatedAt: iso(-10),
+    createdAt: iso(-120),
+    updatedAt: iso(-110),
   },
   {
     id: 'opp2',
@@ -298,7 +639,7 @@ export const opportunities: Opportunity[] = [
     source: 'معرفی',
     stage: 'proposal',
     amount: 14500000,
-    probability: 50,
+    probability: 55,
     ownerName: 'مریم (فروش)',
     createdAt: iso(-70),
     updatedAt: iso(-18),
@@ -313,8 +654,8 @@ export const opportunities: Opportunity[] = [
     amount: 5400000,
     probability: 20,
     ownerName: 'سارا (پذیرش)',
-    createdAt: iso(-24),
-    updatedAt: iso(-24),
+    createdAt: iso(-30),
+    updatedAt: iso(-30),
   },
   {
     id: 'opp4',
@@ -370,6 +711,51 @@ export const opportunities: Opportunity[] = [
     lostReason: 'محدودیت بودجه مشتری',
     createdAt: iso(-140),
     updatedAt: iso(-50),
+  },
+];
+
+export const quotes: Quote[] = [
+  {
+    id: 'q1',
+    quoteNo: 'QT-1405-101',
+    version: 1,
+    opportunityId: 'opp2',
+    customerId: 'c4',
+    contactName: 'سارا محمدی (کلینیک مهر)',
+    phone: '09351110004',
+    items: [
+      { name: 'کیت مراقبت پس از لیزر', qty: 10, price: 1150000 },
+      { name: 'سرم ویتامین C تخصصی', qty: 4, price: 890000 },
+    ],
+    discountPct: 5,
+    taxPct: 10,
+    notes: 'اعتبار پیش‌فاکتور ۱۰ روز کاری، ارسال رایگان به آدرس کلینیک.',
+    status: 'sent',
+    shareToken: 'qt-share-101-v1',
+    validUntil: iso(168),
+    createdAt: iso(-24),
+  },
+  {
+    id: 'q2',
+    quoteNo: 'QT-1405-101',
+    version: 2,
+    parentQuoteId: 'q1',
+    opportunityId: 'opp2',
+    customerId: 'c4',
+    contactName: 'سارا محمدی (کلینیک مهر)',
+    phone: '09351110004',
+    items: [
+      { name: 'کیت مراقبت پس از لیزر', qty: 12, price: 1150000 },
+      { name: 'سرم ویتامین C تخصصی', qty: 4, price: 890000 },
+    ],
+    discountPct: 10,
+    taxPct: 10,
+    notes: 'نسخه اصلاح‌شده با تخفیف ۱۰٪ خرید عمده.',
+    status: 'approved',
+    shareToken: 'qt-share-101-v2',
+    validUntil: iso(240),
+    clientComment: 'تعداد و تخفیف جدید مورد تأیید است، لطفاً فاکتور نهایی صادر شود.',
+    createdAt: iso(-8),
   },
 ];
 
@@ -604,6 +990,24 @@ export const rules: Rule[] = [
     pack: 'all',
   },
   {
+    id: 'u7',
+    name: 'یادآور ۲ ساعت قبل از نوبت (با امکان تأیید پاسخ مشتری)',
+    trigger: 'زمان‌بندی (هر ۳۰ ثانیه)',
+    condition: 'نوبت در وضعیت رزرو/تأیید در ۲ ساعت آینده',
+    action: 'ارسال پیامک یادآور فوری + دکمه شبیه‌سازی تأیید مشتری',
+    active: true,
+    pack: 'all',
+  },
+  {
+    id: 'u6',
+    name: 'تبریک خودکار تولد و سالگرد مشتریان (شمسی)',
+    trigger: 'روزانه / تطبیق تاریخ شمسی',
+    condition: 'تولد یا سالگرد امروز مشتری دارای رضایت پیامک',
+    action: 'ارسال پیامک تبریک خودکار با کد هدیه',
+    active: true,
+    pack: 'all',
+  },
+  {
     id: 'u2',
     name: 'سفارش بدون به‌روزرسانی ۴۸ ساعته',
     trigger: 'زمان‌بندی (هر ۳۰ ثانیه)',
@@ -629,6 +1033,15 @@ export const rules: Rule[] = [
     action: 'ارسال پیامک یادآوری تکمیل سفارش',
     active: true,
     pack: 'shop',
+  },
+  {
+    id: 'u5',
+    name: 'هشدار تمدید قرارداد و لایسنس (بسته نرم‌افزاری)',
+    trigger: 'زمان‌بندی (بسته نرم‌افزاری)',
+    condition: 'تاریخ انقضای قرارداد در ۷ روز آینده',
+    action: 'ایجاد وظیفه تمدید + پیامک یادآوری',
+    active: true,
+    pack: 'software',
   },
 ];
 
@@ -695,17 +1108,34 @@ export const initialAuditLogs: AuditLogEntry[] = [
 
 export const createInitialState = (): AppState => ({
   customers,
+  customerRelations,
+  customerSegments,
+  csvImportBatches: [],
   customFieldDefs,
+  customEntityDefs,
+  customEntityRecords,
+  entityRelations,
+  configSnapshots,
   interactions,
   services,
   resources,
+  resourceTimeOffs,
+  officialHolidays,
+  waitlist,
   appointments,
   orders,
   orderLogs,
   invoices,
   products,
+  stockMovements,
   coupons,
+  projects,
+  timeEntries,
+  pipelineStages,
   opportunities,
+  quotes,
+  salesTargets,
+  commissionTiers,
   workflows,
   contentItems,
   kbArticles,
@@ -726,5 +1156,8 @@ export const createInitialState = (): AppState => ({
     industryPack: 'clinic',
     darkMode: false,
     commissionPct: 5,
+    salesTeam: ['مریم (فروش)', 'سارا (پذیرش)', 'علی (استقرار)'],
+    roundRobinIndex: 0,
+    autoAssignLeads: true,
   },
 });
