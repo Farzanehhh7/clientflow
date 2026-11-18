@@ -1,0 +1,774 @@
+# ClientFlow — طراحی کامل پایگاه داده و روابط
+
+> نسخه ۱٫۰ | هدف: پلتفرم ماژولار CRM و گردش کار، چندمستاجری (Multi-tenant)، قابل‌استفاده از کسب‌وکار تک‌نفره تا سازمان بزرگ
+> موتور: **SQL Server 2022+** (سازگار با 2025) | زبان: T-SQL
+
+---
+
+## ۰. فهرست
+
+1. اصول طراحی
+2. قراردادها (نام‌گذاری و نوع داده)
+3. استراتژی چندمستاجری و ایزولاسیون
+4. نقشه Schemaها
+5. نمودار ERD کلی
+6. جداول به تفکیک Schema (ستون‌ها، کلیدها، روابط)
+7. کاتالوگ روابط (FK) و قواعد حذف
+8. استراتژی Index
+9. داده پویا (فیلد سفارشی): JSON در برابر EAV
+10. Audit، Temporal، Outbox
+11. همزمانی و تراکنش
+12. Partitioning و Archive
+13. امنیت داده
+14. عملکرد و گزارش‌گیری
+15. HA، DR و Backup
+16. Migration و مدیریت تغییر
+17. نمونه کدهای T-SQL کلیدی
+18. چک‌لیست کیفیت
+
+---
+
+## ۱. اصول طراحی (مطابق سیستم‌های بزرگ)
+
+| # | اصل | توضیح |
+|---|---|---|
+| 1 | **نرمال‌سازی تا 3NF**، دنرمال‌سازی فقط آگاهانه | جداول گزارش/خلاصه جدا و قابل بازسازی |
+| 2 | **هر جدول = یک مفهوم** | بدون ستون‌های چندمعنایی |
+| 3 | **PK جایگزین (Surrogate)** از نوع `BIGINT IDENTITY` | سریع، کوچک، مناسب Clustered Index |
+| 4 | **PublicId (UNIQUEIDENTIFIER)** جدا برای API | عدم افشای شناسه ترتیبی؛ جلوگیری از IDOR |
+| 5 | **FK واقعی روی همه روابط** | یکپارچگی در سطح دیتابیس، نه فقط برنامه |
+| 6 | **FK مرکب با TenantId** | جلوگیری ریاضی از اتصال رکوردهای دو Tenant مختلف |
+| 7 | **Soft Delete** با `IsDeleted`/`DeletedAt` + Filtered Index | برای داده مشتری؛ حذف فیزیکی فقط با Retention Job |
+| 8 | **ستون‌های استاندارد** در هر جدول | `CreatedAt, CreatedBy, UpdatedAt, UpdatedBy, RowVer` |
+| 9 | **زمان همیشه UTC** با `DATETIME2(3)` | تبدیل به شمسی/منطقه زمانی در لایه نمایش |
+| 10 | **پول با DECIMAL(19,4)** و ستون ارز | هرگز FLOAT برای مبلغ |
+| 11 | **Enum به‌صورت جدول مرجع (Lookup)** یا CHECK | قابل‌گسترش و سازگار با FK |
+| 12 | **Optimistic Concurrency** با `ROWVERSION` | جلوگیری از Lost Update |
+| 13 | **Audit کامل** (Temporal + AuditLog) | ردیابی «چه کسی/کی/چه چیزی» |
+| 14 | **Outbox Pattern** برای رویدادها | ارسال مطمئن پیامک/Webhook بدون ازدست‌رفتن |
+| 15 | **Row-Level Security** | ایزولاسیون Tenant حتی در صورت باگ برنامه |
+| 16 | **حداقل دسترسی** (Least Privilege) | حساب اپلیکیشن بدون `db_owner` |
+| 17 | **Idempotency Key** برای عملیات حساس | جلوگیری از ثبت تکراری سفارش/پرداخت |
+| 18 | **داده PII علامت‌گذاری و محافظت‌شده** | Dynamic Data Masking / Always Encrypted |
+| 19 | **Migration نسخه‌دار** | هیچ تغییر دستی روی Production |
+| 20 | **Query Store فعال** | تشخیص Regression عملکرد |
+
+---
+
+## ۲. قراردادها
+
+### ۲.۱ نام‌گذاری
+- Schema: حروف کوچک (`iam`, `crm`, `sales`)
+- جدول: PascalCase مفرد (`Customer`, `Order`) — در کد از `[sales].[Order]` استفاده شود
+- PK: `Id` | FK: `<Entity>Id` | PublicId: `PublicId`
+- Index: `IX_<Table>_<Cols>` | Unique: `UX_<Table>_<Cols>` | FK: `FK_<Child>_<Parent>` | CHECK: `CK_<Table>_<Rule>` | Default: `DF_<Table>_<Col>`
+- جدول واسط N:M: `<A><B>` (مثل `UserRole`)
+
+### ۲.۲ نوع داده
+
+| کاربرد | نوع |
+|---|---|
+| PK/FK | `BIGINT` (جداول مرجع کوچک: `SMALLINT/INT`) |
+| متن فارسی | `NVARCHAR(n)` با Collation `Persian_100_CI_AI` (یا `Arabic_100_CI_AI`) |
+| متن بلند | `NVARCHAR(MAX)` فقط در صورت نیاز |
+| زمان | `DATETIME2(3)` (UTC) |
+| تاریخ تنها | `DATE` |
+| پول | `DECIMAL(19,4)` |
+| درصد/ضریب | `DECIMAL(9,6)` |
+| Boolean | `BIT` |
+| JSON | `NVARCHAR(MAX)` + `CHECK (ISJSON(col)=1)` (یا نوع `json` در نسخه‌های جدید) |
+| شماره موبایل | `VARCHAR(15)` فرمت E.164 + ستون `PhoneNormalized` |
+| کد ملی | `CHAR(10)` + اعتبارسنجی |
+
+### ۲.۳ ستون‌های استاندارد (Base Columns)
+```
+Id              BIGINT IDENTITY(1,1)  PK
+PublicId        UNIQUEIDENTIFIER NOT NULL DEFAULT NEWSEQUENTIALID()  UNIQUE
+TenantId        BIGINT NOT NULL               -- در جداول Tenant-scoped
+CreatedAt       DATETIME2(3) NOT NULL DEFAULT SYSUTCDATETIME()
+CreatedBy       BIGINT NULL  -> iam.User
+UpdatedAt       DATETIME2(3) NULL
+UpdatedBy       BIGINT NULL  -> iam.User
+IsDeleted       BIT NOT NULL DEFAULT 0
+DeletedAt       DATETIME2(3) NULL
+RowVer          ROWVERSION
+```
+
+---
+
+## ۳. استراتژی چندمستاجری (Multi-Tenancy)
+
+| مدل | توضیح | کی؟ |
+|---|---|---|
+| **A: دیتابیس مشترک + TenantId** | همه Tenantها در یک DB، با RLS | Solo/Small/Medium (ارزان‌ترین) |
+| **B: Schema/DB جدا برای هر Tenant** | ایزولاسیون بالاتر | مشتری حساس/متوسط |
+| **C: دیتابیس اختصاصی + سرور اختصاصی** | ایزولاسیون کامل، Backup مستقل | Large/Enterprise/سازمانی |
+
+**قواعد مشترک:**
+1. همه جداول Tenant-scoped ستون `TenantId` دارند (حتی در مدل B/C برای سازگاری و Migration بین مدل‌ها).
+2. **FK مرکب**: هر جدول فرزند `(TenantId, ParentId)` را به `(TenantId, Id)` والد وصل می‌کند؛ بنابراین رکورد Tenant 1 هرگز به والد Tenant 2 وصل نمی‌شود.
+3. **RLS**: `SESSION_CONTEXT('TenantId')` توسط برنامه در ابتدای هر اتصال تنظیم می‌شود.
+4. **Tenant Catalog** (`core.Tenant`, `core.TenantDatabase`) محل مرکزی نگاشت Tenant به دیتابیس/سرور.
+5. شناسه Tenant در **تمام کلیدهای Cache** و **Partition Key** استفاده شود.
+
+---
+
+## ۴. نقشه Schemaها
+
+| Schema | مسئولیت |
+|---|---|
+| `core` | Tenant، پلن، Feature Flag، تنظیمات، شمارنده‌ها، Lookup عمومی |
+| `iam` | کاربر، نقش، دسترسی، Session، API Key، MFA، SSO |
+| `cfg` | موجودیت پویا، فیلد پویا، فرم، Layout، Industry Pack |
+| `crm` | مشتری، شخص، سازمان، تماس، آدرس، برچسب، سگمنت، تعامل |
+| `sales` | سرنخ، فرصت، قیف، پیشنهاد قیمت، محصول، قیمت‌گذاری، پورسانت |
+| `ops` | سفارش، نوبت، پروژه، قرارداد، وظیفه، انبار |
+| `support` | تیکت، SLA، پایگاه دانش، شکایت، نظرسنجی |
+| `wf` | تعریف و اجرای گردش کار (BPMN-lite)، تأییدیه |
+| `auto` | قوانین اتوماسیون، اجرا، زمان‌بندی |
+| `notif` | قالب، صف اعلان، کانال‌ها، ترجیحات |
+| `mkt` | کمپین، تقویم محتوا، منبع سرنخ، UTM |
+| `fin` | فاکتور، پرداخت، مطالبات، تخفیف، مالیات |
+| `rpt` | گزارش ذخیره‌شده، داشبورد، KPI، Snapshot خلاصه |
+| `integ` | Webhook، Outbox، Inbox، اتصال خارجی، Idempotency |
+| `ai` | سند و Embedding، مکالمه، پرامپت، لاگ مصرف مدل |
+| `audit` | AuditLog، لاگ دسترسی، لاگ امنیتی |
+| `sys` | Job، Migration، Health، Retention |
+
+---
+
+## ۵. نمودار ERD کلی (Mermaid)
+
+```mermaid
+erDiagram
+    Tenant ||--o{ User : has
+    Tenant ||--o{ Customer : owns
+    Tenant ||--o{ EntityDef : defines
+    User }o--o{ Role : "UserRole"
+    Role }o--o{ Permission : "RolePermission"
+
+    Customer ||--o{ Contact : has
+    Customer ||--o{ Address : has
+    Customer }o--o{ Tag : "CustomerTag"
+    Customer ||--o{ Interaction : logs
+    Customer ||--o{ Lead : "may become"
+
+    Lead ||--o| Opportunity : converts
+    Opportunity }o--|| PipelineStage : in
+    Pipeline ||--o{ PipelineStage : has
+    Opportunity ||--o{ Quote : has
+    Quote ||--o{ QuoteLine : has
+    Product ||--o{ QuoteLine : referenced
+    Product ||--o{ OrderLine : referenced
+
+    Customer ||--o{ Order : places
+    Order ||--o{ OrderLine : has
+    Order ||--o{ OrderStatusHistory : tracks
+    Order ||--o{ Invoice : billed
+    Invoice ||--o{ Payment : paid_by
+    Invoice ||--o{ InvoiceLine : has
+
+    Customer ||--o{ Appointment : books
+    Resource ||--o{ Appointment : assigned
+    Service ||--o{ Appointment : of
+
+    Customer ||--o{ Ticket : raises
+    Ticket ||--o{ TicketMessage : has
+    SlaPolicy ||--o{ Ticket : governs
+    KbArticle }o--o{ Ticket : "TicketKbLink"
+
+    WorkflowDef ||--o{ WorkflowStage : has
+    WorkflowStage ||--o{ WorkflowTransition : from
+    WorkflowDef ||--o{ WorkflowInstance : runs
+    WorkflowInstance ||--o{ WorkflowTask : creates
+    WorkflowInstance ||--o{ WorkflowHistory : logs
+
+    AutomationRule ||--o{ AutomationRun : executes
+    NotificationTemplate ||--o{ NotificationQueue : renders
+    Campaign ||--o{ CampaignRecipient : targets
+    Customer ||--o{ CampaignRecipient : receives
+
+    EntityDef ||--o{ FieldDef : has
+    EntityDef ||--o{ Record : instances
+    Record ||--o{ RecordLink : relates
+```
+
+---
+
+## ۶. جداول به تفکیک Schema
+
+> علامت‌ها: **PK** کلید اصلی | **FK→** کلید خارجی | **UQ** یکتا | **TS** دارای TenantId (FK مرکب) | **ST** Soft Delete | **TMP** Temporal | **RV** RowVersion
+
+### ۶.۱ Schema `core`
+
+**core.Tenant** — PK Id, PublicId UQ, Name, Slug UQ, IndustryPackId FK→cfg.IndustryPack, PlanId FK→core.Plan, Status (Active/Suspended/Trial), IsolationModel (A/B/C), DbConnectionRef NULL, Timezone (`Asia/Tehran`), Locale (`fa-IR`), CalendarType (Jalali/Gregorian), CurrencyCode, TrialEndsAt, CreatedAt, RV.
+**core.Plan** — Id, Code UQ, Name, MaxUsers, MaxRecords, StorageMB, PriceMonthly.
+**core.PlanFeature** — PlanId FK, FeatureCode FK→core.Feature, Limit (PK مرکب PlanId+FeatureCode).
+**core.Feature** — Code PK (مثل `module.tickets`, `ai.assistant`), Title.
+**core.TenantFeature** — TenantId FK, FeatureCode FK, IsEnabled, OverrideLimit (Feature Flag سطح Tenant).
+**core.TenantSetting** — TenantId, Key, Value (JSON), UQ(TenantId, Key).
+**core.Sequence** — TenantId, Code (مثل `ORDER_NO`), Prefix, NextValue, Padding — برای شماره‌گذاری قابل‌خواندن (با `UPDLOCK, HOLDLOCK` یا `SEQUENCE` اختصاصی).
+**core.Lookup / core.LookupValue** — دسته‌بندی مقادیر ثابت (کشور، استان، شهر، واحد، ارز) TenantId NULL = سراسری.
+**core.Branch** — TS, Name, Code, ParentBranchId FK→self (سلسله‌مراتب شعب), Address, IsActive.
+**core.Currency / core.TaxRate / core.Unit** — جداول مرجع.
+
+### ۶.۲ Schema `iam`
+
+**iam.User** — TS ST RV: Id, TenantId, Email UQ(TenantId,Email) filtered, MobileE164, FullName, PasswordHash (Argon2id/PBKDF2), PasswordUpdatedAt, IsActive, IsLocked, FailedLoginCount, LockoutEnd, LastLoginAt, Locale, BranchId FK→core.Branch, ManagerUserId FK→self.
+**iam.Role** — TS: Name UQ(TenantId,Name), IsSystem.
+**iam.Permission** — Code UQ (`crm.customer.read`, `sales.quote.approve`), Module, Description (جدول سراسری).
+**iam.RolePermission** — RoleId FK, PermissionId FK, Scope (Own/Team/Branch/All) — PK مرکب.
+**iam.UserRole** — UserId FK, RoleId FK, BranchId NULL (نقش در شعبه خاص) — PK مرکب.
+**iam.FieldPermission** — RoleId, EntityDefId, FieldDefId, Access (None/Read/Write) — سطح فیلد.
+**iam.Team / iam.TeamMember** — تیم‌ها و عضویت.
+**iam.UserSession** — Id, UserId FK, RefreshTokenHash, DeviceInfo, Ip, ExpiresAt, RevokedAt.
+**iam.UserMfa** — UserId, Type (TOTP/SMS/WebAuthn), SecretEnc, IsVerified.
+**iam.ApiKey** — TS: Name, KeyHash, Scopes (JSON), ExpiresAt, LastUsedAt, RevokedAt.
+**iam.SsoProvider** — TS: Type (OIDC/SAML/LDAP), ConfigEnc.
+**iam.LoginAttempt** — UserId NULL, Identifier, Ip, Success, At (برای Rate Limit و تشخیص حمله).
+**iam.PasswordResetToken** — UserId, TokenHash, ExpiresAt, UsedAt.
+
+### ۶.۳ Schema `cfg` (موتور پیکربندی پویا)
+
+**cfg.IndustryPack** — Id, Code UQ (`clinic`, `shop`, `software`, `b2b`, `education`…), Title, Version, ManifestJson.
+**cfg.EntityDef** — TS: Code UQ(TenantId,Code), Title, Icon, IsSystem, StorageMode (Dedicated/Json), WorkflowDefId NULL.
+**cfg.FieldDef** — TS: EntityDefId FK, Code UQ(EntityDefId,Code), Title, DataType (Text/Number/Decimal/Date/DateTime/Bool/Select/MultiSelect/Lookup/File/Money/Phone/NationalId/Formula), IsRequired, IsUnique, IsIndexed, IsSearchable, IsPii, DefaultValue, ValidationJson, OptionsJson, LookupEntityDefId NULL FK→cfg.EntityDef, SortOrder.
+**cfg.FieldOption** — FieldDefId FK, Value, Label, Color, SortOrder (برای Select).
+**cfg.FormDef / cfg.FormSection / cfg.FormFieldPlacement** — چیدمان فرم.
+**cfg.ViewDef** — لیست/کانبان/تقویم/جدول با Filter و Sort ذخیره‌شده.
+**cfg.RelationDef** — TS: FromEntityDefId, ToEntityDefId, Cardinality (1:1/1:N/N:M), Code, CascadeRule.
+**cfg.Record** — TS ST RV: Id, EntityDefId FK, DataJson (CHECK ISJSON), StageId NULL, OwnerUserId FK, SearchText (محاسبه‌شده)، CreatedAt…
+**cfg.RecordLink** — TS: RelationDefId, FromRecordId, ToRecordId (پیاده‌سازی N:M پویا) UQ(RelationDefId, FromRecordId, ToRecordId).
+**cfg.RecordIndexValue** — TS: RecordId, FieldDefId, ValueText, ValueNum, ValueDate (جدول «ایندکس‌شده» برای فیلدهای IsIndexed؛ جایگزین EAV کامل — بخش ۹).
+**cfg.Attachment** — TS: OwnerType, OwnerId, FileName, MimeType, SizeBytes, StorageUri, Sha256, VirusScanStatus.
+
+### ۶.۴ Schema `crm`
+
+**crm.Customer** — TS ST TMP RV
+Id, TenantId, PublicId, CustomerNo (از core.Sequence) UQ(TenantId,CustomerNo), Type (Person/Organization), DisplayName, FirstName, LastName, NationalId (CHAR10, Encrypted/Masked), CompanyName, EconomicCode, RegistrationNo, Gender, BirthDate, PrimaryPhone (E.164), PhoneNormalized, Email, SourceId FK→mkt.LeadSource, OwnerUserId FK→iam.User, BranchId FK→core.Branch, Status FK→core.LookupValue, LifecycleStage (Lead/Active/VIP/Churned), Score INT, ConsentSms BIT, ConsentEmail BIT, ConsentAt, CustomJson, MergedIntoCustomerId NULL FK→self (ادغام تکراری‌ها).
+**crm.Contact** — TS: CustomerId FK مرکب, FullName, JobTitle, Phone, Email, IsPrimary (Unique Filtered: یک Primary برای هر Customer).
+**crm.Address** — TS: CustomerId FK مرکب, Type, ProvinceId FK→core.LookupValue, CityId, Street, PostalCode CHAR(10), Latitude, Longitude, IsDefault.
+**crm.Tag** — TS: Name UQ(TenantId,Name), Color.
+**crm.CustomerTag** — CustomerId, TagId — PK مرکب.
+**crm.Segment** — TS: Name, RuleJson (پویا) , IsStatic.
+**crm.SegmentMember** — SegmentId, CustomerId, AddedAt (Snapshot برای سگمنت ایستا/محاسبه‌شده).
+**crm.Interaction** — TS: Id, CustomerId, ContactId NULL, Channel (Call/Sms/WhatsApp/Email/Visit/Note/Chat), Direction (In/Out), Subject, Body, DurationSec, OutcomeId, OccurredAt, UserId FK, RelatedType/RelatedId (چندریخت کنترل‌شده)، Sentiment (AI).
+**crm.Note** — TS: OwnerType, OwnerId, Body, IsPinned, CreatedBy.
+**crm.CustomerRelationship** — FromCustomerId, ToCustomerId, Type (خانواده/همکار/معرف) — جلوگیری از خودارجاعی با CHECK.
+**crm.DuplicateCandidate** — CustomerAId, CustomerBId, Score, Status (Pending/Merged/Ignored) — برای Dedup.
+**crm.ConsentLog** — CustomerId, Channel, Granted, Source, At (انطباق با قوانین حفظ حریم خصوصی).
+
+### ۶.۵ Schema `sales`
+
+**sales.Pipeline** — TS: Name, EntityType (Lead/Opportunity), IsDefault.
+**sales.PipelineStage** — TS: PipelineId FK, Name, OrderNo, WinProbability DECIMAL(5,2), IsWon, IsLost, SlaHours.
+**sales.Lead** — TS ST RV: Id, LeadNo, CustomerId NULL (قبل از تبدیل), FullName, Phone, Email, SourceId FK, CampaignId FK NULL, StageId FK→PipelineStage, OwnerUserId, Score, Status, LostReasonId, ConvertedAt, ConvertedCustomerId, UtmJson.
+**sales.Opportunity** — TS ST RV: Id, OppNo, CustomerId FK مرکب, LeadId NULL (UQ filtered — هر سرنخ حداکثر یک فرصت), PipelineId, StageId, Amount, CurrencyCode, ExpectedCloseDate, Probability, OwnerUserId, LostReasonId, ClosedAt.
+**sales.OpportunityStageHistory** — OpportunityId, FromStageId, ToStageId, ChangedBy, At, DurationInStageSec.
+**sales.Product** — TS ST: Sku UQ(TenantId,Sku), Name, Type (Goods/Service/Subscription), CategoryId FK, UnitId FK, BasePrice, TaxRateId, IsActive, TrackInventory.
+**sales.ProductCategory** — TS: ParentId FK→self (درخت), Name.
+**sales.PriceList / sales.PriceListItem** — لیست قیمت (خرده/عمده/VIP)، اعتبار زمانی ValidFrom/ValidTo، UQ(PriceListId, ProductId, ValidFrom).
+**sales.Discount / sales.Coupon / sales.CouponRedemption** — قوانین تخفیف و کد تخفیف با سقف استفاده.
+**sales.Quote** — TS ST RV: QuoteNo, OpportunityId NULL, CustomerId, Version, Status (Draft/Sent/Accepted/Rejected/Expired), ValidUntil, Subtotal, DiscountTotal, TaxTotal, GrandTotal, TermsText, ApprovedBy.
+**sales.QuoteLine** — TS: QuoteId FK مرکب, ProductId, Description, Qty DECIMAL(18,4), UnitPrice, DiscountPct, TaxRateId, LineTotal (Computed Persisted), LineNo UQ(QuoteId,LineNo).
+**sales.CommissionRule / sales.CommissionEntry** — قانون پورسانت (درصدی/پله‌ای) و ثبت پورسانت هر فروش، Status (Accrued/Approved/Paid).
+**sales.Target** — UserId/TeamId, Period, Metric, TargetValue (تارگت فروش).
+
+### ۶.۶ Schema `ops`
+
+**ops.Order** — TS ST RV: Id, OrderNo UQ, CustomerId FK مرکب, OpportunityId NULL, QuoteId NULL, Channel (Web/Phone/Instagram/WhatsApp/Store), Status (FK→ops.OrderStatus), PaymentStatus, FulfillmentStatus, Currency, Subtotal, DiscountTotal, TaxTotal, ShippingTotal, GrandTotal, ShippingAddressId, ShippingMethodId, TrackingCode, PlacedAt, PromisedDeliveryAt, DeliveredAt, OwnerUserId, IdempotencyKey UQ(TenantId, IdempotencyKey) filtered, Notes.
+**ops.OrderLine** — TS: OrderId FK مرکب, LineNo, ProductId, ProductNameSnapshot, SkuSnapshot, Qty, UnitPriceSnapshot, DiscountAmt, TaxAmt, LineTotal — **Snapshot قیمت/نام** (تغییر بعدی محصول، تاریخچه را خراب نکند).
+**ops.OrderStatus** — Code, Title, IsFinal (جدول مرجع).
+**ops.OrderStatusHistory** — OrderId, FromStatus, ToStatus, ChangedBy, Reason, At (Append-only).
+**ops.Shipment / ops.ShipmentLine** — ارسال جزئی (Partial Shipment)، Carrier, TrackingNo.
+**ops.ReturnRequest / ops.ReturnLine** — مرجوعی و دلیل.
+**ops.Service** — TS: Name, DurationMin, Price, BufferBeforeMin, BufferAfterMin, CategoryId.
+**ops.Resource** — TS: Type (Staff/Room/Device), Name, UserId NULL, BranchId.
+**ops.ResourceService** — ResourceId, ServiceId (چه کسی چه خدمتی می‌دهد) PK مرکب.
+**ops.WorkingHours / ops.TimeOff / ops.Holiday** — ساعات کاری هفتگی، مرخصی، تعطیلات رسمی (تقویم شمسی).
+**ops.Appointment** — TS ST RV: Id, CustomerId FK مرکب, ServiceId, ResourceId, BranchId, StartAt, EndAt, Status (Booked/Confirmed/CheckedIn/Done/NoShow/Cancelled), Source, ReminderSentAt, CancelReason, **CHECK (EndAt > StartAt)**.
+  - **جلوگیری از رزرو همپوشان:** Unique Index روی `(TenantId, ResourceId, SlotStart)` در جدول `ops.AppointmentSlot` (هر 5/15 دقیقه یک Slot) یا Trigger/`sp_getapplock` + بررسی بازه.
+**ops.AppointmentSlot** — AppointmentId, ResourceId, SlotStart — UQ(ResourceId, SlotStart) (راه‌حل مطمئن ضد Double-Booking).
+**ops.Project** — TS: Name, CustomerId, ContractId, Status, StartDate, DueDate, ManagerUserId, BudgetHours.
+**ops.Task** — TS: Id, ParentTaskId FK→self, ProjectId NULL, RelatedType/RelatedId, Title, Description, AssigneeUserId, DueAt, Priority, Status, CompletedAt, RemindAt, CreatedByAutomationRunId NULL.
+**ops.TimeEntry** — TaskId, UserId, Minutes, Date (ثبت زمان برای پروژه‌های استقرار).
+**ops.Contract** — TS: ContractNo, CustomerId, Type, StartDate, EndDate, Value, RenewalType, RenewalReminderDays, Status.
+**ops.License / ops.Deployment** — (بسته نرم‌افزاری): License(CustomerId, ProductId, Key, ExpiresAt, Seats)، Deployment(CustomerId, Environment, Version, ServerInfo, DeployedAt, Status, Checklist JSON).
+**ops.Warehouse / ops.StockItem / ops.StockMovement** — انبار ساده: StockMovement Append-only (In/Out/Adjust)، موجودی = مجموع حرکت‌ها (+ جدول Snapshot).
+
+### ۶.۷ Schema `support`
+
+**support.SlaPolicy** — TS: Name, FirstResponseMin, ResolutionMin, BusinessHoursOnly, CalendarId.
+**support.SlaTarget** — SlaPolicyId, Priority, FirstResponseMin, ResolutionMin.
+**support.Ticket** — TS ST RV: Id, TicketNo UQ, CustomerId FK مرکب, ContactId, Channel, Subject, Priority, Severity, CategoryId, Status, AssigneeUserId, TeamId, SlaPolicyId, FirstResponseDueAt, ResolutionDueAt, FirstRespondedAt, ResolvedAt, ClosedAt, IsBreached, RelatedOrderId NULL, RelatedDeploymentId NULL, CsatScore, AiSummary, AiCategory.
+**support.TicketMessage** — TS: TicketId FK مرکب, Direction, IsInternal, Body, SenderType (Customer/Agent/System/AI), SenderId, AttachmentCount, CreatedAt.
+**support.TicketHistory** — Append-only (تغییر وضعیت/اختصاص).
+**support.TicketCategory** — درخت دسته‌بندی.
+**support.KbArticle** — TS: Title, Slug, BodyMarkdown, Status, Visibility (Internal/Public), CategoryId, Version, AuthorId, ViewCount, HelpfulCount.
+**support.KbArticleVersion** — نسخه‌های قبلی.
+**support.TicketKbLink** — TicketId, KbArticleId.
+**support.Complaint** — TS: CustomerId, RelatedType/Id, Severity, RootCause, Resolution, Status, ClosedAt.
+**support.Survey / support.SurveyQuestion / support.SurveyResponse / support.SurveyAnswer** — نظرسنجی NPS/CSAT/CES، لینک به Order/Ticket/Appointment.
+**support.CannedResponse** — پاسخ‌های آماده.
+
+### ۶.۸ Schema `wf` (گردش کار)
+
+**wf.WorkflowDef** — TS: Code, Name, EntityDefId/EntityType, Version, Status (Draft/Published/Retired), BpmnXml NULL (نگاهداری دیاگرام)، PublishedAt. UQ(TenantId, Code, Version).
+**wf.WorkflowStage** — TS: WorkflowDefId FK, Code, Name, Type (Start/Task/Approval/Decision/Wait/End), ResponsibleRoleId NULL, SlaHours, FormDefId NULL, OrderNo, ConfigJson.
+**wf.WorkflowTransition** — FromStageId, ToStageId, ConditionJson, Label, RequiresApproval, UQ(FromStageId,ToStageId,Label).
+**wf.WorkflowInstance** — TS RV: Id, WorkflowDefId (نسخه ثابت‌شده)، RelatedType/RelatedId, CurrentStageId, Status (Running/Completed/Cancelled/Failed), StartedBy, StartedAt, CompletedAt, DueAt.
+**wf.WorkflowTask** — TS: InstanceId, StageId, AssigneeUserId NULL, AssigneeRoleId NULL, Status, DueAt, ClaimedAt, CompletedAt, Decision, Comment.
+**wf.WorkflowHistory** — Append-only: InstanceId, FromStageId, ToStageId, Actor, Action, At, DurationSec (برای تحلیل گلوگاه).
+**wf.ApprovalRequest / wf.ApprovalStep** — تأیید چندمرحله‌ای (Sequential/Parallel/Any-of).
+**wf.Delegation** — جانشینی در مرخصی (FromUserId, ToUserId, ValidFrom, ValidTo).
+
+### ۶.۹ Schema `auto`
+
+**auto.AutomationRule** — TS: Name, TriggerType (OnCreate/OnUpdate/OnStageChange/OnSchedule/OnWebhook/OnEvent), EntityType, ConditionJson, ActionsJson, IsActive, Priority, Version, MaxRunsPerRecord, CooldownMin.
+**auto.AutomationAction** (اختیاری نرمال‌شده) — RuleId, OrderNo, Type (SendSms/SendEmail/CreateTask/UpdateField/ChangeStage/CallWebhook/AssignOwner/AiSummarize), ParamsJson.
+**auto.AutomationRun** — TS: RuleId, RecordType, RecordId, Status (Success/Failed/Skipped), Error, StartedAt, DurationMs, CorrelationId.
+**auto.Schedule** — TS: RuleId, CronExpr, NextRunAt, LastRunAt, LockedBy, LockedUntil (Distributed Lock برای Scheduler).
+**auto.RuleDedup** — (RuleId, RecordId, Key) UQ — جلوگیری از اجرای تکراری یک قانون برای یک رکورد.
+
+### ۶.۱۰ Schema `notif`
+
+**notif.Template** — TS: Code, Channel, Locale, Subject, Body (متغیرها `{{customer.name}}`), Version, IsActive, ProviderTemplateId NULL.
+**notif.Channel / notif.ChannelConfig** — TS: Type (SMS/Email/WhatsApp/Eitaa/Bale/Push/InApp), ProviderCode, ConfigEnc, DailyLimit, IsActive.
+**notif.Queue** — TS: Id, TemplateId, Channel, ToAddress, CustomerId NULL, Payload JSON, Status (Pending/Sending/Sent/Delivered/Failed/Cancelled), Attempts, NextAttemptAt, ProviderMessageId, ErrorText, SendAfter, DedupKey UQ filtered، CorrelationId.
+**notif.DeliveryReport** — QueueId, Status, ProviderStatusCode, At.
+**notif.Preference** — CustomerId/UserId, Channel, OptIn, QuietHoursStart/End.
+**notif.InAppMessage** — UserId, Title, Body, IsRead, Link.
+**notif.Blacklist** — شماره‌های مسدود/Opt-out.
+
+### ۶.۱۱ Schema `mkt`
+
+**mkt.LeadSource** — TS: Name, Type (Organic/Paid/Referral/Offline), Cost.
+**mkt.Campaign** — TS: Name, Channel, Status, StartAt, EndAt, Budget, SegmentId FK, TemplateId FK, GoalMetric.
+**mkt.CampaignRecipient** — CampaignId, CustomerId, Status, SentAt, OpenedAt, ClickedAt, ConvertedAt, UQ(CampaignId, CustomerId).
+**mkt.UtmTouch** — LeadId/CustomerId, Source, Medium, Campaign, Content, Term, At, LandingUrl (Attribution).
+**mkt.ContentCalendar / mkt.ContentItem** — تقویم محتوا: Platform (Instagram/Site/Blog), Type (Post/Reel/Story/Article), Title, Caption, Status (Idea/Draft/Review/Scheduled/Published), ScheduledAt, PublishedAt, AssigneeUserId, AssetUri, Metrics JSON (Reach/Likes/Saves/Leads).
+**mkt.ContentMetricSnapshot** — ContentItemId, Date, Reach, Impressions, Engagement, Clicks, LeadsGenerated.
+**mkt.LandingForm / mkt.FormSubmission** — فرم سایت → ایجاد Lead خودکار (Webhook).
+
+### ۶.۱۲ Schema `fin`
+
+**fin.Invoice** — TS ST RV: InvoiceNo, CustomerId, OrderId NULL, ContractId NULL, IssueDate, DueDate, Status (Draft/Issued/PartiallyPaid/Paid/Overdue/Void), Subtotal, DiscountTotal, TaxTotal, GrandTotal, PaidTotal, Balance (محاسبه‌شده), CurrencyCode.
+**fin.InvoiceLine** — TS: InvoiceId FK مرکب, …
+**fin.Payment** — TS: PaymentNo, CustomerId, Method (Cash/Card/Online/Cheque/Transfer), Amount, Currency, Status, GatewayCode, GatewayRef, TrackingCode, PaidAt, IdempotencyKey UQ, RefundOfPaymentId NULL FK→self.
+**fin.PaymentAllocation** — PaymentId, InvoiceId, Amount (N:M بین پرداخت و فاکتور؛ CHECK Amount>0).
+**fin.Cheque** — شماره صیاد، بانک، سررسید، وضعیت (دریافتی/وصول/برگشتی) — مناسب بازار ایران.
+**fin.Receivable (View/Snapshot)** — مطالبات معوق و سن بدهی (Aging 0-30/31-60/61-90/90+).
+
+### ۶.۱۳ Schema `rpt`
+
+**rpt.ReportDef** — TS: Name, DataSource (View/SP/Query), QueryJson, ColumnsJson, ParamsJson, Visibility, OwnerUserId.
+**rpt.Dashboard / rpt.DashboardWidget** — چیدمان، نوع نمودار، ReportDefId.
+**rpt.ReportSchedule** — ReportDefId, Cron, Format (XLSX/PDF/CSV), Recipients JSON, LastRunAt.
+**rpt.KpiDef / rpt.KpiSnapshot** — KPI روزانه Pre-aggregated: (TenantId, KpiCode, Date, DimensionKey, Value).
+**rpt.FactSales / rpt.FactTicket / rpt.FactAppointment / rpt.Dim***  — مدل ستاره‌ای (Star Schema) با Columnstore برای گزارش‌های سنگین (بخش ۱۴).
+
+### ۶.۱۴ Schema `integ`
+
+**integ.Connection** — TS: Type (Wordpress/Payment/Sms/Accounting/Telegram/Custom), ConfigEnc, Status, LastSyncAt.
+**integ.WebhookEndpoint** — TS: Url, SecretHash, Events JSON, IsActive, FailureCount.
+**integ.WebhookDelivery** — EndpointId, EventId, Status, HttpStatus, Attempts, NextAttemptAt, ResponseSnippet.
+**integ.Outbox** — Id, TenantId, AggregateType, AggregateId, EventType, PayloadJson, CreatedAt, ProcessedAt NULL, Attempts, Error — **در همان تراکنش تغییر دامنه نوشته می‌شود**.
+**integ.Inbox** — MessageId UQ, Source, ReceivedAt, ProcessedAt (جلوگیری از پردازش تکراری رویداد ورودی).
+**integ.IdempotencyKey** — TenantId, Key, RequestHash, ResponseJson, ExpiresAt, UQ(TenantId,Key).
+**integ.ImportJob / integ.ImportRow** — ورود Excel/CSV: Mapping, ردیف‌های خطادار، Rollback.
+**integ.ExportJob** — خروجی‌های حجیم.
+**integ.SyncState** — Cursor/ETag برای همگام‌سازی افزایشی.
+
+### ۶.۱۵ Schema `ai` (۲۰۲۶)
+
+**ai.KnowledgeSource** — TS: Type (KbArticle/Pdf/Url/Ticket), RefId, Status, LastIndexedAt, AclScope.
+**ai.DocumentChunk** — TS: SourceId, ChunkNo, Text, TokenCount, `Embedding VECTOR(1536)` (نوع Vector در SQL Server 2025/Azure SQL؛ در نسخه‌های قدیمی‌تر `VARBINARY(MAX)` یا Qdrant/pgvector بیرونی)، ContentHash, AclJson.
+**ai.Conversation / ai.Message** — مکالمه دستیار: UserId, ContextType, ContextId, Role (user/assistant/tool), Content, ToolCallsJson, TokensIn, TokensOut, LatencyMs, Model.
+**ai.PromptTemplate** — Code, Version, Body, Model, Temperature, IsActive، Eval Score.
+**ai.ModelUsage** — TenantId, Date, Model, Calls, TokensIn, TokensOut, CostEstimate (Quota و Billing).
+**ai.Feedback** — MessageId, Rating, Comment (حلقه بهبود).
+**ai.GuardrailLog** — مواردی که فیلتر PII/Prompt Injection فعال شد.
+**ai.Prediction** — EntityType, EntityId, Type (LeadScore/Churn/NoShow/NextBestAction), Value, Confidence, ModelVersion, At.
+
+### ۶.۱۶ Schema `audit`
+
+**audit.AuditLog** — Id, TenantId, UserId, Entity, RecordId, Action (I/U/D/Read-Sensitive), OldJson, NewJson, ChangedColumns, Ip, UserAgent, CorrelationId, At — **Partitioned by month**، فقط INSERT.
+**audit.DataAccessLog** — دسترسی به PII (چه کسی پرونده چه مراجعی را دید) برای حریم خصوصی.
+**audit.SecurityEvent** — ورود ناموفق، تغییر نقش، Export حجیم، تغییر تنظیمات.
+**audit.AdminActionLog** — اقدامات مدیر سیستم.
+
+### ۶.۱۷ Schema `sys`
+
+**sys.SchemaVersion** — نسخه Migration اعمال‌شده.
+**sys.JobRun** — اجرای Jobهای Backup/Retention/Rebuild.
+**sys.RetentionPolicy** — Schema.Table, KeepDays, Action (Archive/Purge/Anonymize).
+**sys.HealthCheck** — وضعیت سرویس‌ها.
+**sys.FeatureFlagHistory**.
+
+---
+
+## ۷. کاتالوگ روابط (خلاصه FKهای کلیدی)
+
+| والد (۱) | فرزند (N) | نوع | کلید | ON DELETE | نکته |
+|---|---|---|---|---|---|
+| core.Tenant | تمام جداول TS | 1:N | TenantId | NO ACTION | حذف Tenant = Job کنترل‌شده |
+| iam.User | iam.UserRole | N:M | UserId | CASCADE | |
+| iam.Role | iam.RolePermission | N:M | RoleId | CASCADE | |
+| iam.User | iam.User (مدیر) | 1:N خودارجاع | ManagerUserId | NO ACTION | جلوگیری از حلقه با Trigger/Recursive CTE چک |
+| core.Branch | core.Branch | درخت | ParentBranchId | NO ACTION | |
+| cfg.EntityDef | cfg.FieldDef | 1:N | EntityDefId | CASCADE | |
+| cfg.EntityDef | cfg.Record | 1:N | (TenantId, EntityDefId) | NO ACTION | داده نباید با حذف تعریف پاک شود |
+| cfg.Record | cfg.RecordLink | N:M | FromRecordId/ToRecordId | CASCADE | |
+| crm.Customer | crm.Contact | 1:N | (TenantId, CustomerId) | NO ACTION (+ Soft Delete) | |
+| crm.Customer | crm.Address | 1:N | مرکب | NO ACTION | |
+| crm.Customer | crm.CustomerTag ↔ crm.Tag | N:M | | CASCADE روی واسط | |
+| crm.Customer | crm.Interaction | 1:N | مرکب | NO ACTION | |
+| crm.Customer | crm.Customer (Merge) | خودارجاع | MergedIntoCustomerId | NO ACTION | |
+| sales.Pipeline | sales.PipelineStage | 1:N | PipelineId | CASCADE | |
+| sales.PipelineStage | sales.Lead / Opportunity | 1:N | StageId | NO ACTION | |
+| sales.Lead | sales.Opportunity | 1:0..1 | LeadId (Unique filtered) | NO ACTION | |
+| crm.Customer | sales.Opportunity | 1:N | مرکب | NO ACTION | |
+| sales.Opportunity | sales.Quote | 1:N | OpportunityId | NO ACTION | |
+| sales.Quote | sales.QuoteLine | 1:N | مرکب | CASCADE | |
+| sales.Product | sales.QuoteLine / ops.OrderLine | 1:N | ProductId | NO ACTION | محصول با سابقه حذف نمی‌شود؛ غیرفعال می‌شود |
+| crm.Customer | ops.Order | 1:N | مرکب | NO ACTION | |
+| ops.Order | ops.OrderLine | 1:N | مرکب | CASCADE | |
+| ops.Order | ops.OrderStatusHistory | 1:N | OrderId | NO ACTION | Append-only |
+| ops.Order | ops.Shipment | 1:N | OrderId | NO ACTION | |
+| ops.Resource ↔ ops.Service | ops.ResourceService | N:M | | CASCADE | |
+| ops.Appointment | ops.AppointmentSlot | 1:N | AppointmentId | CASCADE | UQ(ResourceId, SlotStart) |
+| crm.Customer | ops.Appointment | 1:N | مرکب | NO ACTION | |
+| crm.Customer | support.Ticket | 1:N | مرکب | NO ACTION | |
+| support.Ticket | support.TicketMessage | 1:N | مرکب | CASCADE | |
+| support.SlaPolicy | support.SlaTarget / Ticket | 1:N | | NO ACTION | |
+| wf.WorkflowDef | wf.WorkflowStage | 1:N | | CASCADE (فقط Draft) | نسخه Published تغییرناپذیر |
+| wf.WorkflowStage | wf.WorkflowTransition | 1:N ×2 | From/To | NO ACTION | |
+| wf.WorkflowDef | wf.WorkflowInstance | 1:N | | NO ACTION | |
+| wf.WorkflowInstance | wf.WorkflowTask / History | 1:N | | CASCADE / NO ACTION | |
+| auto.AutomationRule | auto.AutomationRun | 1:N | | NO ACTION | لاگ اجرا حفظ شود |
+| notif.Template | notif.Queue | 1:N | | NO ACTION | |
+| mkt.Campaign | mkt.CampaignRecipient | 1:N | | CASCADE | |
+| crm.Customer | mkt.CampaignRecipient | 1:N | مرکب | NO ACTION | |
+| ops.Order | fin.Invoice | 1:N | OrderId | NO ACTION | |
+| fin.Invoice ↔ fin.Payment | fin.PaymentAllocation | N:M | | NO ACTION | |
+| ai.KnowledgeSource | ai.DocumentChunk | 1:N | | CASCADE | |
+
+**قاعده کلی حذف:**
+- روابط «مالکیتی» (سند ← ردیف‌های آن): `CASCADE`
+- روابط «مرجعی/تاریخی»: `NO ACTION` + Soft Delete
+- هیچ‌گاه `CASCADE` روی مشتری، سفارش، فاکتور، پرداخت.
+
+### ۷.۱ روابط چندریخت (Polymorphic) — کنترل‌شده
+جدول‌هایی مثل `Note`, `Task`, `Attachment`, `Interaction` از `(RelatedType, RelatedId)` استفاده می‌کنند که FK واقعی ندارد. برای حفظ یکپارچگی:
+1. `RelatedType` از جدول مرجع `core.EntityType` (FK).
+2. یک **Trigger/Job اعتبارسنجی** وجود رکورد را بررسی می‌کند (یا روش جایگزین: ستون‌های FK جدا و Nullable با `CHECK` که فقط یکی پر باشد).
+3. روش پیشنهادی برای جداول مهم: **چند FK Nullable + CHECK یکی‌پر**:
+```sql
+CONSTRAINT CK_Task_OneParent CHECK (
+  (CASE WHEN CustomerId IS NULL THEN 0 ELSE 1 END +
+   CASE WHEN OrderId    IS NULL THEN 0 ELSE 1 END +
+   CASE WHEN TicketId   IS NULL THEN 0 ELSE 1 END) <= 1)
+```
+
+---
+
+## ۸. استراتژی Index
+
+| قاعده | توضیح |
+|---|---|
+| **Clustered** | روی `Id` (BIGINT identity)؛ برای جداول بسیار بزرگ Tenant-heavy می‌توان `(TenantId, Id)` را در نظر گرفت (محلی‌سازی داده Tenant) |
+| **اولین ستون Index تقریباً همیشه TenantId** | تطبیق با RLS و فیلتر |
+| **FK Index** | روی همه ستون‌های FK (SQL Server خودکار نمی‌سازد) |
+| **Filtered Index** | `WHERE IsDeleted = 0` برای جستجوهای رایج؛ Unique Filtered برای یکتایی «فقط زنده‌ها» |
+| **Covering (INCLUDE)** | برای لیست‌های پرمراجعه (لیست مشتریان، صف تیکت) |
+| **Unique** | `UQ(TenantId, Email)`, `UQ(TenantId, OrderNo)`, `UQ(TenantId, Sku)` |
+| **Full-Text / جستجوی فارسی** | روی `DisplayName, Phone, Email, Notes` با Stop List و Thesaurus فارسی؛ یا موتور بیرونی (Elasticsearch/Meilisearch/OpenSearch) |
+| **Columnstore** | روی جداول Fact و AuditLog آرشیوی |
+| **Index برای JSON** | Computed Column + Index روی `JSON_VALUE` (بخش ۹) |
+| **پایش** | `sys.dm_db_missing_index_*`، Query Store، حذف Indexهای بی‌استفاده هر فصل |
+| **Fill Factor / Maintenance** | Rebuild/Reorganize بر اساس Fragmentation (Ola Hallengren) |
+
+**نمونه Indexهای کلیدی:**
+```sql
+CREATE INDEX IX_Customer_Tenant_Owner ON crm.Customer(TenantId, OwnerUserId, Status)
+  INCLUDE (DisplayName, PrimaryPhone) WHERE IsDeleted = 0;
+CREATE UNIQUE INDEX UX_Customer_Tenant_Phone ON crm.Customer(TenantId, PhoneNormalized)
+  WHERE IsDeleted = 0 AND PhoneNormalized IS NOT NULL;
+CREATE INDEX IX_Order_Tenant_Status_Placed ON ops.[Order](TenantId, Status, PlacedAt DESC)
+  INCLUDE (CustomerId, GrandTotal);
+CREATE INDEX IX_Ticket_Queue ON support.Ticket(TenantId, Status, Priority, ResolutionDueAt)
+  WHERE IsDeleted = 0 AND Status NOT IN ('Closed');
+CREATE INDEX IX_Notif_Pending ON notif.Queue(Status, NextAttemptAt) INCLUDE (TenantId)
+  WHERE Status IN ('Pending','Failed');
+CREATE UNIQUE INDEX UX_AppSlot ON ops.AppointmentSlot(ResourceId, SlotStart);
+```
+
+---
+
+## ۹. داده پویا (فیلد سفارشی): JSON در برابر EAV
+
+| روش | مزیت | عیب | تصمیم |
+|---|---|---|---|
+| **EAV کامل** | ساده در تئوری | Join سنگین، گزارش‌گیری سخت، Typeنامعتبر | ❌ برای داده اصلی |
+| **JSON Column** | یک ردیف، سریع خواندن، انعطاف | Index/گزارش مستلزم کار اضافه | ✅ پیش‌فرض برای فیلدهای سفارشی |
+| **ستون واقعی (Dedicated)** | بهترین عملکرد/Constraint | نیاز Migration | ✅ فیلدهای هسته (نام، تلفن، مبلغ، وضعیت) |
+| **RecordIndexValue (Promoted)** | Index نوع‌دار برای فیلدهای `IsIndexed` | هزینه نوشتن | ✅ فقط فیلدهای فیلتر/مرتب‌سازی پرتکرار |
+
+**معماری ترکیبی (Hybrid):**
+1. **هسته ثابت** → ستون واقعی با PK/FK/CHECK.
+2. **فیلد سفارشی کاربر** → `CustomJson` در همان جدول (برای Customer، Order، Ticket، Lead…) یا `cfg.Record.DataJson` برای موجودیت‌های کاملاً پویا.
+3. **فیلد پرتکرار در فیلتر** → `Computed Column` + Index:
+```sql
+ALTER TABLE crm.Customer ADD CityCode AS JSON_VALUE(CustomJson,'$.cityCode') PERSISTED;
+CREATE INDEX IX_Customer_City ON crm.Customer(TenantId, CityCode);
+```
+4. **اعتبارسنجی:** برنامه بر اساس `cfg.FieldDef.ValidationJson` + `CHECK (ISJSON(CustomJson)=1)` در DB.
+5. **تغییر نوع/حذف فیلد:** فیلد فقط «Deprecate» می‌شود (نه حذف) تا داده قدیمی قابل‌بازیابی باشد.
+6. **نسخه Schema فیلدها:** ستون `CustomSchemaVersion` برای مهاجرت داده JSON.
+
+---
+
+## ۱۰. Audit، Temporal و Outbox
+
+### ۱۰.۱ لایه‌های ردیابی
+| لایه | ابزار | کاربرد |
+|---|---|---|
+| **System-Versioned Temporal Table** | `Customer, Order, Product, Invoice, Contract` | بازگشت به زمان (`FOR SYSTEM_TIME AS OF`) |
+| **audit.AuditLog** | Trigger یا لایه برنامه (EF Interceptor) | «چه کسی چه چیزی را تغییر داد»، با CorrelationId |
+| **Change Tracking / CDC** | روی جداول انتخابی | همگام‌سازی با Data Warehouse و جستجو |
+| **audit.DataAccessLog** | لایه برنامه | ثبت «مشاهده» پرونده حساس |
+| **SQL Server Audit** | سطح سرور | دسترسی DBA/تغییر Schema |
+| **Ledger Tables (اختیاری)** | `fin.Payment`, `audit.AuditLog` | ضدتغییر (Tamper-evident) |
+
+### ۱۰.۲ Outbox
+```
+تراکنش: [UPDATE دامنه] + [INSERT integ.Outbox]  ← اتمیک
+Worker: SELECT TOP(n) ... WITH (UPDLOCK, READPAST, ROWLOCK) → ارسال → ProcessedAt
+```
+- ضمانت **At-least-once**؛ مصرف‌کننده Idempotent (با `integ.Inbox` یا Idempotency Key).
+- Retry با Exponential Backoff، `Attempts`, Dead-letter پس از N بار.
+
+---
+
+## ۱۱. همزمانی و تراکنش
+
+| موضوع | تصمیم |
+|---|---|
+| **Isolation** | `READ COMMITTED SNAPSHOT (RCSI)` فعال (کاهش Block خواننده/نویسنده) |
+| **Optimistic Concurrency** | `RowVer` در WHERE آپدیت؛ خطای ۴۰۹ به کاربر |
+| **شماره‌گذاری** | `core.Sequence` با `UPDLOCK, HOLDLOCK` یا `SEQUENCE` به ازای Tenant؛ بدون Gap-free اجباری (فقط فاکتور رسمی) |
+| **Double-Booking نوبت** | `UX_AppSlot` + تراکنش کوتاه + `sp_getapplock` در صورت نیاز |
+| **موجودی انبار** | حرکت Append-only + بررسی `CHECK`/Trigger؛ در سناریوی رقابتی `UPDLOCK` روی ردیف موجودی |
+| **Deadlock** | ترتیب ثابت دسترسی به جداول، تراکنش کوتاه، Retry (۱۲۰۵)، پایش با Extended Events |
+| **Idempotency** | `integ.IdempotencyKey` برای POST سفارش/پرداخت |
+| **Saga/Process Manager** | عملیات چندسرویسی با `wf.WorkflowInstance` + Outbox |
+| **Scheduler چندنمونه‌ای** | `auto.Schedule.LockedBy/LockedUntil` (Lease) |
+
+---
+
+## ۱۲. Partitioning و Archive
+
+| جدول | Partition Key | استراتژی |
+|---|---|---|
+| `audit.AuditLog` | ماه (`At`) | Sliding Window؛ ماه‌های قدیمی → Columnstore/آرشیو |
+| `notif.Queue / DeliveryReport` | ماه | Purge پس از N روز |
+| `crm.Interaction` | سال | |
+| `automation.AutomationRun` | ماه | Retention ۹۰ روز |
+| `ops.Order / fin.Payment` | سال (در مقیاس Large) | |
+| `rpt.Fact*` | ماه | Columnstore |
+
+- **Retention:** `sys.RetentionPolicy` + Job شبانه (Purge/Anonymize/Archive به Filegroup ارزان یا Blob).
+- **Anonymization:** برای «حق حذف داده» شخص: جایگزینی PII با مقدار ماسک و حفظ آمار.
+
+---
+
+## ۱۳. امنیت داده
+
+| لایه | اقدام |
+|---|---|
+| **TDE** | رمزنگاری فایل‌های دیتابیس و Backup |
+| **Always Encrypted (Secure Enclaves)** | `NationalId`, `SecretEnc`, اطلاعات حساس درمانی |
+| **Dynamic Data Masking** | ماسک `PrimaryPhone`, `Email` برای نقش‌های محدود |
+| **Row-Level Security** | Predicate بر اساس `TenantId` + (اختیاری) `BranchId/OwnerUserId` |
+| **Least Privilege** | کاربر برنامه: فقط `EXECUTE` روی SP/دسترسی به View؛ بدون DDL |
+| **جداسازی کاربران** | `app_rw`, `app_ro` (گزارش)، `etl`, `migrator`, `backup` |
+| **Secrets** | رمز اتصال در Vault/Secret Manager، نه در کد |
+| **SQL Injection** | فقط پارامتری؛ `sp_executesql` برای داینامیک |
+| **ممیزی** | SQL Audit به فایل/SIEM |
+| **PII Catalog** | ستون‌های `IsPii=1` + مستند + سیاست نگهداری |
+| **Backup Encryption** | با Certificate، نگهداری کلید جدا |
+
+---
+
+## ۱۴. عملکرد و گزارش‌گیری
+
+1. **جدا کردن OLTP از OLAP:** گزارش‌های سنگین روی Read Replica / Readable Secondary یا Star Schema (`rpt.Fact*`) با ETL شبانه/افزایشی (Change Tracking/CDC).
+2. **Pre-aggregation:** `rpt.KpiSnapshot` برای داشبورد (بدون اسکن جداول بزرگ).
+3. **Query Store + Automatic Tuning:** تثبیت Planهای خوب، شناسایی Regression.
+4. **Statistics:** به‌روزرسانی خودکار + Job برای جداول بزرگ.
+5. **Parameter Sniffing:** `OPTION (RECOMPILE)` موردی / Query Store Hints.
+6. **Pagination:** Keyset Pagination (نه OFFSET بزرگ) برای لیست‌های حجیم.
+7. **Batch عملیات:** عملیات حذف/آپدیت حجیم در Batch ۵ تا ۱۰ هزارتایی.
+8. **In-Memory OLTP (اختیاری):** برای `iam.UserSession`, `integ.IdempotencyKey`.
+9. **Cache لایه برنامه:** Redis برای Lookup/Permission (کلید شامل TenantId).
+10. **Benchmark داخلی:** داده تست ۱ تا ۱۰ میلیون رکورد و ثبت «قبل/بعد بهینه‌سازی» (برای رزومه).
+
+---
+
+## ۱۵. HA، DR و Backup
+
+| سطح | راهکار |
+|---|---|
+| **Backup** | Full هفتگی + Differential روزانه + Log هر ۱۵ دقیقه (Recovery Model = FULL) |
+| **تست Restore** | ماهانه خودکار (Job + گزارش) |
+| **RPO/RTO هدف** | Solo/Small: RPO ≤ 24h، RTO ≤ 4h | Medium: RPO ≤ 15m، RTO ≤ 1h | Large: RPO ≈ 0، RTO ≤ 15m |
+| **HA** | Always On Availability Groups (Standard: Basic AG / Enterprise: AG کامل) یا Failover Cluster |
+| **DR** | Secondary در سایت دوم + Log Shipping |
+| **نگهداری Backup** | قانون ۳-۲-۱ (۳ نسخه، ۲ رسانه، ۱ آفسایت/آفلاین) |
+| **Backup رمزگذاری‌شده** | بله |
+| **Point-in-Time Restore** | برای هر Tenant (مدل B/C)؛ در مدل A با Export اختصاصی Tenant |
+
+---
+
+## ۱۶. Migration و مدیریت تغییر
+
+- ابزار: **DbUp / Flyway / EF Core Migrations** (یکی را انتخاب کنید)، اسکریپت‌ها در Git با نام `V0007__add_customer_score.sql`.
+- **Expand → Migrate → Contract** برای تغییر بدون Downtime:
+  1. افزودن ستون/جدول جدید (سازگار با عقب)
+  2. پر کردن داده (Batch)
+  3. جابه‌جایی برنامه
+  4. حذف قدیمی در نسخه بعد
+- هر Migration: **قابل Rollback** یا حداقل با Backup قبلی.
+- Migration در CI روی دیتابیس موقت اجرا و Schema Drift با ابزار مقایسه (SSDT/dacpac) بررسی شود.
+- **Seed Data:** Permission، Lookup، Industry Pack با اسکریپت Idempotent (`MERGE`).
+- **Data Generator:** تولید داده فیک فارسی (Bogus/Faker) با حجم قابل‌تنظیم.
+
+---
+
+## ۱۷. نمونه کدهای T-SQL کلیدی
+
+### ۱۷.۱ FK مرکب برای ایزولاسیون Tenant
+```sql
+-- والد: کلید یکتای مرکب
+ALTER TABLE crm.Customer
+  ADD CONSTRAINT UQ_Customer_Tenant_Id UNIQUE (TenantId, Id);
+
+-- فرزند: FK مرکب
+ALTER TABLE ops.[Order]
+  ADD CONSTRAINT FK_Order_Customer
+  FOREIGN KEY (TenantId, CustomerId) REFERENCES crm.Customer (TenantId, Id);
+```
+
+### ۱۷.۲ Row-Level Security
+```sql
+CREATE SCHEMA sec;
+GO
+CREATE FUNCTION sec.fn_TenantPredicate(@TenantId BIGINT)
+RETURNS TABLE WITH SCHEMABINDING AS
+RETURN SELECT 1 AS ok
+WHERE @TenantId = CAST(SESSION_CONTEXT(N'TenantId') AS BIGINT)
+   OR IS_MEMBER('db_platform_admin') = 1;
+GO
+CREATE SECURITY POLICY sec.TenantPolicy
+  ADD FILTER PREDICATE sec.fn_TenantPredicate(TenantId) ON crm.Customer,
+  ADD BLOCK  PREDICATE sec.fn_TenantPredicate(TenantId) ON crm.Customer AFTER INSERT,
+  ADD FILTER PREDICATE sec.fn_TenantPredicate(TenantId) ON ops.[Order],
+  ADD BLOCK  PREDICATE sec.fn_TenantPredicate(TenantId) ON ops.[Order] AFTER INSERT
+WITH (STATE = ON);
+
+-- برنامه در ابتدای هر اتصال:
+EXEC sp_set_session_context @key=N'TenantId', @value=42, @read_only=1;
+```
+
+### ۱۷.۳ Temporal Table
+```sql
+CREATE TABLE crm.Customer (
+  Id BIGINT IDENTITY PRIMARY KEY,
+  TenantId BIGINT NOT NULL,
+  DisplayName NVARCHAR(200) NOT NULL,
+  /* ... */
+  ValidFrom DATETIME2 GENERATED ALWAYS AS ROW START HIDDEN,
+  ValidTo   DATETIME2 GENERATED ALWAYS AS ROW END HIDDEN,
+  PERIOD FOR SYSTEM_TIME (ValidFrom, ValidTo)
+) WITH (SYSTEM_VERSIONING = ON (HISTORY_TABLE = audit.CustomerHistory));
+
+SELECT * FROM crm.Customer FOR SYSTEM_TIME AS OF '2026-01-01T00:00:00' WHERE Id = 100;
+```
+
+### ۱۷.۴ یکتایی «Primary» تنها
+```sql
+CREATE UNIQUE INDEX UX_Contact_OnePrimary
+ON crm.Contact(TenantId, CustomerId) WHERE IsPrimary = 1 AND IsDeleted = 0;
+```
+
+### ۱۷.۵ جلوگیری از رزرو همپوشان (Slot)
+```sql
+-- هنگام ثبت نوبت، برای هر Slot ۱۵ دقیقه‌ای یک ردیف ثبت می‌شود؛
+-- نقض UQ یعنی Slot اشغال است.
+INSERT INTO ops.AppointmentSlot(AppointmentId, ResourceId, SlotStart)
+SELECT @AppId, @ResId, s.SlotStart FROM dbo.fn_GenerateSlots(@Start,@End,15) s;
+```
+
+### ۱۷.۶ Outbox Worker
+```sql
+;WITH cte AS (
+  SELECT TOP (50) * FROM integ.Outbox WITH (UPDLOCK, READPAST, ROWLOCK)
+  WHERE ProcessedAt IS NULL AND Attempts < 10 ORDER BY Id)
+UPDATE cte SET Attempts = Attempts + 1
+OUTPUT inserted.*;
+```
+
+### ۱۷.۷ Keyset Pagination
+```sql
+SELECT TOP (50) Id, DisplayName FROM crm.Customer
+WHERE TenantId=@T AND IsDeleted=0 AND Id > @LastId ORDER BY Id;
+```
+
+### ۱۷.۸ Audit Trigger الگو
+```sql
+CREATE TRIGGER trg_Customer_Audit ON crm.Customer AFTER INSERT, UPDATE, DELETE AS
+BEGIN
+  SET NOCOUNT ON;
+  INSERT audit.AuditLog(TenantId, Entity, RecordId, Action, OldJson, NewJson, UserId, At)
+  SELECT COALESCE(i.TenantId,d.TenantId), 'Customer', COALESCE(i.Id,d.Id),
+         CASE WHEN d.Id IS NULL THEN 'I' WHEN i.Id IS NULL THEN 'D' ELSE 'U' END,
+         (SELECT d.* FOR JSON PATH, WITHOUT_ARRAY_WRAPPER),
+         (SELECT i.* FOR JSON PATH, WITHOUT_ARRAY_WRAPPER),
+         CAST(SESSION_CONTEXT(N'UserId') AS BIGINT), SYSUTCDATETIME()
+  FROM inserted i FULL JOIN deleted d ON i.Id = d.Id;
+END;
+```
+
+### ۱۷.۹ نمونه گزارش TSQL (Aging مطالبات)
+```sql
+SELECT c.DisplayName,
+  SUM(CASE WHEN DATEDIFF(DAY,i.DueDate,SYSUTCDATETIME()) BETWEEN 0 AND 30 THEN i.Balance END) AS D0_30,
+  SUM(CASE WHEN DATEDIFF(DAY,i.DueDate,SYSUTCDATETIME()) BETWEEN 31 AND 60 THEN i.Balance END) AS D31_60,
+  SUM(CASE WHEN DATEDIFF(DAY,i.DueDate,SYSUTCDATETIME()) > 60 THEN i.Balance END) AS D60P
+FROM fin.Invoice i JOIN crm.Customer c ON c.TenantId=i.TenantId AND c.Id=i.CustomerId
+WHERE i.TenantId=@T AND i.Balance > 0 AND i.IsDeleted=0
+GROUP BY c.DisplayName;
+```
+
+---
+
+## ۱۸. چک‌لیست کیفیت دیتابیس
+
+- [ ] همه جداول Tenant-scoped دارای `TenantId` و در RLS هستند
+- [ ] همه روابط مهم، FK مرکب با TenantId دارند
+- [ ] همه FKها Index دارند
+- [ ] هیچ `FLOAT` برای پول نیست
+- [ ] همه زمان‌ها UTC
+- [ ] Soft Delete + Filtered Unique Index پیاده شده
+- [ ] RowVersion در جداول قابل‌ویرایش
+- [ ] Temporal روی جداول حیاتی
+- [ ] Outbox/Inbox/Idempotency پیاده شده
+- [ ] Partitioning/Retention برای Audit و Notification
+- [ ] Backup + تست Restore خودکار
+- [ ] RCSI فعال، Query Store فعال
+- [ ] PII علامت‌گذاری و محافظت‌شده (Masking/Encryption)
+- [ ] Migration نسخه‌دار + Rollback
+- [ ] داده فیک ۱M رکورد و گزارش Benchmark
+- [ ] ERD و Data Dictionary تولیدشده و به‌روز
+- [ ] کاربران DB با حداقل دسترسی
+- [ ] Unit Test برای SP/Function (tSQLt)
