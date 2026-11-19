@@ -63,8 +63,10 @@ export function getDateKeyFromIso(iso: string): string {
   return dayjs(iso).format('YYYY-MM-DD');
 }
 
-/** Iranian mobile validation: 09xxxxxxxxx */
-export const isValidIranMobile = (v: string) => /^09\d{9}$/.test(v);
+import { isValidIranMobile, isValidIranNationalId, isValidIranPostalCode } from './validators';
 
-/** Iranian national ID validation: 10 digits */
-export const isValidNationalId = (v: string) => /^\d{10}$/.test(v);
+/** Iranian mobile validation: 09xxxxxxxxx */
+export { isValidIranMobile, isValidIranPostalCode };
+
+/** Iranian national ID validation: 10 digits with Mod-11 checksum */
+export const isValidNationalId = (v: string) => isValidIranNationalId(v);

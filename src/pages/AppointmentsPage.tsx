@@ -14,10 +14,17 @@ import {
   Plus,
   Trash2,
 } from 'lucide-react';
+import { DynamicFieldsRenderer } from '../components/DynamicFieldsRenderer';
 import { Modal } from '../components/Modal';
 import { OnlineBookingModal } from '../components/OnlineBookingModal';
 import { useClientFlow } from '../store/useClientFlowStore';
 import type { Appointment, AppointmentStatus } from '../types';
+import {
+  formatCustomFieldValue,
+  getFieldsForEntity,
+  getTableCustomFields,
+  validateCustomFieldValues,
+} from '../utils/customFieldValidation';
 import {
   formatTimeFa,
   getJalaliMonthGrid,
@@ -80,6 +87,8 @@ export function AppointmentsPage() {
   const [resourceId, setResourceId] = useState(state.resources[0]?.id ?? '');
   const [selectedDayKey, setSelectedDayKey] = useState(() => dayjs().format('YYYY-MM-DD'));
   const [startTime, setStartTime] = useState('10:00');
+  const [aptCustomFields, setAptCustomFields] = useState<Record<string, string>>({});
+  const [aptCustomErrors, setAptCustomErrors] = useState<Record<string, string>>({});
   const [conflictError, setConflictError] = useState('');
 
   // Reschedule modal
@@ -127,6 +136,8 @@ export function AppointmentsPage() {
     );
     setSelectedDayKey(dayKey ?? activeDayKey);
     setStartTime(`${String(state.settings.workStartHour).padStart(2, '0')}:00`);
+    setAptCustomFields({});
+    setAptCustomErrors({});
     setConflictError('');
     setCreateOpen(true);
   };
@@ -144,10 +155,29 @@ export function AppointmentsPage() {
     return hh < state.settings.workStartHour || hh >= state.settings.workEndHour;
   };
 
+  const aptActiveFields = useMemo(
+    () => getFieldsForEntity(state.customFieldDefs, 'appointment', false),
+    [state.customFieldDefs],
+  );
+  const aptTableFields = useMemo(
+    () => getTableCustomFields(state.customFieldDefs, 'appointment'),
+    [state.customFieldDefs],
+  );
+
   const handleCreate = (e: React.FormEvent) => {
     e.preventDefault();
     const service = state.services.find((s) => s.id === serviceId);
     if (!service || !customerId || !resourceId) return;
+
+    setAptCustomErrors({});
+    const cfValidation = validateCustomFieldValues(state.customFieldDefs, aptCustomFields, {
+      entity: 'appointment',
+      existingRecords: state.appointments,
+    });
+    if (!cfValidation.ok) {
+      setAptCustomErrors(cfValidation.errors);
+      return;
+    }
 
     const [hh, mm] = startTime.split(':').map(Number);
     const startDt = dayjs(selectedDayKey).hour(hh).minute(mm).second(0).millisecond(0);
@@ -160,6 +190,7 @@ export function AppointmentsPage() {
       start: startDt.toISOString(),
       end: endDt.toISOString(),
       status: 'booked',
+      customFields: aptCustomFields,
     });
 
     if (!res.ok) {
@@ -167,6 +198,7 @@ export function AppointmentsPage() {
       return;
     }
     setCreateOpen(false);
+    setAptCustomFields({});
   };
 
   const handleReschedule = (e: React.FormEvent) => {
@@ -251,6 +283,15 @@ export function AppointmentsPage() {
             بافر: {toFa(srv?.bufferBeforeMin ?? 0)} / {toFa(srv?.bufferAfterMin ?? 0)} د
           </div>
         )}
+        {aptTableFields.map((def) => {
+          const val = apt.customFields?.[def.key];
+          if (!val) return null;
+          return (
+            <div key={def.id} className="mt-0.5 truncate text-[10px] text-indigo-600 dark:text-indigo-400">
+              {def.label}: {formatCustomFieldValue(def, val)}
+            </div>
+          );
+        })}
         {apt.status === 'cancelled' && apt.cancelReason && (
           <div className="mt-1 truncate text-[11px] text-rose-600 dark:text-rose-400">
             دلیل لغو: {apt.cancelReason}
@@ -822,6 +863,19 @@ export function AppointmentsPage() {
           {isOutsideWorkHours(startTime) && (
             <div className="text-xs text-amber-600 dark:text-amber-400">
               توجه: ساعت انتخابی خارج از ساعات کاری استاندارد مجموعه است.
+            </div>
+          )}
+
+          {aptActiveFields.length > 0 && (
+            <div className="border-t border-slate-200 pt-3 dark:border-slate-800">
+              <p className="mb-2 text-xs font-semibold text-slate-500">فیلدهای سفارشی نوبت</p>
+              <DynamicFieldsRenderer
+                entity="appointment"
+                defs={state.customFieldDefs}
+                values={aptCustomFields}
+                onChange={setAptCustomFields}
+                errors={aptCustomErrors}
+              />
             </div>
           )}
 

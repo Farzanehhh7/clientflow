@@ -1,23 +1,29 @@
 import { useMemo } from 'react';
-import type { CustomFieldDef } from '../types';
-import { evalCustomFormula, isFieldVisible } from '../utils/crmHelpers';
-import { formatToman, toFa } from '../utils/jalali';
 import { useClientFlow } from '../store/useClientFlowStore';
+import type { CustomFieldDef, CustomFieldEntity } from '../types';
+import { evalCustomFormula, isFieldVisible } from '../utils/crmHelpers';
+import { getFieldsForEntity } from '../utils/customFieldValidation';
+import { formatToman, toFa } from '../utils/jalali';
+import { JalaliDatePicker } from './ui/JalaliDatePicker';
 
 interface DynamicFieldsRendererProps {
   defs: CustomFieldDef[];
   values: Record<string, string>;
   onChange: (nextValues: Record<string, string>) => void;
+  entity?: CustomFieldEntity;
+  errors?: Record<string, string>;
 }
 
-export function DynamicFieldsRenderer({ defs, values, onChange }: DynamicFieldsRendererProps) {
+export function DynamicFieldsRenderer({
+  defs,
+  values,
+  onChange,
+  entity,
+  errors = {},
+}: DynamicFieldsRendererProps) {
   const { state } = useClientFlow();
 
-  const sortedDefs = useMemo(
-    () => [...defs].sort((a, b) => (a.order ?? 999) - (b.order ?? 999)),
-    [defs],
-  );
-
+  const sortedDefs = useMemo(() => getFieldsForEntity(defs, entity, false), [defs, entity]);
   const visibleDefs = sortedDefs.filter((def) => isFieldVisible(def, values));
   if (visibleDefs.length === 0) return null;
 
@@ -25,10 +31,12 @@ export function DynamicFieldsRenderer({ defs, values, onChange }: DynamicFieldsR
     onChange({ ...values, [key]: val });
   };
 
-  const getLookupOptions = (entity: CustomFieldDef['lookupEntity']) => {
-    switch (entity) {
+  const getLookupOptions = (lookupEntity: CustomFieldDef['lookupEntity']) => {
+    switch (lookupEntity) {
       case 'customer':
-        return state.customers.map((c) => ({ value: c.name, label: `${c.name} (${toFa(c.phone)})` }));
+        return state.customers
+          .filter((c) => !c.isDeleted)
+          .map((c) => ({ value: c.name, label: `${c.name} (${toFa(c.phone)})` }));
       case 'product':
         return state.products.map((p) => ({ value: p.name, label: `${p.name} (${formatToman(p.price)})` }));
       case 'service':
@@ -44,6 +52,7 @@ export function DynamicFieldsRenderer({ defs, values, onChange }: DynamicFieldsR
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
       {visibleDefs.map((def) => {
         const val = values[def.key] ?? '';
+        const err = errors[def.key];
 
         if (def.type === 'formula') {
           const computed = evalCustomFormula(def.formulaExpr, values);
@@ -62,6 +71,37 @@ export function DynamicFieldsRenderer({ defs, values, onChange }: DynamicFieldsR
           );
         }
 
+        if (def.type === 'checkbox') {
+          return (
+            <div key={def.id} className="flex flex-col justify-center">
+              <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-slate-200 bg-slate-50/60 px-3 py-2 text-xs font-medium text-slate-700 dark:border-slate-700 dark:bg-slate-800/50 dark:text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={val === 'true'}
+                  onChange={(e) => setField(def.key, e.target.checked ? 'true' : 'false')}
+                />
+                <span>
+                  {def.label} {def.required && '*'}
+                </span>
+              </label>
+              {err && <p className="mt-1 text-[11px] text-rose-600 dark:text-rose-400">{err}</p>}
+            </div>
+          );
+        }
+
+        if (def.type === 'date') {
+          return (
+            <div key={def.id}>
+              <JalaliDatePicker
+                label={`${def.label}${def.required ? ' *' : ''}`}
+                value={val}
+                onChange={(jalaliAscii) => setField(def.key, jalaliAscii)}
+                error={err}
+              />
+            </div>
+          );
+        }
+
         if (def.type === 'select') {
           return (
             <div key={def.id}>
@@ -69,10 +109,11 @@ export function DynamicFieldsRenderer({ defs, values, onChange }: DynamicFieldsR
                 {def.label} {def.required && '*'}
               </label>
               <select
-                required={def.required}
                 value={val}
                 onChange={(e) => setField(def.key, e.target.value)}
-                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800"
+                className={`w-full rounded-lg border bg-white px-3 py-2 text-sm dark:bg-slate-800 ${
+                  err ? 'border-rose-400' : 'border-slate-200 dark:border-slate-700'
+                }`}
               >
                 <option value="">-- انتخاب کنید --</option>
                 {(def.options ?? []).map((opt) => (
@@ -81,19 +122,18 @@ export function DynamicFieldsRenderer({ defs, values, onChange }: DynamicFieldsR
                   </option>
                 ))}
               </select>
+              {err && <p className="mt-1 text-[11px] text-rose-600 dark:text-rose-400">{err}</p>}
             </div>
           );
         }
 
         if (def.type === 'multiselect') {
           const selected = val
-            .split('،')
+            .split(/[،,]/)
             .map((x) => x.trim())
             .filter(Boolean);
           const toggleOpt = (opt: string) => {
-            const next = selected.includes(opt)
-              ? selected.filter((s) => s !== opt)
-              : [...selected, opt];
+            const next = selected.includes(opt) ? selected.filter((s) => s !== opt) : [...selected, opt];
             setField(def.key, next.join('، '));
           };
           return (
@@ -120,6 +160,7 @@ export function DynamicFieldsRenderer({ defs, values, onChange }: DynamicFieldsR
                   );
                 })}
               </div>
+              {err && <p className="mt-1 text-[11px] text-rose-600 dark:text-rose-400">{err}</p>}
             </div>
           );
         }
@@ -132,10 +173,11 @@ export function DynamicFieldsRenderer({ defs, values, onChange }: DynamicFieldsR
                 {def.label} {def.required && '*'}
               </label>
               <select
-                required={def.required}
                 value={val}
                 onChange={(e) => setField(def.key, e.target.value)}
-                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800"
+                className={`w-full rounded-lg border bg-white px-3 py-2 text-sm dark:bg-slate-800 ${
+                  err ? 'border-rose-400' : 'border-slate-200 dark:border-slate-700'
+                }`}
               >
                 <option value="">-- انتخاب از رکوردهای سیستم --</option>
                 {opts.map((o) => (
@@ -144,6 +186,7 @@ export function DynamicFieldsRenderer({ defs, values, onChange }: DynamicFieldsR
                   </option>
                 ))}
               </select>
+              {err && <p className="mt-1 text-[11px] text-rose-600 dark:text-rose-400">{err}</p>}
             </div>
           );
         }
@@ -168,25 +211,7 @@ export function DynamicFieldsRenderer({ defs, values, onChange }: DynamicFieldsR
                 </label>
                 <span className="truncate text-xs text-slate-500">{val || 'فایلی انتخاب نشده'}</span>
               </div>
-            </div>
-          );
-        }
-
-        if (def.type === 'date') {
-          return (
-            <div key={def.id}>
-              <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
-                {def.label} (شمسی یا میلادی) {def.required && '*'}
-              </label>
-              <input
-                type="text"
-                dir="ltr"
-                required={def.required}
-                value={val}
-                onChange={(e) => setField(def.key, e.target.value)}
-                placeholder="1405/08/28"
-                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-left text-sm tabular-nums dark:border-slate-700 dark:bg-slate-800"
-              />
+              {err && <p className="mt-1 text-[11px] text-rose-600 dark:text-rose-400">{err}</p>}
             </div>
           );
         }
@@ -204,25 +229,26 @@ export function DynamicFieldsRenderer({ defs, values, onChange }: DynamicFieldsR
               {def.label}
               {def.type === 'money' && ' (تومان)'}
               {def.required && ' *'}
+              {def.unique && <span className="mr-1 text-[10px] text-amber-600">(یکتا)</span>}
             </label>
             <input
               type={inputType}
-              required={def.required}
-              dir={def.type === 'phone' || def.type === 'nationalId' || def.type === 'money' || def.type === 'number' ? 'ltr' : undefined}
-              maxLength={def.type === 'nationalId' ? 10 : undefined}
+              dir={
+                def.type === 'phone' || def.type === 'nationalId' || def.type === 'money' || def.type === 'number'
+                  ? 'ltr'
+                  : undefined
+              }
+              maxLength={def.type === 'nationalId' ? 10 : def.validation?.maxLength}
               value={val}
               onChange={(e) => setField(def.key, e.target.value)}
               placeholder={
-                def.type === 'phone'
-                  ? '09120000000'
-                  : def.type === 'nationalId'
-                    ? '0012345678'
-                    : undefined
+                def.type === 'phone' ? '09120000000' : def.type === 'nationalId' ? '0012345678' : undefined
               }
-              className={`w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800 ${
-                inputType !== 'text' || def.type === 'nationalId' ? 'text-left tabular-nums' : ''
-              }`}
+              className={`w-full rounded-lg border bg-white px-3 py-2 text-sm dark:bg-slate-800 ${
+                err ? 'border-rose-400' : 'border-slate-200 dark:border-slate-700'
+              } ${inputType !== 'text' || def.type === 'nationalId' ? 'text-left tabular-nums' : ''}`}
             />
+            {err && <p className="mt-1 text-[11px] text-rose-600 dark:text-rose-400">{err}</p>}
           </div>
         );
       })}

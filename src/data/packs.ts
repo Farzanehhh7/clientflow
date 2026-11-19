@@ -1,4 +1,11 @@
-import type { AppState, PackTemplate } from '../types';
+import type {
+  AppState,
+  CustomFieldDef,
+  IndustryPack,
+  PackCustomerConfig,
+  PackSalesConfig,
+  PackTemplate,
+} from '../types';
 
 export const INDUSTRY_PACKS: PackTemplate[] = [
   {
@@ -9,9 +16,33 @@ export const INDUSTRY_PACKS: PackTemplate[] = [
     tier: 'full',
     description: 'پرونده مراجع، حساسیت‌ها، رضایت‌نامه تصویر، نوبت‌دهی پزشکان، ویزیت کنترل و NPS',
     descriptionEn: 'Patient file, allergies, photo consent, doctor schedule, follow-up visit & NPS',
+    customerMeta: {
+      singularLabel: 'مراجع / بیمار',
+      pluralLabel: 'مراجعین',
+      highlightFieldKey: 'skin_type',
+      highlightColumnLabel: 'نیاز درمانی / پرونده',
+    },
+    salesMeta: {
+      pipelineName: 'قیف پذیرش و طرح درمان',
+      leadSingular: 'متقاضی مشاوره',
+      leadPlural: 'متقاضیان مشاوره',
+      dealSingular: 'طرح درمان / پکیج',
+      dealPlural: 'طرح‌های درمان',
+      quoteLabel: 'پیش‌فاکتور طرح درمان',
+      defaultStages: [
+        { key: 'lead', label: 'درخواست مشاوره', probability: 20, slaHours: 12 },
+        { key: 'contacted', label: 'مشاوره اولیه', probability: 40, slaHours: 24 },
+        { key: 'proposal', label: 'تدوین طرح درمان', probability: 60, slaHours: 48 },
+        { key: 'negotiation', label: 'هماهنگی زمان و پرداخت', probability: 80, slaHours: 72 },
+        { key: 'won', label: 'تایید و شروع درمان', probability: 100, slaHours: 0 },
+        { key: 'lost', label: 'انصراف مراجع', probability: 0, slaHours: 0 },
+      ],
+    },
     customFields: [
-      { key: 'skin_type', label: 'نوع پوست / نیاز درمانی', type: 'text', order: 1 },
-      { key: 'consent_signed', label: 'شماره پرونده رضایت‌نامه', type: 'text', order: 2 },
+      { key: 'allergies', label: 'حساسیت‌ها و آلرژی‌ها', entity: 'customer', type: 'text', active: true, showInTable: true, order: 1 },
+      { key: 'skin_type', label: 'نوع پوست / نیاز درمانی', entity: 'customer', type: 'select', options: ['مختلط', 'چرب', 'خشک', 'حساس'], active: true, showInTable: true, order: 2 },
+      { key: 'consent_signed', label: 'فرم رضایت‌نامه تکمیل شده', entity: 'customer', type: 'checkbox', active: true, order: 3 },
+      { key: 'consent_file', label: 'فایل رضایت‌نامه', entity: 'customer', type: 'file', active: true, order: 4 },
     ],
     customEntities: [
       {
@@ -50,8 +81,25 @@ export const INDUSTRY_PACKS: PackTemplate[] = [
     tier: 'full',
     description: 'کاتالوگ کالا، کسر خودکار انبار، کد تخفیف، مرسولات جزئی، پیگیری سبد رهاشده',
     descriptionEn: 'Product catalog, auto stock deduction, coupons, partial shipments & cart recovery',
+    salesMeta: {
+      pipelineName: 'قیف فروش و سفارشات عمده',
+      leadSingular: 'خریدار بالقوه',
+      leadPlural: 'سرنخ‌های فروش',
+      dealSingular: 'معامله فروش',
+      dealPlural: 'معاملات فروش',
+      quoteLabel: 'پیش‌فاکتور فروش',
+      defaultStages: [
+        { key: 'lead', label: 'سرنخ جدید', probability: 20, slaHours: 24 },
+        { key: 'contacted', label: 'استعلام موجودی', probability: 35, slaHours: 24 },
+        { key: 'proposal', label: 'ارسال پیش‌فاکتور', probability: 60, slaHours: 48 },
+        { key: 'negotiation', label: 'توافق تخفیف و ارسال', probability: 80, slaHours: 48 },
+        { key: 'won', label: 'ثبت قطعی سفارش', probability: 100, slaHours: 0 },
+        { key: 'lost', label: 'لغو / عدم خرید', probability: 0, slaHours: 0 },
+      ],
+    },
     customFields: [
-      { key: 'preferred_carrier', label: 'شرکت حمل ترجیحی', type: 'select', options: ['تیپاکس', 'پست پیشتاز', 'اسنپ‌باکس'], order: 1 },
+      { key: 'preferred_carrier', label: 'اولویت ارسال / شرکت حمل', entity: 'customer', type: 'select', options: ['تیپاکس', 'پست پیشتاز', 'اسنپ‌باکس'], active: true, showInTable: true, order: 1 },
+      { key: 'gift_wrap', label: 'بسته‌بندی هدیه', entity: 'order', type: 'checkbox', active: true, showInTable: true, order: 2 },
     ],
     customEntities: [],
     services: [],
@@ -77,9 +125,33 @@ export const INDUSTRY_PACKS: PackTemplate[] = [
     tier: 'full',
     description: 'مدیریت لایسنس، پروژه استقرار، زمان‌سنجی کارکرد، چک‌لیست استقرار و تمدید قرارداد',
     descriptionEn: 'Licenses, deployment projects, time tracking, SLA tickets & contract renewals',
+    customerMeta: {
+      singularLabel: 'مشتری / اکانت SaaS',
+      pluralLabel: 'مشتریان سازمانی',
+      highlightFieldKey: 'server_env',
+      highlightColumnLabel: 'محیط استقرار',
+    },
+    salesMeta: {
+      pipelineName: 'قیف فروش B2B و لایسنس SaaS',
+      leadSingular: 'سرنخ دمو (MQL)',
+      leadPlural: 'سرنخ‌های دمو',
+      dealSingular: 'فرصت اشتراک / استقرار',
+      dealPlural: 'فرصت‌های اشتراک و لایسنس',
+      quoteLabel: 'پیشنهاد فنی و پیش‌فاکتور',
+      defaultStages: [
+        { key: 'lead', label: 'درخواست دمو (MQL)', probability: 15, slaHours: 12 },
+        { key: 'contacted', label: 'جلسه کشف نیاز و دمو', probability: 35, slaHours: 48 },
+        { key: 'proposal', label: 'ارسال پروپوزال و لایسنس', probability: 60, slaHours: 72 },
+        { key: 'negotiation', label: 'بررسی SLA و قرارداد', probability: 80, slaHours: 96 },
+        { key: 'won', label: 'بستن قرارداد و استقرار', probability: 100, slaHours: 0 },
+        { key: 'lost', label: 'عدم تمدید / ازدست‌رفته', probability: 0, slaHours: 0 },
+      ],
+    },
     customFields: [
-      { key: 'server_env', label: 'محیط استقرار', type: 'select', options: ['ابری (Cloud)', 'سرور داخلی (On-Premise)'], order: 1 },
-      { key: 'users_seat', label: 'تعداد کاربران لایسنس', type: 'number', order: 2 },
+      { key: 'license_key', label: 'کلید لایسنس', entity: 'customer', type: 'text', unique: true, active: true, showInTable: true, order: 1 },
+      { key: 'server_env', label: 'اطلاعات سرور / محیط استقرار', entity: 'customer', type: 'select', options: ['ابری (Cloud)', 'سرور داخلی (On-Premise)'], active: true, showInTable: true, order: 2 },
+      { key: 'server_info', label: 'آدرس سرور / دامنه', entity: 'customer', type: 'text', active: true, order: 3 },
+      { key: 'users_seat', label: 'تعداد کاربران لایسنس', entity: 'customer', type: 'number', active: true, order: 4 },
     ],
     customEntities: [],
     services: [
@@ -107,9 +179,25 @@ export const INDUSTRY_PACKS: PackTemplate[] = [
     tier: 'medium',
     description: 'شخصیت حقوقی، چند مخاطب، پیش‌فاکتور نسخه‌دار، چک صیادی، پیگیری مناقصه و قرارداد',
     descriptionEn: 'Corporate entities, multi-contacts, versioned quotes, Sayadi cheques & contracts',
+    salesMeta: {
+      pipelineName: 'قیف مناقصات و فروش سازمانی',
+      leadSingular: 'متقاضی همکاری B2B',
+      leadPlural: 'سرنخ‌های سازمانی',
+      dealSingular: 'پرونده فروش / قرارداد',
+      dealPlural: 'پرونده‌های فروش B2B',
+      quoteLabel: 'پیش‌فاکتور رسمی حقوقی',
+      defaultStages: [
+        { key: 'lead', label: 'استعلام اولیه', probability: 20, slaHours: 24 },
+        { key: 'contacted', label: 'مذاکره فنی و اعتباری', probability: 40, slaHours: 48 },
+        { key: 'proposal', label: 'ارسال پیش‌فاکتور رسمی', probability: 60, slaHours: 72 },
+        { key: 'negotiation', label: 'تنظیم قرارداد و چک', probability: 80, slaHours: 96 },
+        { key: 'won', label: 'امضای قرارداد', probability: 100, slaHours: 0 },
+        { key: 'lost', label: 'لغو مناقصه', probability: 0, slaHours: 0 },
+      ],
+    },
     customFields: [
-      { key: 'credit_limit', label: 'سقف اعتبار خرید چکی (تومان)', type: 'money', order: 1 },
-      { key: 'industry_sector', label: 'حوزه فعالیت شرکت', type: 'select', options: ['تولیدی', 'بازرگانی', 'پیمانکاری', 'خدمات'], order: 2 },
+      { key: 'credit_limit', label: 'سقف اعتبار خرید چکی (تومان)', entity: 'customer', type: 'money', active: true, showInTable: true, order: 1 },
+      { key: 'industry_sector', label: 'حوزه فعالیت شرکت', entity: 'customer', type: 'select', options: ['تولیدی', 'بازرگانی', 'پیمانکاری', 'خدمات'], active: true, order: 2 },
     ],
     customEntities: [
       {
@@ -153,9 +241,25 @@ export const INDUSTRY_PACKS: PackTemplate[] = [
     tier: 'light',
     description: 'دانشجو/فراگیر، ثبت‌نام دوره، تقویم کلاس‌ها، حضور و غیاب و تمدید ترم بعدی',
     descriptionEn: 'Students, courses, class schedule, attendance tracking & term renewals',
+    salesMeta: {
+      pipelineName: 'قیف جذب و ثبت‌نام فراگیران',
+      leadSingular: 'متقاضی دوره',
+      leadPlural: 'متقاضیان ثبت‌نام',
+      dealSingular: 'پرونده ثبت‌نام',
+      dealPlural: 'پرونده‌های ثبت‌نام',
+      quoteLabel: 'پیش‌فاکتور شهریه دوره',
+      defaultStages: [
+        { key: 'lead', label: 'استعلام دوره', probability: 25, slaHours: 12 },
+        { key: 'contacted', label: 'مشاوره و تعیین سطح', probability: 45, slaHours: 24 },
+        { key: 'proposal', label: 'اعلام شهریه و تخفیف', probability: 65, slaHours: 48 },
+        { key: 'negotiation', label: 'تایید قسط / ثبت‌نام', probability: 85, slaHours: 48 },
+        { key: 'won', label: 'ثبت‌نام قطعی', probability: 100, slaHours: 0 },
+        { key: 'lost', label: 'انصراف از دوره', probability: 0, slaHours: 0 },
+      ],
+    },
     customFields: [
-      { key: 'education_level', label: 'سطح آموزشی / ترم فعلی', type: 'select', options: ['مقدماتی', 'متوسط', 'پیشرفته', 'آزمون'], order: 1 },
-      { key: 'parent_phone', label: 'شماره تماس ولی / معرف', type: 'phone', order: 2 },
+      { key: 'education_level', label: 'سطح دوره آموزشی', entity: 'customer', type: 'select', options: ['مقدماتی', 'متوسط', 'پیشرفته', 'آزمون'], active: true, showInTable: true, order: 1 },
+      { key: 'parent_phone', label: 'شماره تماس ولی / سرپرست', entity: 'customer', type: 'phone', active: true, order: 2 },
     ],
     customEntities: [
       {
@@ -203,9 +307,26 @@ export const INDUSTRY_PACKS: PackTemplate[] = [
     tier: 'light',
     description: 'پرونده ملک/خودرو، ثبت بازدید حضوری، قیف مذاکره و تطبیق بودجه خریدار',
     descriptionEn: 'Property/Vehicle listings, viewing appointments, negotiation pipeline & buyer matching',
+    salesMeta: {
+      pipelineName: 'قیف معاملات ملک و خودرو',
+      leadSingular: 'خریدار / متقاضی',
+      leadPlural: 'متقاضیان خرید',
+      dealSingular: 'پرونده معامله',
+      dealPlural: 'پرونده‌های معامله',
+      quoteLabel: 'برآورد هزینه و مبایعه‌نامه',
+      defaultStages: [
+        { key: 'lead', label: 'ثبت تقاضای خرید', probability: 20, slaHours: 12 },
+        { key: 'contacted', label: 'معرفی فایل و بازدید', probability: 40, slaHours: 24 },
+        { key: 'proposal', label: 'پیشنهاد قیمت و شرایط', probability: 60, slaHours: 48 },
+        { key: 'negotiation', label: 'نشست مبایعه‌نامه', probability: 80, slaHours: 72 },
+        { key: 'won', label: 'عقد قرارداد قطعی', probability: 100, slaHours: 0 },
+        { key: 'lost', label: 'منتفی‌شده', probability: 0, slaHours: 0 },
+      ],
+    },
     customFields: [
-      { key: 'budget_max', label: 'سقف بودجه خریدار (تومان)', type: 'money', order: 1 },
-      { key: 'preferred_zone', label: 'منطقه / مدل درخواستی', type: 'text', order: 2 },
+      { key: 'budget_max', label: 'بودجه خریدار (تومان)', entity: 'customer', type: 'money', active: true, showInTable: true, order: 1 },
+      { key: 'property_area', label: 'متراژ درخواستی (متر مربع)', entity: 'customer', type: 'number', active: true, showInTable: true, order: 2 },
+      { key: 'preferred_zone', label: 'منطقه / مدل درخواستی', entity: 'customer', type: 'text', active: true, order: 3 },
     ],
     customEntities: [
       {
@@ -249,9 +370,25 @@ export const INDUSTRY_PACKS: PackTemplate[] = [
     tier: 'light',
     description: 'عضویت و اشتراک، رزرو آرایشگر/مربی، یادآور ۲ ساعته نوبت و تبریک خودکار تولد',
     descriptionEn: 'Memberships, stylist/coach booking, 2h reminders & automated birthday perks',
+    salesMeta: {
+      pipelineName: 'قیف عضویت و پکیج خدمات',
+      leadSingular: 'متقاضی عضویت',
+      leadPlural: 'متقاضیان عضویت',
+      dealSingular: 'پکیج / اشتراک',
+      dealPlural: 'پکیج‌های عضویت',
+      quoteLabel: 'پیش‌فاکتور پکیج خدمات',
+      defaultStages: [
+        { key: 'lead', label: 'استعلام پکیج', probability: 25, slaHours: 12 },
+        { key: 'contacted', label: 'مشاوره و معرفی خدمات', probability: 45, slaHours: 24 },
+        { key: 'proposal', label: 'پیشنهاد بسته VIP', probability: 65, slaHours: 48 },
+        { key: 'negotiation', label: 'هماهنگی زمان‌بندی', probability: 85, slaHours: 48 },
+        { key: 'won', label: 'عضویت فعال‌شده', probability: 100, slaHours: 0 },
+        { key: 'lost', label: 'لغو درخواست', probability: 0, slaHours: 0 },
+      ],
+    },
     customFields: [
-      { key: 'preferred_stylist', label: 'متخصص / مربی دلخواه', type: 'text', order: 1 },
-      { key: 'membership_tier', label: 'سطح عضویت باشگاه/سالن', type: 'select', options: ['برنزی', 'نقره‌ای', 'طلایی VIP'], order: 2 },
+      { key: 'preferred_stylist', label: 'متخصص / مربی دلخواه', entity: 'customer', type: 'text', active: true, showInTable: true, order: 1 },
+      { key: 'membership_tier', label: 'سطح عضویت باشگاه/سالن', entity: 'customer', type: 'select', options: ['برنزی', 'نقره‌ای', 'طلایی VIP'], active: true, order: 2 },
     ],
     customEntities: [],
     services: [
@@ -271,9 +408,25 @@ export const INDUSTRY_PACKS: PackTemplate[] = [
     tier: 'light',
     description: 'منوی غذا و نوشیدنی، ثبت سفارش سریع، باشگاه مشتریان و کد تخفیف وفاداری',
     descriptionEn: 'Menu items, fast order tracking, loyalty club & promo coupons',
+    salesMeta: {
+      pipelineName: 'قیف قراردادهای کترینگ و رویداد',
+      leadSingular: 'متقاضی کترینگ',
+      leadPlural: 'متقاضیان کترینگ',
+      dealSingular: 'سفارش رویداد / شرکتی',
+      dealPlural: 'قراردادهای کترینگ',
+      quoteLabel: 'پیش‌فاکتور منو و پذیرایی',
+      defaultStages: [
+        { key: 'lead', label: 'درخواست منو', probability: 25, slaHours: 12 },
+        { key: 'contacted', label: 'تست و انتخاب غذا', probability: 45, slaHours: 24 },
+        { key: 'proposal', label: 'ارسال پیش‌فاکتور رویداد', probability: 65, slaHours: 36 },
+        { key: 'negotiation', label: 'تایید نهایی تعداد نفرات', probability: 85, slaHours: 24 },
+        { key: 'won', label: 'رزرو قطعی کترینگ', probability: 100, slaHours: 0 },
+        { key: 'lost', label: 'لغو رویداد', probability: 0, slaHours: 0 },
+      ],
+    },
     customFields: [
-      { key: 'favorite_table', label: 'ترجیح میز / ذائقه غذایی', type: 'text', order: 1 },
-      { key: 'diet_pref', label: 'رژیم غذایی', type: 'select', options: ['معمولی', 'گیاهخوار', 'بدون گلوتن'], order: 2 },
+      { key: 'favorite_table', label: 'ترجیح میز / ذائقه غذایی', entity: 'customer', type: 'text', active: true, order: 1 },
+      { key: 'diet_pref', label: 'رژیم غذایی', entity: 'customer', type: 'select', options: ['معمولی', 'گیاهخوار', 'بدون گلوتن'], active: true, showInTable: true, order: 2 },
     ],
     customEntities: [],
     services: [
@@ -292,8 +445,24 @@ export const INDUSTRY_PACKS: PackTemplate[] = [
     tier: 'light',
     description: 'مدیریت کارفرمایان، زمان‌سنجی پروژه، پیش‌فاکتور، پیگیری پرداخت و نمای ساده Solo',
     descriptionEn: 'Clients, project milestones, time tracking, invoices & Solo workspace',
+    salesMeta: {
+      pipelineName: 'قیف پروژه‌ها و مشاوره',
+      leadSingular: 'کارفرمای بالقوه',
+      leadPlural: 'سرنخ‌های پروژه',
+      dealSingular: 'پروپوزال پروژه',
+      dealPlural: 'پروپوزال‌ها',
+      quoteLabel: 'پروپوزال و پیش‌فاکتور',
+      defaultStages: [
+        { key: 'lead', label: 'دریافت بریف', probability: 20, slaHours: 24 },
+        { key: 'contacted', label: 'جلسه کشف نیاز', probability: 40, slaHours: 48 },
+        { key: 'proposal', label: 'ارسال پروپوزال و زمان‌بندی', probability: 60, slaHours: 72 },
+        { key: 'negotiation', label: 'توافق مایلستون و مبلغ', probability: 80, slaHours: 72 },
+        { key: 'won', label: 'شروع پروژه', probability: 100, slaHours: 0 },
+        { key: 'lost', label: 'رد پروپوزال', probability: 0, slaHours: 0 },
+      ],
+    },
     customFields: [
-      { key: 'hourly_rate', label: 'نرخ ساعتی توافقی (تومان)', type: 'money', order: 1 },
+      { key: 'hourly_rate', label: 'نرخ ساعتی توافقی (تومان)', entity: 'customer', type: 'money', active: true, showInTable: true, order: 1 },
     ],
     customEntities: [],
     services: [
@@ -310,6 +479,22 @@ export const INDUSTRY_PACKS: PackTemplate[] = [
     tier: 'light',
     description: 'پیکربندی متعادل برای کسب‌وکارهای عمومی بدون فیلدهای تخصصی صنعتی',
     descriptionEn: 'Balanced standard setup suitable for general service businesses',
+    salesMeta: {
+      pipelineName: 'قیف فروش اصلی',
+      leadSingular: 'سرنخ فروش',
+      leadPlural: 'سرنخ‌های فروش',
+      dealSingular: 'فرصت فروش',
+      dealPlural: 'فرصت‌های فروش',
+      quoteLabel: 'پیش‌فاکتور رسمی',
+      defaultStages: [
+        { key: 'lead', label: 'سرنخ جدید', probability: 20, slaHours: 24 },
+        { key: 'contacted', label: 'تماس اولیه', probability: 35, slaHours: 48 },
+        { key: 'proposal', label: 'ارسال پیش‌فاکتور', probability: 55, slaHours: 72 },
+        { key: 'negotiation', label: 'مذاکره', probability: 75, slaHours: 96 },
+        { key: 'won', label: 'برنده‌شده', probability: 100, slaHours: 0 },
+        { key: 'lost', label: 'ازدست‌رفته', probability: 0, slaHours: 0 },
+      ],
+    },
     customFields: [],
     customEntities: [],
     services: [],
@@ -338,4 +523,33 @@ export function buildPackFromState(
     exportedAt: new Date().toISOString(),
     isCustom: true,
   };
+}
+
+export function getPackCustomerConfig(
+  packKey: IndustryPack,
+  customFieldDefs: CustomFieldDef[],
+): PackCustomerConfig {
+  const pack = INDUSTRY_PACKS.find((p) => p.key === packKey);
+  if (pack?.customerMeta) return pack.customerMeta;
+  const firstField = customFieldDefs
+    .filter((f) => (f.entity ?? 'customer') === 'customer' && f.active !== false)
+    .sort((a, b) => (a.order ?? 99) - (b.order ?? 99))[0];
+  return {
+    singularLabel: 'مشتری',
+    pluralLabel: 'مشتریان',
+    highlightFieldKey: firstField?.key,
+    highlightColumnLabel: firstField?.label,
+  };
+}
+
+export function getPackSalesConfig(
+  packKey: IndustryPack,
+  customPacks?: PackTemplate[],
+): PackSalesConfig {
+  const pack =
+    INDUSTRY_PACKS.find((p) => p.key === packKey) ??
+    customPacks?.find((p) => p.key === packKey);
+  if (pack?.salesMeta) return pack.salesMeta;
+  const generalPack = INDUSTRY_PACKS.find((p) => p.key === 'general')!;
+  return generalPack.salesMeta!;
 }

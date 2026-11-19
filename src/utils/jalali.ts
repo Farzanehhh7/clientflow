@@ -167,4 +167,79 @@ export function getTodayJalaliAscii(): string {
   return `${j.year()}/${String(j.month() + 1).padStart(2, '0')}/${String(j.date()).padStart(2, '0')}`;
 }
 
+export function isoToJalaliInput(iso?: string): string {
+  if (!iso) return '';
+  const d = dayjs(iso);
+  if (!d.isValid()) return '';
+  const j = d.calendar('jalali');
+  return `${j.year()}/${String(j.month() + 1).padStart(2, '0')}/${String(j.date()).padStart(2, '0')}`;
+}
+
+/** Convert a Jalali date string like 1405/08/28 to an ISO UTC string (noon local to avoid timezone shift) */
+export function jalaliToIsoUtc(jalaliStr: string): string | null {
+  const ascii = jalaliStr.replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d))).trim();
+  const match = ascii.match(/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})$/);
+  if (!match) return null;
+  const jy = Number(match[1]);
+  const jm = Number(match[2]);
+  const jd = Number(match[3]);
+  if (jm < 1 || jm > 12 || jd < 1 || jd > 31) return null;
+  // Convert Jalali to Gregorian via iterative search around approximate year
+  const approxGregYear = jy + 621;
+  let cursor = dayjs(`${approxGregYear}-03-20`).startOf('day');
+  // Adjust up/down quickly
+  for (let i = 0; i < 420; i++) {
+    const j = cursor.calendar('jalali');
+    if (j.year() === jy && j.month() + 1 === jm && j.date() === jd) {
+      return cursor.hour(12).minute(0).second(0).millisecond(0).toISOString();
+    }
+    const diffDays = (jy - j.year()) * 365 + (jm - (j.month() + 1)) * 30 + (jd - j.date());
+    if (Math.abs(diffDays) > 2) {
+      cursor = cursor.add(diffDays > 0 ? Math.max(1, Math.floor(diffDays / 2)) : Math.min(-1, Math.ceil(diffDays / 2)), 'day');
+    } else {
+      cursor = cursor.add(diffDays >= 0 ? 1 : -1, 'day');
+    }
+  }
+  return null;
+}
+
+/** Build a calendar grid for an explicit Jalali year & month (0..11) */
+export function getJalaliMonthGridByYearMonth(targetYear: number, targetMonth: number): {
+  title: string;
+  year: number;
+  month: number;
+  cells: JalaliMonthCell[];
+} {
+  const firstDayIso = jalaliToIsoUtc(`${targetYear}/${String(targetMonth + 1).padStart(2, '0')}/01`);
+  const cursor = firstDayIso ? dayjs(firstDayIso).startOf('day') : dayjs().startOf('day');
+  const leadingDays = (cursor.day() + 1) % 7;
+  const gridStart = cursor.subtract(leadingDays, 'day');
+  const todayKey = dayjs().format('YYYY-MM-DD');
+
+  const allCells: JalaliMonthCell[] = Array.from({ length: 42 }, (_, i) => {
+    const d = gridStart.add(i, 'day');
+    const j = d.calendar('jalali');
+    const jYear = j.year();
+    const jMonth = j.month();
+    const jDay = j.date();
+    return {
+      dateKey: d.format('YYYY-MM-DD'),
+      jalaliDay: jDay,
+      jalaliFull: `${toFa(jYear)}/${toFa(String(jMonth + 1).padStart(2, '0'))}/${toFa(String(jDay).padStart(2, '0'))}`,
+      dayIndex: d.day(),
+      isCurrentMonth: jYear === targetYear && jMonth === targetMonth,
+      isToday: d.format('YYYY-MM-DD') === todayKey,
+    };
+  });
+
+  const sixthRowHasCurrent = allCells.slice(35).some((c) => c.isCurrentMonth);
+  const cells = sixthRowHasCurrent ? allCells : allCells.slice(0, 35);
+  return {
+    title: `${JALALI_MONTHS[targetMonth] ?? ''} ${toFa(targetYear)}`,
+    year: targetYear,
+    month: targetMonth,
+    cells,
+  };
+}
+
 export { toFa };

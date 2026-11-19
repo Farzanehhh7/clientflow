@@ -52,6 +52,10 @@
         font-variant-numeric: tabular-nums;
       }
       @media print {
+        @page {
+          size: A4 portrait;
+          margin: 12mm;
+        }
         aside,
         header,
         .print-hidden {
@@ -64,6 +68,8 @@
         body {
           background: #ffffff !important;
           color: #0f172a !important;
+          -webkit-print-color-adjust: exact;
+          print-color-adjust: exact;
         }
       }
     </style>

@@ -18,9 +18,16 @@ import {
   UserCheck,
   Users,
 } from 'lucide-react';
+import { DynamicFieldsRenderer } from '../components/DynamicFieldsRenderer';
 import { Modal } from '../components/Modal';
 import { useClientFlow } from '../store/useClientFlowStore';
 import type { KbArticle, Ticket } from '../types';
+import {
+  formatCustomFieldValue,
+  getFieldsForEntity,
+  getTableCustomFields,
+  validateCustomFieldValues,
+} from '../utils/customFieldValidation';
 import { formatJalaliDateTime, toFa } from '../utils/jalali';
 import { fuzzyMatchPersian } from '../utils/persianSearch';
 
@@ -91,6 +98,8 @@ export function TicketsPage() {
   const [team, setTeam] = useState(TEAMS[0]);
   const [assignee, setAssignee] = useState(state.settings.salesTeam[0] ?? 'سارا (پذیرش)');
   const [initialBody, setInitialBody] = useState('');
+  const [ticketCustomFields, setTicketCustomFields] = useState<Record<string, string>>({});
+  const [ticketCustomErrors, setTicketCustomErrors] = useState<Record<string, string>>({});
 
   // Conversation Thread & Detail Modal
   const [activeTicketId, setActiveTicketId] = useState<string | null>(null);
@@ -227,9 +236,27 @@ export function TicketsPage() {
     };
   }, [state.tickets, agents, nowMs]);
 
+  const ticketActiveFields = useMemo(
+    () => getFieldsForEntity(state.customFieldDefs, 'ticket', false),
+    [state.customFieldDefs],
+  );
+  const ticketTableFields = useMemo(
+    () => getTableCustomFields(state.customFieldDefs, 'ticket'),
+    [state.customFieldDefs],
+  );
+
   const handleCreate = (e: React.FormEvent) => {
     e.preventDefault();
     if (!subject.trim()) return;
+    setTicketCustomErrors({});
+    const cfValidation = validateCustomFieldValues(state.customFieldDefs, ticketCustomFields, {
+      entity: 'ticket',
+      existingRecords: state.tickets,
+    });
+    if (!cfValidation.ok) {
+      setTicketCustomErrors(cfValidation.errors);
+      return;
+    }
     addTicket({
       customerId,
       subject,
@@ -238,10 +265,12 @@ export function TicketsPage() {
       team,
       assignee,
       initialBody,
+      customFields: ticketCustomFields,
     });
     setSubject('');
     setInitialBody('');
     setPriority('normal');
+    setTicketCustomFields({});
     setCreateOpen(false);
   };
 
@@ -372,6 +401,8 @@ export function TicketsPage() {
               type="button"
               onClick={() => {
                 if (tab === 'tickets') {
+                  setTicketCustomFields({});
+                  setTicketCustomErrors({});
                   setCreateOpen(true);
                 } else {
                   setEditingKb(null);
@@ -456,6 +487,11 @@ export function TicketsPage() {
                     <th className="px-4 py-3 font-medium">اولویت</th>
                     <th className="px-4 py-3 font-medium">وضعیت</th>
                     <th className="px-4 py-3 font-medium">تاریخ ثبت</th>
+                    {ticketTableFields.map((def) => (
+                      <th key={def.id} className="px-4 py-3 font-medium">
+                        {def.label}
+                      </th>
+                    ))}
                     <th className="px-4 py-3 font-medium text-left">اقدام</th>
                   </tr>
                 </thead>
@@ -553,6 +589,11 @@ export function TicketsPage() {
                         <td className="px-4 py-3 text-xs tabular-nums text-slate-500 dark:text-slate-400">
                           {formatJalaliDateTime(t.createdAt)}
                         </td>
+                        {ticketTableFields.map((def) => (
+                          <td key={def.id} className="px-4 py-3 text-xs text-slate-600 dark:text-slate-300">
+                            {formatCustomFieldValue(def, t.customFields?.[def.key])}
+                          </td>
+                        ))}
                         <td className="px-4 py-3 text-left">
                           <div className="flex items-center justify-end gap-1.5">
                             {t.status !== 'resolved' && (
@@ -1033,6 +1074,19 @@ export function TicketsPage() {
               className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800"
             />
           </div>
+
+          {ticketActiveFields.length > 0 && (
+            <div className="border-t border-slate-200 pt-3 dark:border-slate-800">
+              <p className="mb-2 text-xs font-semibold text-slate-500">فیلدهای سفارشی تیکت</p>
+              <DynamicFieldsRenderer
+                entity="ticket"
+                defs={state.customFieldDefs}
+                values={ticketCustomFields}
+                onChange={setTicketCustomFields}
+                errors={ticketCustomErrors}
+              />
+            </div>
+          )}
 
           <div className="flex justify-end gap-2 pt-2">
             <button

@@ -1,6 +1,9 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
-import { INDUSTRY_PACKS, buildPackFromState } from '../data/packs';
+import { INDUSTRY_PACKS, buildPackFromState, getPackSalesConfig } from '../data/packs';
+import { DEFAULT_TENANT_ID } from '../data/repositories/customerRepository';
+import { stampCreateMeta, stampUpdateMeta } from '../data/repositories/types';
 import { createInitialState, defaultDashboardWidgets } from '../data/seed';
+import { notificationProvider } from '../services/providers/notificationProvider';
 import type {
   AppState,
   Appointment,
@@ -9,8 +12,14 @@ import type {
   AutomationPolicy,
   Branch,
   BusinessSettings,
+  ClientFlowConfigBundle,
+  CommissionLedgerEntry,
+  CommissionLedgerStatus,
+  CommissionRuleConfig,
   CommissionTier,
   ConfigSnapshot,
+  ConsentChannel,
+  ConsentLog,
   ContentItem,
   ContentStatus,
   Coupon,
@@ -21,12 +30,14 @@ import type {
   Customer,
   CustomerAttachment,
   CustomerRelation,
+  CustomerSavedView,
   CustomerSegment,
   DashboardWidgetConfig,
   DeploymentCheckItem,
   EntityRelationDef,
   IndustryPack,
   Interaction,
+  InteractionOutcome,
   Invoice,
   KbArticle,
   LandingForm,
@@ -45,6 +56,7 @@ import type {
   PaymentTransaction,
   PipelineStage,
   PipelineStageConfig,
+  PriceList,
   Product,
   Project,
   ProjectStatus,
@@ -54,6 +66,8 @@ import type {
   ResourceTimeOff,
   Rule,
   RuleTriggerType,
+  SalesLead,
+  SalesPipeline,
   SalesTarget,
   SayadiCheque,
   SayadiChequeStatus,
@@ -80,7 +94,8 @@ import {
   simulateRuleDryRun,
   type DryRunResult,
 } from '../utils/automationEngine';
-import { daysUntilJalaliMonthDay } from '../utils/crmHelpers';
+import { configBundleSchema } from '../utils/customFieldValidation';
+import { computeCommissionAmount, computeQuoteFinancials, daysUntilJalaliMonthDay } from '../utils/crmHelpers';
 import { formatDocumentNumber } from '../utils/i18n';
 import { getDateKeyFromIso, hasConflict, isHolidayOrTimeOff, isValidIranMobile, isValidNationalId } from '../utils/overlap';
 
@@ -109,21 +124,39 @@ function mergeLoadedState(parsed: Partial<AppState> | null | undefined): AppStat
     ...fallback.rules.filter((r) => !existingRuleIds.has(r.id)),
   ];
 
+  const normalizedFields = (parsed.customFieldDefs ?? fallback.customFieldDefs).map((f, idx) => ({
+    ...f,
+    entity: f.entity ?? 'customer',
+    active: f.active ?? true,
+    order: f.order ?? idx + 1,
+  }));
+
   return {
     ...fallback,
     ...parsed,
+    customFieldDefs: normalizedFields,
     rules: mergedRules,
     customerRelations: parsed.customerRelations ?? fallback.customerRelations,
     customerSegments: parsed.customerSegments ?? fallback.customerSegments,
+    customerSavedViews: parsed.customerSavedViews ?? fallback.customerSavedViews,
+    consentLogs: parsed.consentLogs ?? fallback.consentLogs,
     csvImportBatches: parsed.csvImportBatches ?? fallback.csvImportBatches,
     customEntityDefs: parsed.customEntityDefs ?? fallback.customEntityDefs,
     customEntityRecords: parsed.customEntityRecords ?? fallback.customEntityRecords,
     entityRelations: parsed.entityRelations ?? fallback.entityRelations,
     configSnapshots: parsed.configSnapshots ?? fallback.configSnapshots,
+    leads: parsed.leads ?? fallback.leads,
+    pipelines:
+      parsed.pipelines && parsed.pipelines.length > 0
+        ? parsed.pipelines
+        : fallback.pipelines,
     pipelineStages: parsed.pipelineStages ?? fallback.pipelineStages,
+    priceLists: parsed.priceLists ?? fallback.priceLists,
     quotes: parsed.quotes ?? fallback.quotes,
     salesTargets: parsed.salesTargets ?? fallback.salesTargets,
     commissionTiers: parsed.commissionTiers ?? fallback.commissionTiers,
+    commissionRule: parsed.commissionRule ?? fallback.commissionRule,
+    commissionLedger: parsed.commissionLedger ?? fallback.commissionLedger,
     stockMovements: parsed.stockMovements ?? fallback.stockMovements,
     projects: parsed.projects ?? fallback.projects,
     timeEntries: parsed.timeEntries ?? fallback.timeEntries,
@@ -180,22 +213,41 @@ type ClientFlowContextValue = {
   pushToast: (text: string, type?: ToastMessage['type']) => void;
   dismissToast: (id: string) => void;
 
-  // Customers, Relations, Segments, CSV Rollback, PII Anonymization & Attachments
+  // Customers, Relations, Segments, Saved Views, Consent Logs, CSV Rollback, PII Anonymization & Attachments
   addCustomer: (data: Omit<Customer, 'id' | 'createdAt'>) => { ok: boolean; error?: string; customer?: Customer };
   updateCustomer: (id: string, data: Partial<Customer>) => { ok: boolean; error?: string };
+  updateCustomerConsent: (
+    customerId: string,
+    channel: ConsentChannel,
+    granted: boolean,
+    source?: string,
+    note?: string,
+  ) => void;
   deleteCustomer: (id: string) => { ok: boolean; error?: string };
   anonymizeCustomer: (id: string) => { ok: boolean; error?: string };
-  mergeCustomers: (primaryId: string, duplicateId: string) => { ok: boolean; error?: string };
+  mergeCustomers: (
+    primaryId: string,
+    duplicateId: string,
+    mergedCustomerPatch?: Partial<Customer>,
+  ) => { ok: boolean; error?: string };
   importCustomersBatch: (items: Customer[], fileName?: string) => number;
   rollbackCsvImportBatch: (batchId: string) => void;
   addCustomerRelation: (data: Omit<CustomerRelation, 'id' | 'createdAt'>) => void;
   removeCustomerRelation: (id: string) => void;
   addCustomerSegment: (seg: Omit<CustomerSegment, 'id' | 'createdAt'>) => void;
+  updateCustomerSegment: (id: string, patch: Partial<CustomerSegment>) => void;
   deleteCustomerSegment: (id: string) => void;
+  saveCustomerView: (view: Omit<CustomerSavedView, 'id' | 'createdAt'>) => void;
+  deleteCustomerView: (id: string) => void;
   addCustomerAttachment: (customerId: string, att: Omit<CustomerAttachment, 'id' | 'uploadedAt'>) => void;
   removeCustomerAttachment: (customerId: string, attachmentId: string) => void;
   sendBirthdayGreeting: (customerId: string, kind: 'birthday' | 'anniversary') => void;
-  addInteraction: (customerId: string, channel: Interaction['channel'], text: string) => void;
+  addInteraction: (
+    customerId: string,
+    channel: Interaction['channel'],
+    text: string,
+    options?: { outcome?: InteractionOutcome; followUpAt?: string; createFollowUpTask?: boolean },
+  ) => void;
 
   // Dynamic Configurator (Fields, Entities, Relations, Versioning)
   addCustomFieldDef: (def: Omit<CustomFieldDef, 'id'>) => void;
@@ -234,6 +286,7 @@ type ClientFlowContextValue = {
     items: { name: string; qty: number; price: number }[];
     promisedAt?: string;
     couponCode?: string;
+    customFields?: Record<string, string>;
   }) => { ok: boolean; error?: string };
   updateOrderStatus: (id: string, nextStatus: OrderStatus, trackingCode?: string) => void;
   recordOrderShipment: (orderId: string, shipment: Omit<OrderShipment, 'id' | 'shippedAt'>) => void;
@@ -250,7 +303,24 @@ type ClientFlowContextValue = {
   addTimeEntry: (entry: Omit<TimeEntry, 'id' | 'loggedAt'>) => void;
   toggleDeploymentCheck: (projectId: string, checkId: string) => void;
 
-  // Sales Pipeline, Quotes, Targets & Stepped Commissions
+  // Sales Leads, Multiple Pipelines, Catalog/PriceLists, Quotes Approval, Targets & Commissions
+  addLead: (
+    data: Omit<SalesLead, 'id' | 'createdAt' | 'updatedAt' | 'assignedByRule'>,
+    useRoundRobin?: boolean,
+  ) => { ok: boolean; error?: string; lead?: SalesLead };
+  updateLead: (id: string, patch: Partial<SalesLead>) => void;
+  convertLeadToCustomerAndOpportunity: (
+    leadId: string,
+    options?: { pipelineId?: string; opportunityTitle?: string; expectedCloseDate?: string },
+  ) => { ok: boolean; error?: string };
+  addPipeline: (pipeline: Omit<SalesPipeline, 'id'>) => void;
+  updatePipeline: (id: string, patch: Partial<SalesPipeline>) => void;
+  deletePipeline: (id: string) => void;
+  updateProduct: (id: string, patch: Partial<Product>) => void;
+  updateService: (id: string, patch: Partial<Service>) => void;
+  addPriceList: (pl: Omit<PriceList, 'id'>) => void;
+  updatePriceList: (id: string, patch: Partial<PriceList>) => void;
+  deletePriceList: (id: string) => void;
   addOpportunity: (
     data: Omit<Opportunity, 'id' | 'createdAt' | 'updatedAt'>,
     useRoundRobin?: boolean,
@@ -260,11 +330,18 @@ type ClientFlowContextValue = {
   updatePipelineStages: (stages: PipelineStageConfig[]) => void;
   updateSalesTargets: (targets: SalesTarget[]) => void;
   updateCommissionTiers: (tiers: CommissionTier[]) => void;
+  updateCommissionRule: (rule: CommissionRuleConfig) => void;
+  approveCommissionEntry: (id: string, nextStatus: CommissionLedgerStatus) => void;
+  generateMissingCommissions: () => void;
   createQuote: (
     data: Omit<Quote, 'id' | 'quoteNo' | 'version' | 'shareToken' | 'createdAt'>,
   ) => void;
-  createQuoteVersion: (parentQuoteId: string, patch?: Partial<Pick<Quote, 'items' | 'discountPct' | 'notes'>>) => void;
-  updateQuoteStatus: (id: string, status: QuoteStatus, clientComment?: string) => void;
+  createQuoteVersion: (
+    parentQuoteId: string,
+    patch?: Partial<Pick<Quote, 'items' | 'discountPct' | 'taxPct' | 'priceListId' | 'priceListName' | 'notes' | 'validUntil'>>,
+  ) => void;
+  updateQuoteStatus: (id: string, status: QuoteStatus, clientComment?: string) => { ok: boolean; error?: string };
+  approveQuoteDiscount: (id: string, approved: boolean) => void;
 
   // Workflows (BPMS + Visual BPMN Designer)
   saveWorkflowDefinition: (def: Omit<WorkflowDefinition, 'id' | 'updatedAt'> & { id?: string }) => void;
@@ -320,6 +397,7 @@ type ClientFlowContextValue = {
     assignee?: string;
     rootCause?: string;
     initialBody?: string;
+    customFields?: Record<string, string>;
   }) => void;
   updateTicket: (
     id: string,
@@ -389,6 +467,8 @@ type ClientFlowContextValue = {
   resetDemoData: () => void;
   exportStateJson: () => string;
   importStateJson: (raw: string) => { ok: boolean; error?: string };
+  exportConfigJson: () => string;
+  importConfigJson: (raw: string) => { ok: boolean; error?: string };
 };
 
 const ClientFlowContext = createContext<ClientFlowContextValue | null>(null);
@@ -564,6 +644,11 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
   );
 
   // --- CRM & CUSTOMERS ---
+  const getRepoCtx = () => ({
+    tenantId: DEFAULT_TENANT_ID,
+    actorName: stateRef.current.settings.role === 'admin' ? 'مدیر سیستم' : 'کارشناس',
+  });
+
   const addCustomer = useCallback(
     (data: Omit<Customer, 'id' | 'createdAt'>) => {
       if (!data.name.trim()) return { ok: false, error: 'نام مشتری الزامی است.' };
@@ -571,21 +656,59 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         return { ok: false, error: 'شماره موبایل معتبر نیست (فرمت صحیح: ۰۹xxxxxxxxx).' };
       }
       if (data.nationalId && !isValidNationalId(data.nationalId)) {
-        return { ok: false, error: 'کد ملی معتبر نیست (باید ۱۰ رقم عددی باشد).' };
+        return { ok: false, error: 'کد ملی معتبر نیست (رقم کنترل کد ملی صحیح نیست).' };
       }
       const activeBranch =
         stateRef.current.settings.activeBranchId !== 'all'
           ? stateRef.current.settings.activeBranchId
           : stateRef.current.branches[0]?.id;
-      const customer: Customer = {
-        ...data,
-        branchId: data.branchId ?? activeBranch,
-        id: `c_${Date.now()}`,
-        createdAt: new Date().toISOString(),
-      };
+      const nowIso = new Date().toISOString();
+      const ctx = getRepoCtx();
+      const customer = stampCreateMeta<Customer>(
+        {
+          ...data,
+          branchId: data.branchId ?? activeBranch,
+          consentUpdatedAt: nowIso,
+          id: `c_${Date.now()}`,
+          createdAt: nowIso,
+        },
+        ctx,
+        nowIso,
+      );
+      const initialLogs: ConsentLog[] = [
+        stampCreateMeta<ConsentLog>(
+          {
+            id: `cl_${Date.now()}_sms`,
+            customerId: customer.id,
+            channel: 'sms',
+            granted: customer.consentSms !== false,
+            source: 'فرم ثبت مشتری',
+            actor: ctx.actorName,
+            at: nowIso,
+            createdAt: nowIso,
+          },
+          ctx,
+          nowIso,
+        ),
+        stampCreateMeta<ConsentLog>(
+          {
+            id: `cl_${Date.now()}_email`,
+            customerId: customer.id,
+            channel: 'email',
+            granted: customer.consentEmail !== false,
+            source: 'فرم ثبت مشتری',
+            actor: ctx.actorName,
+            at: nowIso,
+            createdAt: nowIso,
+          },
+          ctx,
+          nowIso,
+        ),
+      ];
       setState((prev) => ({
         ...prev,
         customers: [customer, ...prev.customers],
+        consentLogs: [...initialLogs, ...(prev.consentLogs ?? [])],
         auditLogs: [makeAudit('مشتری', 'create', `مشتری «${customer.name}» ثبت شد.`), ...prev.auditLogs].slice(0, 100),
       }));
       setTimeout(() => fireAutomationEvent('on_create', 'customer', customer as unknown as Record<string, unknown>), 50);
@@ -601,22 +724,126 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         return { ok: false, error: 'شماره موبایل معتبر نیست (فرمت صحیح: ۰۹xxxxxxxxx).' };
       }
       if (data.nationalId && !isValidNationalId(data.nationalId)) {
-        return { ok: false, error: 'کد ملی معتبر نیست (باید ۱۰ رقم عددی باشد).' };
+        return { ok: false, error: 'کد ملی معتبر نیست (رقم کنترل کد ملی صحیح نیست).' };
       }
       const existing = stateRef.current.customers.find((c) => c.id === id);
+      if (!existing) return { ok: false, error: 'مشتری یافت نشد.' };
+
+      const ctx = getRepoCtx();
+      const nowIso = new Date().toISOString();
+      const newConsentLogs: ConsentLog[] = [];
+      if (data.consentSms !== undefined && data.consentSms !== (existing.consentSms !== false)) {
+        newConsentLogs.push(
+          stampCreateMeta<ConsentLog>(
+            {
+              id: `cl_${Date.now()}_sms`,
+              customerId: id,
+              channel: 'sms',
+              granted: data.consentSms,
+              source: 'ویرایش پرونده مشتری',
+              actor: ctx.actorName,
+              at: nowIso,
+              createdAt: nowIso,
+            },
+            ctx,
+            nowIso,
+          ),
+        );
+      }
+      if (data.consentEmail !== undefined && data.consentEmail !== (existing.consentEmail !== false)) {
+        newConsentLogs.push(
+          stampCreateMeta<ConsentLog>(
+            {
+              id: `cl_${Date.now()}_email`,
+              customerId: id,
+              channel: 'email',
+              granted: data.consentEmail,
+              source: 'ویرایش پرونده مشتری',
+              actor: ctx.actorName,
+              at: nowIso,
+              createdAt: nowIso,
+            },
+            ctx,
+            nowIso,
+          ),
+        );
+      }
+
+      const updatedCustomer = stampUpdateMeta(
+        {
+          ...existing,
+          ...data,
+          consentUpdatedAt: newConsentLogs.length > 0 ? nowIso : existing.consentUpdatedAt,
+        },
+        ctx,
+        nowIso,
+      );
+
       setState((prev) => ({
         ...prev,
-        customers: prev.customers.map((c) => (c.id === id ? { ...c, ...data } : c)),
-        auditLogs: [makeAudit('مشتری', 'update', `اطلاعات مشتری ${data.name ?? id} ویرایش شد.`), ...prev.auditLogs].slice(0, 100),
+        customers: prev.customers.map((c) => (c.id === id ? updatedCustomer : c)),
+        consentLogs:
+          newConsentLogs.length > 0
+            ? [...newConsentLogs, ...(prev.consentLogs ?? [])]
+            : prev.consentLogs ?? [],
+        auditLogs: [makeAudit('مشتری', 'update', `اطلاعات مشتری ${data.name ?? existing.name} ویرایش شد.`), ...prev.auditLogs].slice(0, 100),
       }));
-      if (existing) {
-        const merged = { ...existing, ...data };
-        setTimeout(() => fireAutomationEvent('on_update', 'customer', merged as unknown as Record<string, unknown>), 50);
-      }
+      setTimeout(() => fireAutomationEvent('on_update', 'customer', updatedCustomer as unknown as Record<string, unknown>), 50);
       pushToast('اطلاعات مشتری به‌روزرسانی شد.');
       return { ok: true };
     },
     [fireAutomationEvent, pushToast],
+  );
+
+  const updateCustomerConsent = useCallback(
+    (customerId: string, channel: ConsentChannel, granted: boolean, source = 'پرونده ۳۶۰ مشتری', note?: string) => {
+      const existing = stateRef.current.customers.find((c) => c.id === customerId);
+      if (!existing) return;
+      const ctx = getRepoCtx();
+      const nowIso = new Date().toISOString();
+      const patch: Partial<Customer> =
+        channel === 'sms'
+          ? { consentSms: granted }
+          : channel === 'email'
+            ? { consentEmail: granted }
+            : { consentPhoto: granted };
+
+      const log = stampCreateMeta<ConsentLog>(
+        {
+          id: `cl_${Date.now()}_${channel}`,
+          customerId,
+          channel,
+          granted,
+          source,
+          actor: ctx.actorName,
+          note,
+          at: nowIso,
+          createdAt: nowIso,
+        },
+        ctx,
+        nowIso,
+      );
+
+      setState((prev) => ({
+        ...prev,
+        customers: prev.customers.map((c) =>
+          c.id === customerId
+            ? stampUpdateMeta({ ...c, ...patch, consentUpdatedAt: nowIso }, ctx, nowIso)
+            : c,
+        ),
+        consentLogs: [log, ...(prev.consentLogs ?? [])],
+        auditLogs: [
+          makeAudit(
+            'مشتری',
+            'update',
+            `وضعیت رضایت ${channel.toUpperCase()} برای «${existing.name}» به ${granted ? 'تأیید' : 'لغو'} تغییر یافت.`,
+          ),
+          ...prev.auditLogs,
+        ].slice(0, 100),
+      }));
+      pushToast(`وضعیت رضایت (${channel === 'sms' ? 'پیامک' : channel === 'email' ? 'ایمیل' : 'تصویر'}) به‌روزرسانی و ثبت شد.`);
+    },
+    [pushToast],
   );
 
   const deleteCustomer = useCallback(
@@ -653,30 +880,38 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
       if (!target) return { ok: false, error: 'مشتری یافت نشد.' };
 
       const suffix = id.slice(-4).toUpperCase();
+      const ctx = getRepoCtx();
+      const nowIso = new Date().toISOString();
       setState((prev) => ({
         ...prev,
         customers: prev.customers.map((c) =>
           c.id === id
-            ? {
-                ...c,
-                name: `مشتری ناشناس #${suffix}`,
-                phone: `0900000${String(Math.floor(1000 + Math.random() * 8999))}`,
-                email: undefined,
-                nationalId: undefined,
-                companyName: c.companyName ? `شرکت ناشناس #${suffix}` : undefined,
-                economicCode: undefined,
-                registrationNo: undefined,
-                contacts: [],
-                addresses: [],
-                allergies: undefined,
-                notes: 'داده‌های هویتی مطابق درخواست مشتری ناشناس‌سازی (PII Anonymized) شد.',
-                birthDateJalali: undefined,
-                anniversaryDateJalali: undefined,
-                attachments: [],
-                consentSms: false,
-                consentPhoto: false,
-                isAnonymized: true,
-              }
+            ? stampUpdateMeta(
+                {
+                  ...c,
+                  name: `مشتری ناشناس #${suffix}`,
+                  phone: `0900000${String(Math.floor(1000 + Math.random() * 8999))}`,
+                  email: undefined,
+                  nationalId: undefined,
+                  companyName: c.companyName ? `شرکت ناشناس #${suffix}` : undefined,
+                  economicCode: undefined,
+                  registrationNo: undefined,
+                  contacts: [],
+                  addresses: [],
+                  allergies: undefined,
+                  notes: 'داده‌های هویتی مطابق درخواست مشتری ناشناس‌سازی (PII Anonymized) شد.',
+                  birthDateJalali: undefined,
+                  anniversaryDateJalali: undefined,
+                  attachments: [],
+                  consentSms: false,
+                  consentEmail: false,
+                  consentPhoto: false,
+                  consentUpdatedAt: nowIso,
+                  isAnonymized: true,
+                },
+                ctx,
+                nowIso,
+              )
             : c,
         ),
         auditLogs: [
@@ -691,7 +926,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
   );
 
   const mergeCustomers = useCallback(
-    (primaryId: string, duplicateId: string) => {
+    (primaryId: string, duplicateId: string, mergedCustomerPatch?: Partial<Customer>) => {
       if (stateRef.current.settings.role !== 'admin') {
         return { ok: false, error: 'ادغام پرونده مشتریان فقط برای مدیر مجاز است.' };
       }
@@ -700,51 +935,126 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
       const dup = stateRef.current.customers.find((c) => c.id === duplicateId);
       if (!primary || !dup) return { ok: false, error: 'رکورد مشتری یافت نشد.' };
 
+      const ctx = getRepoCtx();
+      const nowIso = new Date().toISOString();
       const mergedTags = Array.from(new Set([...primary.tags, ...dup.tags]));
-      setState((prev) => ({
-        ...prev,
-        customers: prev.customers
-          .filter((c) => c.id !== duplicateId)
-          .map((c) =>
-            c.id === primaryId
-              ? {
-                  ...c,
-                  tags: mergedTags,
-                  email: c.email || dup.email,
-                  contacts: [...(c.contacts ?? []), ...(dup.contacts ?? [])],
-                  addresses: [...(c.addresses ?? []), ...(dup.addresses ?? [])],
-                  attachments: [...(c.attachments ?? []), ...(dup.attachments ?? [])],
-                  notes: [c.notes, dup.notes].filter(Boolean).join(' | ') || undefined,
-                }
-              : c,
+
+      setState((prev) => {
+        const remappedRelations = prev.customerRelations
+          .map((r) => ({
+            ...r,
+            fromCustomerId: r.fromCustomerId === duplicateId ? primaryId : r.fromCustomerId,
+            toCustomerId: r.toCustomerId === duplicateId ? primaryId : r.toCustomerId,
+          }))
+          .filter((r) => r.fromCustomerId !== r.toCustomerId);
+
+        const seenRel = new Set<string>();
+        const dedupedRelations = remappedRelations.filter((r) => {
+          const key = `${r.fromCustomerId}::${r.toCustomerId}::${r.relationType}`;
+          if (seenRel.has(key)) return false;
+          seenRel.add(key);
+          return true;
+        });
+
+        return {
+          ...prev,
+          customers: prev.customers
+            .filter((c) => c.id !== duplicateId)
+            .map((c) =>
+              c.id === primaryId
+                ? stampUpdateMeta(
+                    {
+                      ...c,
+                      email: c.email || dup.email,
+                      nationalId: c.nationalId || dup.nationalId,
+                      companyName: c.companyName || dup.companyName,
+                      economicCode: c.economicCode || dup.economicCode,
+                      registrationNo: c.registrationNo || dup.registrationNo,
+                      birthDateJalali: c.birthDateJalali || dup.birthDateJalali,
+                      anniversaryDateJalali: c.anniversaryDateJalali || dup.anniversaryDateJalali,
+                      ownerName: c.ownerName || dup.ownerName,
+                      ...mergedCustomerPatch,
+                      tags: mergedTags,
+                      contacts: [...(c.contacts ?? []), ...(dup.contacts ?? [])],
+                      addresses: [...(c.addresses ?? []), ...(dup.addresses ?? [])],
+                      attachments: [...(c.attachments ?? []), ...(dup.attachments ?? [])],
+                      customFields: { ...(dup.customFields ?? {}), ...(c.customFields ?? {}) },
+                      notes: [c.notes, dup.notes].filter(Boolean).join(' | ') || undefined,
+                    },
+                    ctx,
+                    nowIso,
+                  )
+                : c,
+            ),
+          customerRelations: dedupedRelations,
+          interactions: prev.interactions.map((i) =>
+            i.customerId === duplicateId ? { ...i, customerId: primaryId } : i,
           ),
-        interactions: prev.interactions.map((i) =>
-          i.customerId === duplicateId ? { ...i, customerId: primaryId } : i,
-        ),
-        appointments: prev.appointments.map((a) =>
-          a.customerId === duplicateId ? { ...a, customerId: primaryId } : a,
-        ),
-        orders: prev.orders.map((o) =>
-          o.customerId === duplicateId ? { ...o, customerId: primaryId } : o,
-        ),
-        invoices: prev.invoices.map((inv) =>
-          inv.customerId === duplicateId ? { ...inv, customerId: primaryId } : inv,
-        ),
-        tickets: prev.tickets.map((t) =>
-          t.customerId === duplicateId ? { ...t, customerId: primaryId } : t,
-        ),
-        tasks: prev.tasks.map((t) =>
-          t.customerId === duplicateId ? { ...t, customerId: primaryId } : t,
-        ),
-        npsSurveys: prev.npsSurveys.map((n) =>
-          n.customerId === duplicateId ? { ...n, customerId: primaryId } : n,
-        ),
-        auditLogs: [
-          makeAudit('مشتری', 'merge', `پرونده «${dup.name}» در «${primary.name}» ادغام شد.`),
-          ...prev.auditLogs,
-        ].slice(0, 100),
-      }));
-      pushToast(`پرونده «${dup.name}» با «${primary.name}» ادغام شد.`);
+          appointments: prev.appointments.map((a) =>
+            a.customerId === duplicateId ? { ...a, customerId: primaryId } : a,
+          ),
+          waitlist: prev.waitlist.map((w) =>
+            w.customerId === duplicateId ? { ...w, customerId: primaryId } : w,
+          ),
+          orders: prev.orders.map((o) =>
+            o.customerId === duplicateId ? { ...o, customerId: primaryId } : o,
+          ),
+          invoices: prev.invoices.map((inv) =>
+            inv.customerId === duplicateId ? { ...inv, customerId: primaryId } : inv,
+          ),
+          sayadiCheques: prev.sayadiCheques.map((ch) =>
+            ch.customerId === duplicateId ? { ...ch, customerId: primaryId } : ch,
+          ),
+          paymentTransactions: prev.paymentTransactions.map((pt) =>
+            pt.customerId === duplicateId ? { ...pt, customerId: primaryId } : pt,
+          ),
+          opportunities: prev.opportunities.map((opp) =>
+            opp.customerId === duplicateId ? { ...opp, customerId: primaryId } : opp,
+          ),
+          quotes: prev.quotes.map((q) =>
+            q.customerId === duplicateId ? { ...q, customerId: primaryId } : q,
+          ),
+          workflows: prev.workflows.map((wf) =>
+            wf.customerId === duplicateId ? { ...wf, customerId: primaryId } : wf,
+          ),
+          customEntityRecords: prev.customEntityRecords.map((er) =>
+            er.relatedCustomerId === duplicateId ? { ...er, relatedCustomerId: primaryId } : er,
+          ),
+          utmTouches: prev.utmTouches.map((u) =>
+            u.customerId === duplicateId ? { ...u, customerId: primaryId } : u,
+          ),
+          tickets: prev.tickets.map((t) =>
+            t.customerId === duplicateId ? { ...t, customerId: primaryId } : t,
+          ),
+          tasks: prev.tasks.map((t) =>
+            t.customerId === duplicateId ? { ...t, customerId: primaryId } : t,
+          ),
+          npsSurveys: prev.npsSurveys.map((n) =>
+            n.customerId === duplicateId ? { ...n, customerId: primaryId } : n,
+          ),
+          consentLogs: (prev.consentLogs ?? []).map((cl) =>
+            cl.customerId === duplicateId ? { ...cl, customerId: primaryId } : cl,
+          ),
+          outbox: prev.outbox.map((m) =>
+            m.customerId === duplicateId ? { ...m, customerId: primaryId, customerName: primary.name } : m,
+          ),
+          customerSegments: prev.customerSegments.map((seg) =>
+            seg.staticCustomerIds?.includes(duplicateId)
+              ? {
+                  ...seg,
+                  staticCustomerIds: Array.from(
+                    new Set(seg.staticCustomerIds.map((cid) => (cid === duplicateId ? primaryId : cid))),
+                  ),
+                }
+              : seg,
+          ),
+          auditLogs: [
+            makeAudit('مشتری', 'merge', `پرونده «${dup.name}» در «${primary.name}» ادغام کامل شد.`),
+            ...prev.auditLogs,
+          ].slice(0, 100),
+        };
+      });
+      pushToast(`پرونده «${dup.name}» با حفظ تمام سوابق در «${primary.name}» ادغام شد.`);
       return { ok: true };
     },
     [pushToast],
@@ -753,25 +1063,32 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
   const importCustomersBatch = useCallback(
     (items: Customer[], fileName = 'import.csv') => {
       if (items.length === 0) return 0;
-      const batch: CsvImportBatch = {
-        id: `batch_${Date.now()}`,
-        fileName,
-        customerIds: items.map((i) => i.id),
-        count: items.length,
-        importedAt: new Date().toISOString(),
-        rolledBack: false,
-      };
+      const ctx = getRepoCtx();
+      const nowIso = new Date().toISOString();
+      const stampedItems = items.map((i) => stampCreateMeta(i, ctx, nowIso));
+      const batch = stampCreateMeta<CsvImportBatch>(
+        {
+          id: `batch_${Date.now()}`,
+          fileName,
+          customerIds: stampedItems.map((i) => i.id),
+          count: stampedItems.length,
+          importedAt: nowIso,
+          rolledBack: false,
+        },
+        ctx,
+        nowIso,
+      );
       setState((prev) => ({
         ...prev,
-        customers: [...items, ...prev.customers],
+        customers: [...stampedItems, ...prev.customers],
         csvImportBatches: [batch, ...prev.csvImportBatches].slice(0, 20),
         auditLogs: [
-          makeAudit('مشتری', 'create', `${items.length} مشتری از فایل «${fileName}» وارد شد.`),
+          makeAudit('مشتری', 'create', `${stampedItems.length} مشتری از فایل «${fileName}» وارد شد.`),
           ...prev.auditLogs,
         ].slice(0, 100),
       }));
-      pushToast(`${items.length} مشتری از فایل CSV وارد شد (قابل بازگشت در تاریخچه).`);
-      return items.length;
+      pushToast(`${stampedItems.length} مشتری از فایل وارد شد (قابل بازگشت در تاریخچه).`);
+      return stampedItems.length;
     },
     [pushToast],
   );
@@ -800,11 +1117,17 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
   const addCustomerRelation = useCallback(
     (data: Omit<CustomerRelation, 'id' | 'createdAt'>) => {
       if (data.fromCustomerId === data.toCustomerId) return;
-      const rel: CustomerRelation = {
-        ...data,
-        id: `rel_${Date.now()}`,
-        createdAt: new Date().toISOString(),
-      };
+      const ctx = getRepoCtx();
+      const nowIso = new Date().toISOString();
+      const rel = stampCreateMeta<CustomerRelation>(
+        {
+          ...data,
+          id: `rel_${Date.now()}`,
+          createdAt: nowIso,
+        },
+        ctx,
+        nowIso,
+      );
       setState((prev) => ({
         ...prev,
         customerRelations: [rel, ...prev.customerRelations],
@@ -823,16 +1146,38 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
 
   const addCustomerSegment = useCallback(
     (seg: Omit<CustomerSegment, 'id' | 'createdAt'>) => {
-      const created: CustomerSegment = {
-        ...seg,
-        id: `seg_${Date.now()}`,
-        createdAt: new Date().toISOString(),
-      };
+      const ctx = getRepoCtx();
+      const nowIso = new Date().toISOString();
+      const created = stampCreateMeta<CustomerSegment>(
+        {
+          ...seg,
+          segmentType: seg.segmentType ?? 'dynamic',
+          id: `seg_${Date.now()}`,
+          createdAt: nowIso,
+        },
+        ctx,
+        nowIso,
+      );
       setState((prev) => ({
         ...prev,
         customerSegments: [created, ...prev.customerSegments],
       }));
-      pushToast(`سگمنت پویا «${created.name}» ذخیره شد.`);
+      pushToast(`سگمنت «${created.name}» ذخیره شد.`);
+    },
+    [pushToast],
+  );
+
+  const updateCustomerSegment = useCallback(
+    (id: string, patch: Partial<CustomerSegment>) => {
+      const ctx = getRepoCtx();
+      const nowIso = new Date().toISOString();
+      setState((prev) => ({
+        ...prev,
+        customerSegments: prev.customerSegments.map((s) =>
+          s.id === id ? stampUpdateMeta({ ...s, ...patch }, ctx, nowIso) : s,
+        ),
+      }));
+      pushToast('سگمنت به‌روزرسانی شد.');
     },
     [pushToast],
   );
@@ -844,6 +1189,39 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         customerSegments: prev.customerSegments.filter((s) => s.id !== id),
       }));
       pushToast('سگمنت حذف شد.', 'info');
+    },
+    [pushToast],
+  );
+
+  const saveCustomerView = useCallback(
+    (view: Omit<CustomerSavedView, 'id' | 'createdAt'>) => {
+      const ctx = getRepoCtx();
+      const nowIso = new Date().toISOString();
+      const created = stampCreateMeta<CustomerSavedView>(
+        {
+          ...view,
+          id: `view_${Date.now()}`,
+          createdAt: nowIso,
+        },
+        ctx,
+        nowIso,
+      );
+      setState((prev) => ({
+        ...prev,
+        customerSavedViews: [created, ...(prev.customerSavedViews ?? [])],
+      }));
+      pushToast(`نمای فیلتر «${created.name}» ذخیره شد.`);
+    },
+    [pushToast],
+  );
+
+  const deleteCustomerView = useCallback(
+    (id: string) => {
+      setState((prev) => ({
+        ...prev,
+        customerSavedViews: (prev.customerSavedViews ?? []).filter((v) => v.id !== id),
+      }));
+      pushToast('نمای ذخیره‌شده حذف شد.', 'info');
     },
     [pushToast],
   );
@@ -891,51 +1269,82 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
           ? `${cust.name} عزیز، زادروزتان مبارک! به‌مناسبت تولد شما کد هدیه ۲۰٪ (VIP20) در ${stateRef.current.settings.businessName} برایتان فعال شد.`
           : `${cust.name} گرامی، سالگرد همراهی ارزشمندتان با ${stateRef.current.settings.businessName} را تبریک می‌گوییم!`;
 
+      const outboxMsg = notificationProvider.send({
+        to: cust.phone,
+        customerId: cust.id,
+        customerName: cust.name,
+        body,
+        channel: 'sms',
+        ruleName: kind === 'birthday' ? 'تبریک تولد' : 'تبریک سالگرد',
+      });
+
       setState((prev) => ({
         ...prev,
-        outbox: [
-          {
-            id: `msg_bday_${Date.now()}`,
-            to: cust.phone,
-            customerName: cust.name,
-            body,
-            channel: 'sms',
-            ruleName: kind === 'birthday' ? 'تبریک تولد' : 'تبریک سالگرد',
-            at: nowIso,
-          },
-          ...prev.outbox,
-        ],
+        outbox: [outboxMsg, ...prev.outbox],
         interactions: [
           {
             id: `int_bday_${Date.now()}`,
             customerId: cust.id,
             channel: 'sms',
             text: body,
+            outcome: 'answered',
             at: nowIso,
           },
           ...prev.interactions,
         ],
       }));
-      pushToast(`پیامک تبریک برای «${cust.name}» در صندوق ارسال ثبت شد.`);
+      pushToast(`پیامک تبریک برای «${cust.name}» از طریق آداپتور پیامک در صندوق ارسال ثبت شد.`);
     },
     [pushToast],
   );
 
   const addInteraction = useCallback(
-    (customerId: string, channel: Interaction['channel'], text: string) => {
+    (
+      customerId: string,
+      channel: Interaction['channel'],
+      text: string,
+      options?: { outcome?: InteractionOutcome; followUpAt?: string; createFollowUpTask?: boolean },
+    ) => {
       if (!text.trim()) return;
-      const item: Interaction = {
-        id: `int_${Date.now()}`,
-        customerId,
-        channel,
-        text: text.trim(),
-        at: new Date().toISOString(),
-      };
+      const ctx = getRepoCtx();
+      const nowIso = new Date().toISOString();
+      const item = stampCreateMeta<Interaction>(
+        {
+          id: `int_${Date.now()}`,
+          customerId,
+          channel,
+          text: text.trim(),
+          outcome: options?.outcome,
+          followUpAt: options?.followUpAt,
+          at: nowIso,
+        },
+        ctx,
+        nowIso,
+      );
+
+      const cust = stateRef.current.customers.find((c) => c.id === customerId);
+      const shouldCreateTask = Boolean(options?.followUpAt) && options?.createFollowUpTask !== false;
+      const followTask: Task | null =
+        shouldCreateTask && options?.followUpAt
+          ? {
+              id: `t_int_${Date.now()}`,
+              title: `پیگیری ${cust?.name ?? 'مشتری'}: ${text.trim().slice(0, 50)}`,
+              customerId,
+              dueAt: options.followUpAt,
+              done: false,
+            }
+          : null;
+
       setState((prev) => ({
         ...prev,
         interactions: [item, ...prev.interactions],
+        tasks: followTask ? [followTask, ...prev.tasks] : prev.tasks,
       }));
-      pushToast('تعامل جدید در پرونده مشتری ثبت شد.');
+      pushToast(
+        followTask
+          ? 'تعامل در پرونده ثبت شد و وظیفه پیگیری در تاریخ مقرر ایجاد گردید.'
+          : 'تعامل جدید در پرونده مشتری ثبت شد.',
+      );
     },
     [pushToast],
   );
@@ -947,7 +1356,13 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         ...prev,
         customFieldDefs: [
           ...prev.customFieldDefs,
-          { ...def, id: `cf_${Date.now()}`, order: prev.customFieldDefs.length + 1 },
+          {
+            ...def,
+            entity: def.entity ?? 'customer',
+            active: def.active ?? true,
+            id: `cf_${Date.now()}`,
+            order: prev.customFieldDefs.length + 1,
+          },
         ],
         auditLogs: [makeAudit('پیکربندی', 'create', `فیلد سفارشی «${def.label}» اضافه شد.`), ...prev.auditLogs].slice(0, 100),
       }));
@@ -977,12 +1392,15 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
   const reorderCustomFieldDefs = useCallback((orderedIds: string[]) => {
     setState((prev) => {
       const map = new Map(prev.customFieldDefs.map((f) => [f.id, f]));
-      const reordered: CustomFieldDef[] = orderedIds
-        .map((id, idx): CustomFieldDef | null => {
-          const item = map.get(id);
-          return item ? { ...item, order: idx + 1 } : null;
-        })
+      const pickedIds = new Set(orderedIds);
+      const orderedSubset: CustomFieldDef[] = orderedIds
+        .map((id): CustomFieldDef | null => map.get(id) ?? null)
         .filter((x): x is CustomFieldDef => x !== null);
+      const remaining = prev.customFieldDefs.filter((f) => !pickedIds.has(f.id));
+      const reordered = [...orderedSubset, ...remaining].map((item, idx) => ({
+        ...item,
+        order: idx + 1,
+      }));
       return { ...prev, customFieldDefs: reordered };
     });
   }, []);
@@ -1412,6 +1830,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
       items: { name: string; qty: number; price: number }[];
       promisedAt?: string;
       couponCode?: string;
+      customFields?: Record<string, string>;
     }) => {
       if (!data.customerId || data.items.length === 0) {
         return { ok: false, error: 'مشتری و حداقل یک قلم کالا الزامی است.' };
@@ -1449,6 +1868,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         discountAmount,
         shipments: [],
         branchId: activeBranch,
+        customFields: data.customFields,
       };
 
       setState((prev) => ({
@@ -1869,7 +2289,286 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
     }));
   }, []);
 
-  // --- SALES PIPELINE & QUOTES ---
+  // --- SALES LEADS, MULTIPLE PIPELINES, PRICE LISTS, QUOTES & COMMISSIONS ---
+  const addLead = useCallback(
+    (
+      data: Omit<SalesLead, 'id' | 'createdAt' | 'updatedAt' | 'assignedByRule'>,
+      useRoundRobin = false,
+    ) => {
+      if (!data.name.trim()) {
+        return { ok: false, error: 'نام سرنخ الزامی است.' };
+      }
+      if (!isValidIranMobile(data.phone)) {
+        return { ok: false, error: 'شماره موبایل معتبر نیست (فرمت صحیح: ۰۹xxxxxxxxx).' };
+      }
+      const cur = stateRef.current;
+      const team = cur.settings.salesTeam.length > 0 ? cur.settings.salesTeam : ['مریم (فروش)'];
+      const rrIdx = cur.settings.roundRobinIndex % team.length;
+      const assignedOwner = useRoundRobin ? team[rrIdx] : data.ownerName || team[0];
+      const nowIso = new Date().toISOString();
+      const lead: SalesLead = {
+        ...data,
+        id: `ld_${Date.now()}`,
+        ownerName: assignedOwner,
+        assignedByRule: useRoundRobin ? 'round_robin' : 'manual',
+        branchId: data.branchId ?? (cur.settings.activeBranchId !== 'all' ? cur.settings.activeBranchId : undefined),
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+      setState((prev) => ({
+        ...prev,
+        leads: [lead, ...prev.leads],
+        settings: useRoundRobin
+          ? { ...prev.settings, roundRobinIndex: (rrIdx + 1) % team.length }
+          : prev.settings,
+        auditLogs: [
+          makeAudit(
+            'فروش',
+            'create',
+            `سرنخ «${lead.name}» ثبت${useRoundRobin ? ` و به‌صورت چرخشی به ${assignedOwner} تخصیص داده` : ''} شد.`,
+          ),
+          ...prev.auditLogs,
+        ].slice(0, 100),
+      }));
+      pushToast(
+        useRoundRobin
+          ? `سرنخ «${lead.name}» ثبت و به ${assignedOwner} تخصیص داده شد.`
+          : `سرنخ «${lead.name}» ثبت شد.`,
+      );
+      return { ok: true, lead };
+    },
+    [pushToast],
+  );
+
+  const updateLead = useCallback(
+    (id: string, patch: Partial<SalesLead>) => {
+      const nowIso = new Date().toISOString();
+      setState((prev) => ({
+        ...prev,
+        leads: prev.leads.map((l) => (l.id === id ? { ...l, ...patch, updatedAt: nowIso } : l)),
+      }));
+      pushToast('اطلاعات سرنخ به‌روزرسانی شد.');
+    },
+    [pushToast],
+  );
+
+  const convertLeadToCustomerAndOpportunity = useCallback(
+    (
+      leadId: string,
+      options?: { pipelineId?: string; opportunityTitle?: string; expectedCloseDate?: string },
+    ) => {
+      const cur = stateRef.current;
+      const lead = cur.leads.find((l) => l.id === leadId);
+      if (!lead) return { ok: false, error: 'سرنخ یافت نشد.' };
+      if (lead.status === 'converted' && lead.convertedOpportunityId) {
+        return { ok: false, error: 'این سرنخ قبلاً تبدیل شده است.' };
+      }
+
+      const nowIso = new Date().toISOString();
+      const existingCustomer = cur.customers.find((c) => c.phone === lead.phone);
+      const customerId = existingCustomer?.id ?? `c_ld_${Date.now()}`;
+      const createdCustomer: Customer | null = existingCustomer
+        ? null
+        : {
+            id: customerId,
+            name: lead.name,
+            phone: lead.phone,
+            email: lead.email,
+            companyName: lead.companyName,
+            personType: lead.companyName ? 'organization' : 'individual',
+            lifecycle: 'lead',
+            ownerName: lead.ownerName,
+            tags: ['سرنخ تبدیل‌شده'],
+            source: lead.source,
+            branchId: lead.branchId,
+            createdAt: nowIso,
+          };
+
+      const targetPipeline =
+        cur.pipelines.find((p) => p.id === options?.pipelineId) ??
+        cur.pipelines.find((p) => p.isDefault) ??
+        cur.pipelines[0];
+      const pipelineId = targetPipeline?.id ?? 'pl_main';
+      const firstStage = targetPipeline?.stages.find((s) => s.key === 'lead') ??
+        cur.pipelineStages[0] ?? { key: 'lead' as PipelineStage, label: 'سرنخ جدید', probability: 20, slaHours: 24 };
+
+      const oppId = `opp_ld_${Date.now()}`;
+      const newOpp: Opportunity = {
+        id: oppId,
+        pipelineId,
+        title: options?.opportunityTitle?.trim() || `فرصت ${lead.companyName ? lead.companyName : lead.name}`,
+        customerId,
+        contactName: lead.name,
+        phone: lead.phone,
+        source: lead.source,
+        stage: firstStage.key,
+        amount: Math.max(0, lead.estimatedAmount),
+        probability: firstStage.probability,
+        expectedCloseDate: options?.expectedCloseDate ?? new Date(Date.now() + 14 * 24 * 3600_000).toISOString(),
+        leadScore: lead.score,
+        ownerName: lead.ownerName,
+        branchId: lead.branchId,
+        stageHistory: [
+          {
+            stage: firstStage.key,
+            label: firstStage.label,
+            enteredAt: nowIso,
+          },
+        ],
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+
+      setState((prev) => ({
+        ...prev,
+        customers: createdCustomer ? [createdCustomer, ...prev.customers] : prev.customers,
+        opportunities: [newOpp, ...prev.opportunities],
+        leads: prev.leads.map((l) =>
+          l.id === leadId
+            ? {
+                ...l,
+                status: 'converted',
+                convertedCustomerId: customerId,
+                convertedOpportunityId: oppId,
+                updatedAt: nowIso,
+              }
+            : l,
+        ),
+        auditLogs: [
+          makeAudit('فروش', 'create', `سرنخ «${lead.name}» به مشتری و فرصت فروش «${newOpp.title}» تبدیل شد.`),
+          ...prev.auditLogs,
+        ].slice(0, 100),
+      }));
+      pushToast(`سرنخ «${lead.name}» به مشتری و فرصت فروش تبدیل شد.`);
+      return { ok: true };
+    },
+    [pushToast],
+  );
+
+  const addPipeline = useCallback(
+    (pipeline: Omit<SalesPipeline, 'id'>) => {
+      const created: SalesPipeline = {
+        ...pipeline,
+        id: `pl_${Date.now()}`,
+      };
+      setState((prev) => {
+        const nextPipelines: SalesPipeline[] = created.isDefault
+          ? [...prev.pipelines.map((p) => ({ ...p, isDefault: false })), created]
+          : [...prev.pipelines, created];
+        return {
+          ...prev,
+          pipelines: nextPipelines,
+          pipelineStages: created.isDefault ? created.stages : prev.pipelineStages,
+        };
+      });
+      pushToast(`قیف فروش «${created.name}» ایجاد شد.`);
+    },
+    [pushToast],
+  );
+
+  const updatePipeline = useCallback(
+    (id: string, patch: Partial<SalesPipeline>) => {
+      setState((prev) => {
+        const nextPipelines = prev.pipelines.map((p) => {
+          if (p.id === id) return { ...p, ...patch };
+          if (patch.isDefault) return { ...p, isDefault: false };
+          return p;
+        });
+        const def = nextPipelines.find((p) => p.isDefault) ?? nextPipelines[0];
+        return {
+          ...prev,
+          pipelines: nextPipelines,
+          pipelineStages: def ? def.stages : prev.pipelineStages,
+        };
+      });
+      pushToast('تنظیمات قیف فروش به‌روزرسانی شد.');
+    },
+    [pushToast],
+  );
+
+  const deletePipeline = useCallback(
+    (id: string) => {
+      if (stateRef.current.pipelines.length <= 1) {
+        pushToast('حداقل یک قیف فروش باید فعال بماند.', 'error');
+        return;
+      }
+      setState((prev) => {
+        const remaining = prev.pipelines.filter((p) => p.id !== id);
+        if (!remaining.some((p) => p.isDefault) && remaining[0]) {
+          remaining[0] = { ...remaining[0], isDefault: true };
+        }
+        const def = remaining.find((p) => p.isDefault) ?? remaining[0];
+        const fallbackId = def?.id ?? 'pl_main';
+        return {
+          ...prev,
+          pipelines: remaining,
+          pipelineStages: def ? def.stages : prev.pipelineStages,
+          opportunities: prev.opportunities.map((o) =>
+            o.pipelineId === id ? { ...o, pipelineId: fallbackId } : o,
+          ),
+        };
+      });
+      pushToast('قیف فروش حذف و فرصت‌های آن منتقل شد.', 'info');
+    },
+    [pushToast],
+  );
+
+  const updateProduct = useCallback(
+    (id: string, patch: Partial<Product>) => {
+      setState((prev) => ({
+        ...prev,
+        products: prev.products.map((p) => (p.id === id ? { ...p, ...patch } : p)),
+      }));
+      pushToast('مشخصات کالا در کاتالوگ به‌روزرسانی شد.');
+    },
+    [pushToast],
+  );
+
+  const updateService = useCallback(
+    (id: string, patch: Partial<Service>) => {
+      setState((prev) => ({
+        ...prev,
+        services: prev.services.map((s) => (s.id === id ? { ...s, ...patch } : s)),
+      }));
+      pushToast('مشخصات خدمت در کاتالوگ به‌روزرسانی شد.');
+    },
+    [pushToast],
+  );
+
+  const addPriceList = useCallback(
+    (pl: Omit<PriceList, 'id'>) => {
+      const created: PriceList = { ...pl, id: `plst_${Date.now()}` };
+      setState((prev) => ({
+        ...prev,
+        priceLists: [created, ...prev.priceLists],
+      }));
+      pushToast(`لیست قیمت «${created.name}» ایجاد شد.`);
+    },
+    [pushToast],
+  );
+
+  const updatePriceList = useCallback(
+    (id: string, patch: Partial<PriceList>) => {
+      setState((prev) => ({
+        ...prev,
+        priceLists: prev.priceLists.map((pl) => (pl.id === id ? { ...pl, ...patch } : pl)),
+      }));
+      pushToast('لیست قیمت به‌روزرسانی شد.');
+    },
+    [pushToast],
+  );
+
+  const deletePriceList = useCallback(
+    (id: string) => {
+      setState((prev) => ({
+        ...prev,
+        priceLists: prev.priceLists.filter((pl) => pl.id !== id),
+      }));
+      pushToast('لیست قیمت حذف شد.', 'info');
+    },
+    [pushToast],
+  );
+
   const addOpportunity = useCallback(
     (data: Omit<Opportunity, 'id' | 'createdAt' | 'updatedAt'>, useRoundRobin = false) => {
       if (!data.title.trim() || !data.contactName.trim()) {
@@ -1884,13 +2583,28 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
       const rrIdx = cur.settings.roundRobinIndex % team.length;
       const assignedOwner = useRoundRobin ? team[rrIdx] : data.ownerName;
 
-      const stageCfg = cur.pipelineStages.find((s) => s.key === data.stage);
+      const targetPipeline =
+        cur.pipelines.find((p) => p.id === data.pipelineId) ??
+        cur.pipelines.find((p) => p.isDefault) ??
+        cur.pipelines[0];
+      const pipelineId = data.pipelineId ?? targetPipeline?.id ?? 'pl_main';
+      const stagesForPipeline = targetPipeline?.stages ?? cur.pipelineStages;
+      const stageCfg = stagesForPipeline.find((s) => s.key === data.stage);
       const nowIso = new Date().toISOString();
       const opp: Opportunity = {
         ...data,
+        pipelineId,
         ownerName: assignedOwner,
         id: `opp_${Date.now()}`,
         probability: stageCfg?.probability ?? DEFAULT_STAGE_PROB[data.stage],
+        expectedCloseDate: data.expectedCloseDate ?? new Date(Date.now() + 14 * 24 * 3600_000).toISOString(),
+        stageHistory: data.stageHistory ?? [
+          {
+            stage: data.stage,
+            label: stageCfg?.label ?? data.stage,
+            enteredAt: nowIso,
+          },
+        ],
         createdAt: nowIso,
         updatedAt: nowIso,
       };
@@ -1921,34 +2635,90 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
 
   const moveOpportunityStage = useCallback(
     (id: string, stage: PipelineStage, lostReason?: string) => {
-      const stageCfg = stateRef.current.pipelineStages.find((s) => s.key === stage);
+      const cur = stateRef.current;
+      const existingOpp = cur.opportunities.find((o) => o.id === id);
+      if (!existingOpp) return;
+      const oppPipeline =
+        cur.pipelines.find((p) => p.id === existingOpp.pipelineId) ??
+        cur.pipelines.find((p) => p.isDefault) ??
+        cur.pipelines[0];
+      const stagesList = oppPipeline?.stages ?? cur.pipelineStages;
+      const stageCfg = stagesList.find((s) => s.key === stage);
       const nextProb = stageCfg?.probability ?? DEFAULT_STAGE_PROB[stage];
-      const existingOpp = stateRef.current.opportunities.find((o) => o.id === id);
-      setState((prev) => ({
-        ...prev,
-        opportunities: prev.opportunities.map((o) =>
-          o.id === id
-            ? {
-                ...o,
-                stage,
-                probability: nextProb,
-                lostReason: stage === 'lost' ? lostReason : o.lostReason,
-                updatedAt: new Date().toISOString(),
-              }
-            : o,
-        ),
-      }));
-      if (existingOpp) {
-        setTimeout(
-          () =>
-            fireAutomationEvent('on_stage_change', 'opportunity', {
-              ...existingOpp,
-              stage,
-            } as unknown as Record<string, unknown>),
-          50,
-        );
-      }
-      pushToast('مرحله فرصت فروش به‌روزرسانی شد.');
+      const nextLabel = stageCfg?.label ?? stage;
+      const nowIso = new Date().toISOString();
+
+      setState((prev) => {
+        const updatedOpps = prev.opportunities.map((o) => {
+          if (o.id !== id) return o;
+          const prevHistory = o.stageHistory && o.stageHistory.length > 0
+            ? [...o.stageHistory]
+            : [{ stage: o.stage, label: stagesList.find((s) => s.key === o.stage)?.label ?? o.stage, enteredAt: o.createdAt }];
+
+          const lastIdx = prevHistory.length - 1;
+          const lastEntry = prevHistory[lastIdx];
+          if (lastEntry && !lastEntry.exitedAt) {
+            const hrs = Math.max(
+              0.1,
+              Math.round(((new Date(nowIso).getTime() - new Date(lastEntry.enteredAt).getTime()) / 3600_000) * 10) / 10,
+            );
+            prevHistory[lastIdx] = { ...lastEntry, exitedAt: nowIso, durationHours: hrs };
+          }
+          prevHistory.push({ stage, label: nextLabel, enteredAt: nowIso });
+
+          return {
+            ...o,
+            stage,
+            probability: nextProb,
+            lostReason: stage === 'lost' ? lostReason : o.lostReason,
+            stageHistory: prevHistory,
+            updatedAt: nowIso,
+          };
+        });
+
+        let nextLedger = prev.commissionLedger;
+        if (
+          stage === 'won' &&
+          prev.commissionRule.autoCreateLedgerOnWon &&
+          !prev.commissionLedger.some((cl) => cl.opportunityId === id)
+        ) {
+          const comm = computeCommissionAmount(existingOpp.amount, prev.commissionTiers, prev.commissionRule);
+          if (comm.total > 0) {
+            const entry: CommissionLedgerEntry = {
+              id: `cl_${Date.now()}`,
+              opportunityId: existingOpp.id,
+              opportunityTitle: existingOpp.title,
+              ownerName: existingOpp.ownerName,
+              dealAmount: existingOpp.amount,
+              commissionAmount: comm.total,
+              rateSummary: comm.summary,
+              status: 'pending',
+              createdAt: nowIso,
+            };
+            nextLedger = [entry, ...prev.commissionLedger];
+          }
+        }
+
+        return {
+          ...prev,
+          opportunities: updatedOpps,
+          commissionLedger: nextLedger,
+        };
+      });
+
+      setTimeout(
+        () =>
+          fireAutomationEvent('on_stage_change', 'opportunity', {
+            ...existingOpp,
+            stage,
+          } as unknown as Record<string, unknown>),
+        50,
+      );
+      pushToast(
+        stage === 'won'
+          ? 'معامله برنده‌شده ثبت و ردیف پورسانت در دفتر پورسانت ایجاد شد.'
+          : 'مرحله فرصت فروش و تاریخچه زمان ماندگاری به‌روزرسانی شد.',
+      );
     },
     [fireAutomationEvent, pushToast],
   );
@@ -1974,6 +2744,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         phone: opp.phone,
         tags: ['فروش', 'جدید'],
         source: opp.source,
+        ownerName: opp.ownerName,
         createdAt: new Date().toISOString(),
       };
       setState((prev) => ({
@@ -1991,7 +2762,11 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
 
   const updatePipelineStages = useCallback(
     (stages: PipelineStageConfig[]) => {
-      setState((prev) => ({ ...prev, pipelineStages: stages }));
+      setState((prev) => ({
+        ...prev,
+        pipelineStages: stages,
+        pipelines: prev.pipelines.map((p) => (p.isDefault ? { ...p, stages } : p)),
+      }));
       pushToast('مراحل و SLA قیف فروش به‌روزرسانی شد.');
     },
     [pushToast],
@@ -2013,12 +2788,89 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
     [pushToast],
   );
 
+  const updateCommissionRule = useCallback(
+    (rule: CommissionRuleConfig) => {
+      setState((prev) => ({ ...prev, commissionRule: rule }));
+      pushToast('قانون محاسبه پورسانت ذخیره شد.');
+    },
+    [pushToast],
+  );
+
+  const approveCommissionEntry = useCallback(
+    (id: string, nextStatus: CommissionLedgerStatus) => {
+      const cur = stateRef.current;
+      if (cur.settings.role !== 'admin') {
+        pushToast('تأیید یا پرداخت پورسانت فقط توسط نقش مدیر (admin) مجاز است.', 'error');
+        return;
+      }
+      const nowIso = new Date().toISOString();
+      setState((prev) => ({
+        ...prev,
+        commissionLedger: prev.commissionLedger.map((entry) =>
+          entry.id === id
+            ? {
+                ...entry,
+                status: nextStatus,
+                approvedBy: nextStatus === 'approved' || nextStatus === 'paid' ? 'مدیر فروش' : entry.approvedBy,
+                approvedAt: nextStatus === 'approved' ? nowIso : entry.approvedAt,
+                paidAt: nextStatus === 'paid' ? nowIso : entry.paidAt,
+              }
+            : entry,
+        ),
+        auditLogs: [
+          makeAudit('پورسانت', 'update', `وضعیت ردیف پورسانت ${id} به ${nextStatus === 'approved' ? 'تأییدشده' : 'پرداخت‌شده'} تغییر یافت.`),
+          ...prev.auditLogs,
+        ].slice(0, 100),
+      }));
+      pushToast(nextStatus === 'approved' ? 'پورسانت توسط مدیر تأیید شد.' : 'پرداخت پورسانت ثبت شد.');
+    },
+    [pushToast],
+  );
+
+  const generateMissingCommissions = useCallback(() => {
+    const cur = stateRef.current;
+    const existingOppIds = new Set(cur.commissionLedger.map((c) => c.opportunityId));
+    const wonMissing = cur.opportunities.filter((o) => o.stage === 'won' && !existingOppIds.has(o.id));
+    if (wonMissing.length === 0) {
+      pushToast('برای همه معاملات برنده‌شده قبلاً ردیف پورسانت ثبت شده است.', 'info');
+      return;
+    }
+    const nowIso = new Date().toISOString();
+    const newEntries: CommissionLedgerEntry[] = wonMissing.map((opp, idx) => {
+      const comm = computeCommissionAmount(opp.amount, cur.commissionTiers, cur.commissionRule);
+      return {
+        id: `cl_gen_${Date.now()}_${idx}`,
+        opportunityId: opp.id,
+        opportunityTitle: opp.title,
+        ownerName: opp.ownerName,
+        dealAmount: opp.amount,
+        commissionAmount: comm.total,
+        rateSummary: comm.summary,
+        status: 'pending',
+        createdAt: nowIso,
+      };
+    });
+    setState((prev) => ({
+      ...prev,
+      commissionLedger: [...newEntries, ...prev.commissionLedger],
+    }));
+    pushToast(`${newEntries.length} ردیف جدید در دفتر پورسانت ثبت شد.`);
+  }, [pushToast]);
+
   const createQuote = useCallback(
     (data: Omit<Quote, 'id' | 'quoteNo' | 'version' | 'shareToken' | 'createdAt'>) => {
       const seq = 1 + stateRef.current.quotes.length;
       const quoteNo = formatDocumentNumber('quote', seq, stateRef.current.settings.numbering);
+      const fin = computeQuoteFinancials({
+        items: data.items,
+        discountPct: data.discountPct,
+        taxPct: data.taxPct,
+      });
+      const approvalStatus = data.approvalStatus ?? (fin.requiresManagerApproval ? 'pending_manager' : 'not_required');
       const quote: Quote = {
         ...data,
+        status: fin.requiresManagerApproval && data.status !== 'draft' ? 'draft' : data.status,
+        approvalStatus,
         id: `q_${Date.now()}`,
         quoteNo,
         version: 1,
@@ -2030,17 +2882,33 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         quotes: [quote, ...prev.quotes],
         auditLogs: [makeAudit('فروش', 'create', `پیش‌فاکتور ${quote.quoteNo} (نسخه ۱) صادر شد.`), ...prev.auditLogs].slice(0, 100),
       }));
-      pushToast(`پیش‌فاکتور ${quote.quoteNo} نسخه ۱ ایجاد شد.`);
+      pushToast(
+        fin.requiresManagerApproval
+          ? `پیش‌فاکتور ${quote.quoteNo} ثبت شد؛ به دلیل تخفیف بالای ۲۰٪ نیازمند تأیید مدیر است.`
+          : `پیش‌فاکتور ${quote.quoteNo} نسخه ۱ ایجاد شد.`,
+        fin.requiresManagerApproval ? 'info' : 'success',
+      );
     },
     [pushToast],
   );
 
   const createQuoteVersion = useCallback(
-    (parentQuoteId: string, patch?: Partial<Pick<Quote, 'items' | 'discountPct' | 'notes'>>) => {
+    (
+      parentQuoteId: string,
+      patch?: Partial<Pick<Quote, 'items' | 'discountPct' | 'taxPct' | 'priceListId' | 'priceListName' | 'notes' | 'validUntil'>>,
+    ) => {
       const parent = stateRef.current.quotes.find((q) => q.id === parentQuoteId);
       if (!parent) return;
       const siblings = stateRef.current.quotes.filter((q) => q.quoteNo === parent.quoteNo);
       const nextVersion = Math.max(...siblings.map((s) => s.version)) + 1;
+      const mergedItems = patch?.items ?? parent.items;
+      const mergedDisc = patch?.discountPct ?? parent.discountPct;
+      const mergedTax = patch?.taxPct ?? parent.taxPct;
+      const fin = computeQuoteFinancials({
+        items: mergedItems,
+        discountPct: mergedDisc,
+        taxPct: mergedTax,
+      });
       const newQuote: Quote = {
         ...parent,
         ...patch,
@@ -2048,6 +2916,9 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         version: nextVersion,
         parentQuoteId: parent.id,
         status: 'draft',
+        approvalStatus: fin.requiresManagerApproval ? 'pending_manager' : 'not_required',
+        approvedBy: undefined,
+        approvedAt: undefined,
         clientComment: undefined,
         shareToken: `${parent.quoteNo.toLowerCase()}-v${nextVersion}`,
         createdAt: new Date().toISOString(),
@@ -2061,8 +2932,46 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
     [pushToast],
   );
 
+  const approveQuoteDiscount = useCallback(
+    (id: string, approved: boolean) => {
+      if (stateRef.current.settings.role !== 'admin') {
+        pushToast('تأیید تخفیف بالای ۲۰٪ فقط توسط مدیر (admin) امکان‌پذیر است.', 'error');
+        return;
+      }
+      const nowIso = new Date().toISOString();
+      setState((prev) => ({
+        ...prev,
+        quotes: prev.quotes.map((q) =>
+          q.id === id
+            ? {
+                ...q,
+                approvalStatus: approved ? 'approved' : 'rejected',
+                approvedBy: approved ? 'مدیر فروش' : undefined,
+                approvedAt: approved ? nowIso : undefined,
+              }
+            : q,
+        ),
+        auditLogs: [
+          makeAudit('فروش', 'update', `درخواست تخفیف ویژه پیش‌فاکتور ${id} توسط مدیر ${approved ? 'تأیید' : 'رد'} شد.`),
+          ...prev.auditLogs,
+        ].slice(0, 100),
+      }));
+      pushToast(approved ? 'تخفیف پیش‌فاکتور توسط مدیر تأیید شد و آماده ارسال است.' : 'درخواست تخفیف ویژه رد شد.', approved ? 'success' : 'error');
+    },
+    [pushToast],
+  );
+
   const updateQuoteStatus = useCallback(
     (id: string, status: QuoteStatus, clientComment?: string) => {
+      const target = stateRef.current.quotes.find((q) => q.id === id);
+      if (
+        target &&
+        (status === 'sent' || status === 'accepted' || status === 'approved') &&
+        (target.approvalStatus === 'pending_manager' || target.approvalStatus === 'rejected')
+      ) {
+        pushToast('پیش‌فاکتور دارای تخفیف بالای ۲۰٪ است و پیش از ارسال یا تأیید باید توسط مدیر تأیید شود.', 'error');
+        return { ok: false, error: 'نیازمند تأیید تخفیف توسط مدیر' };
+      }
       setState((prev) => ({
         ...prev,
         quotes: prev.quotes.map((q) =>
@@ -2070,12 +2979,15 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         ),
       }));
       pushToast(
-        status === 'approved'
-          ? 'پیش‌فاکتور توسط مشتری تأیید شد.'
+        status === 'accepted' || status === 'approved'
+          ? 'پیش‌فاکتور توسط مشتری پذیرفته شد.'
           : status === 'rejected'
             ? 'پیش‌فاکتور رد شد.'
-            : 'وضعیت پیش‌فاکتور به‌روزرسانی شد.',
+            : status === 'expired'
+              ? 'پیش‌فاکتور منقضی علامت‌گذاری شد.'
+              : 'وضعیت پیش‌فاکتور به‌روزرسانی شد.',
       );
+      return { ok: true };
     },
     [pushToast],
   );
@@ -2746,6 +3658,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
       assignee?: string;
       rootCause?: string;
       initialBody?: string;
+      customFields?: Record<string, string>;
     }) => {
       if (!data.subject.trim()) return;
       const nowIso = new Date().toISOString();
@@ -2763,6 +3676,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         slaHours,
         rootCause: data.rootCause,
         createdAt: nowIso,
+        customFields: data.customFields,
       };
       const initMsg: TicketMessage | null = data.initialBody?.trim()
         ? {
@@ -3984,6 +4898,8 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         .filter((r) => !existingRuleNames.has(r.name))
         .map((r, i) => ({ ...r, id: `rul_pk_${nowMs}_${i}` }));
 
+      const packSales = getPackSalesConfig(packKey, cur.customPacks);
+
       setState((prev) => ({
         ...prev,
         customFieldDefs: [...prev.customFieldDefs, ...newFields],
@@ -3991,6 +4907,10 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         services: [...prev.services, ...newServices],
         products: [...prev.products, ...newProducts],
         rules: [...prev.rules, ...newRules],
+        pipelineStages: packSales.defaultStages,
+        pipelines: prev.pipelines.map((pl) =>
+          pl.isDefault ? { ...pl, name: packSales.pipelineName, stages: packSales.defaultStages } : pl,
+        ),
         settings: {
           ...prev.settings,
           industryPack: packKey,
@@ -4130,6 +5050,72 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
     [pushToast],
   );
 
+  const exportConfigJson = useCallback(() => {
+    const cur = stateRef.current;
+    const bundle: ClientFlowConfigBundle = {
+      schemaVersion: 1,
+      exportedAt: new Date().toISOString(),
+      businessName: cur.settings.businessName,
+      industryPack: cur.settings.industryPack,
+      customFieldDefs: cur.customFieldDefs,
+      customEntityDefs: cur.customEntityDefs,
+      entityRelations: cur.entityRelations,
+      pipelineStages: cur.pipelineStages,
+      commissionTiers: cur.commissionTiers,
+      workflowDefinitions: cur.workflowDefinitions,
+      rules: cur.rules,
+      numbering: cur.settings.numbering,
+      dashboardWidgets: cur.settings.dashboardWidgets,
+    };
+    return JSON.stringify(bundle, null, 2);
+  }, []);
+
+  const importConfigJson = useCallback(
+    (raw: string) => {
+      try {
+        const json = JSON.parse(raw);
+        const parsed = configBundleSchema.safeParse(json);
+        if (!parsed.success) {
+          return { ok: false, error: 'ساختار فایل پیکربندی JSON معتبر نیست.' };
+        }
+        const cfg = parsed.data;
+        const normalizedFields: CustomFieldDef[] = (cfg.customFieldDefs as CustomFieldDef[]).map((f, idx) => ({
+          ...f,
+          entity: f.entity ?? 'customer',
+          active: f.active ?? true,
+          order: f.order ?? idx + 1,
+        }));
+
+        setState((prev) => ({
+          ...prev,
+          customFieldDefs: normalizedFields,
+          customEntityDefs: (cfg.customEntityDefs as CustomEntityDef[] | undefined) ?? prev.customEntityDefs,
+          entityRelations: (cfg.entityRelations as EntityRelationDef[] | undefined) ?? prev.entityRelations,
+          pipelineStages: (cfg.pipelineStages as PipelineStageConfig[] | undefined) ?? prev.pipelineStages,
+          commissionTiers: (cfg.commissionTiers as CommissionTier[] | undefined) ?? prev.commissionTiers,
+          workflowDefinitions: (cfg.workflowDefinitions as WorkflowDefinition[] | undefined) ?? prev.workflowDefinitions,
+          rules: (cfg.rules as Rule[] | undefined) ?? prev.rules,
+          settings: {
+            ...prev.settings,
+            industryPack: (cfg.industryPack as IndustryPack | undefined) ?? prev.settings.industryPack,
+            numbering: (cfg.numbering as BusinessSettings['numbering'] | undefined) ?? prev.settings.numbering,
+            dashboardWidgets:
+              (cfg.dashboardWidgets as DashboardWidgetConfig[] | undefined) ?? prev.settings.dashboardWidgets,
+          },
+          auditLogs: [
+            makeAudit('پیکربندی', 'update', `پیکربندی از فایل JSON (${normalizedFields.length} فیلد سفارشی) وارد شد بدون حذف داده‌های کاربران.`),
+            ...prev.auditLogs,
+          ].slice(0, 100),
+        }));
+        pushToast('پیکربندی با موفقیت وارد شد (داده‌های مشتریان و سفارش‌ها دست‌نخورده باقی ماند).');
+        return { ok: true };
+      } catch {
+        return { ok: false, error: 'فایل JSON قابل خواندن نیست.' };
+      }
+    },
+    [pushToast],
+  );
+
   return (
     <ClientFlowContext.Provider
       value={{
@@ -4141,6 +5127,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         dismissToast,
         addCustomer,
         updateCustomer,
+        updateCustomerConsent,
         deleteCustomer,
         anonymizeCustomer,
         mergeCustomers,
@@ -4149,7 +5136,10 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         addCustomerRelation,
         removeCustomerRelation,
         addCustomerSegment,
+        updateCustomerSegment,
         deleteCustomerSegment,
+        saveCustomerView,
+        deleteCustomerView,
         addCustomerAttachment,
         removeCustomerAttachment,
         sendBirthdayGreeting,
@@ -4193,15 +5183,30 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         toggleProjectTask,
         addTimeEntry,
         toggleDeploymentCheck,
+        addLead,
+        updateLead,
+        convertLeadToCustomerAndOpportunity,
+        addPipeline,
+        updatePipeline,
+        deletePipeline,
+        updateProduct,
+        updateService,
+        addPriceList,
+        updatePriceList,
+        deletePriceList,
         addOpportunity,
         moveOpportunityStage,
         convertOpportunityToCustomer,
         updatePipelineStages,
         updateSalesTargets,
         updateCommissionTiers,
+        updateCommissionRule,
+        approveCommissionEntry,
+        generateMissingCommissions,
         createQuote,
         createQuoteVersion,
         updateQuoteStatus,
+        approveQuoteDiscount,
         saveWorkflowDefinition,
         publishWorkflowDefinition,
         cloneWorkflowDraft,
@@ -4266,6 +5271,8 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         resetDemoData,
         exportStateJson,
         importStateJson,
+        exportConfigJson,
+        importConfigJson,
       }}
     >
       {children}

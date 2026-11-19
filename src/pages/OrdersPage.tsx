@@ -18,6 +18,7 @@ import {
   Trash2,
   Truck,
 } from 'lucide-react';
+import { DynamicFieldsRenderer } from '../components/DynamicFieldsRenderer';
 import { InvoicePreviewModal } from '../components/InvoicePreviewModal';
 import { Modal } from '../components/Modal';
 import { PaymentGatewayModal } from '../components/PaymentGatewayModal';
@@ -32,6 +33,12 @@ import type {
   SayadiChequeStatus,
   ShippingCarrier,
 } from '../types';
+import {
+  formatCustomFieldValue,
+  getFieldsForEntity,
+  getTableCustomFields,
+  validateCustomFieldValues,
+} from '../utils/customFieldValidation';
 import { formatJalali, formatJalaliDateTime, formatToman, toFa } from '../utils/jalali';
 
 const STATUS_LABEL: Record<OrderStatus, string> = {
@@ -155,6 +162,8 @@ export function OrdersPage() {
   ]);
   const [couponCode, setCouponCode] = useState('');
   const [promisedHours, setPromisedHours] = useState(48);
+  const [orderCustomFields, setOrderCustomFields] = useState<Record<string, string>>({});
+  const [orderCustomErrors, setOrderCustomErrors] = useState<Record<string, string>>({});
   const [orderError, setOrderError] = useState('');
 
   // Inventory & Catalog form
@@ -168,6 +177,8 @@ export function OrdersPage() {
   const [stockAdjustTarget, setStockAdjustTarget] = useState<Product | null>(null);
   const [stockDelta, setStockDelta] = useState('10');
   const [stockReason, setStockReason] = useState('تامین موجودی انبار');
+  const [prodCustomFields, setProdCustomFields] = useState<Record<string, string>>({});
+  const [prodCustomErrors, setProdCustomErrors] = useState<Record<string, string>>({});
 
   // Projects & Deployment State
   const [selectedProjectId, setSelectedProjectId] = useState(state.projects[0]?.id ?? '');
@@ -229,15 +240,42 @@ export function OrdersPage() {
   const orderTotal = (o: Order) =>
     o.items.reduce((sum, it) => sum + it.qty * it.price, 0) - (o.discountAmount ?? 0);
 
+  const orderActiveFields = useMemo(
+    () => getFieldsForEntity(state.customFieldDefs, 'order', false),
+    [state.customFieldDefs],
+  );
+  const orderTableCustomFields = useMemo(
+    () => getTableCustomFields(state.customFieldDefs, 'order'),
+    [state.customFieldDefs],
+  );
+  const productActiveFields = useMemo(
+    () => getFieldsForEntity(state.customFieldDefs, 'product', false),
+    [state.customFieldDefs],
+  );
+  const productTableFields = useMemo(
+    () => getTableCustomFields(state.customFieldDefs, 'product'),
+    [state.customFieldDefs],
+  );
+
   const handleCreateOrder = (e: React.FormEvent) => {
     e.preventDefault();
     setOrderError('');
+    setOrderCustomErrors({});
+    const cfValidation = validateCustomFieldValues(state.customFieldDefs, orderCustomFields, {
+      entity: 'order',
+      existingRecords: state.orders,
+    });
+    if (!cfValidation.ok) {
+      setOrderCustomErrors(cfValidation.errors);
+      return;
+    }
     const promisedAt = new Date(Date.now() + promisedHours * 3600_000).toISOString();
     const res = addOrder({
       customerId,
       items: selectedItems,
       promisedAt,
       couponCode: couponCode.trim() || undefined,
+      customFields: orderCustomFields,
     });
     if (!res.ok) {
       setOrderError(res.error ?? 'خطا در ثبت سفارش');
@@ -245,6 +283,7 @@ export function OrdersPage() {
     }
     setCreateOpen(false);
     setCouponCode('');
+    setOrderCustomFields({});
   };
 
   const addDraftProductItem = (productId: string) => {
@@ -356,6 +395,8 @@ export function OrdersPage() {
           type="button"
           onClick={() => {
             setOrderError('');
+            setOrderCustomFields({});
+            setOrderCustomErrors({});
             setCreateOpen(true);
           }}
           className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg bg-indigo-600 px-4 py-2 text-xs font-medium text-white hover:bg-indigo-700"
@@ -406,6 +447,11 @@ export function OrdersPage() {
                     <th className="px-4 py-3 font-medium">مبلغ نهایی</th>
                     <th className="px-4 py-3 font-medium">وضعیت و ارسال</th>
                     <th className="px-4 py-3 font-medium">موعد تحویل</th>
+                    {orderTableCustomFields.map((def) => (
+                      <th key={def.id} className="px-4 py-3 font-medium">
+                        {def.label}
+                      </th>
+                    ))}
                     <th className="px-4 py-3 font-medium text-left">جزئیات</th>
                   </tr>
                 </thead>
@@ -464,6 +510,11 @@ export function OrdersPage() {
                             '—'
                           )}
                         </td>
+                        {orderTableCustomFields.map((def) => (
+                          <td key={def.id} className="px-4 py-2.5 text-xs text-slate-600 dark:text-slate-300">
+                            {formatCustomFieldValue(def, o.customFields?.[def.key])}
+                          </td>
+                        ))}
                         <td className="px-4 py-2.5 text-left">
                           <div className="flex items-center justify-end gap-1.5">
                             <button
@@ -809,6 +860,15 @@ export function OrdersPage() {
                 onSubmit={(e) => {
                   e.preventDefault();
                   if (!newProdName.trim()) return;
+                  setProdCustomErrors({});
+                  const cfValidation = validateCustomFieldValues(state.customFieldDefs, prodCustomFields, {
+                    entity: 'product',
+                    existingRecords: state.products,
+                  });
+                  if (!cfValidation.ok) {
+                    setProdCustomErrors(cfValidation.errors);
+                    return;
+                  }
                   addProduct({
                     name: newProdName.trim(),
                     sku: newProdSku.trim() || `SK-${state.products.length + 101}`,
@@ -816,39 +876,52 @@ export function OrdersPage() {
                     stock: Math.max(0, Number(newProdStock) || 0),
                     minStock: Math.max(0, Number(newProdMinStock) || 5),
                     active: true,
+                    customFields: prodCustomFields,
                   });
                   setNewProdName('');
                   setNewProdSku('');
+                  setProdCustomFields({});
                 }}
-                className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-5"
+                className="mb-4 space-y-2"
               >
-                <input
-                  type="text"
-                  placeholder="نام محصول..."
-                  value={newProdName}
-                  onChange={(e) => setNewProdName(e.target.value)}
-                  className="col-span-2 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-800"
-                />
-                <input
-                  type="number"
-                  placeholder="قیمت"
-                  value={newProdPrice}
-                  onChange={(e) => setNewProdPrice(e.target.value)}
-                  className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs tabular-nums dark:border-slate-700 dark:bg-slate-800"
-                />
-                <input
-                  type="number"
-                  placeholder="موجودی"
-                  value={newProdStock}
-                  onChange={(e) => setNewProdStock(e.target.value)}
-                  className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs tabular-nums dark:border-slate-700 dark:bg-slate-800"
-                />
-                <button
-                  type="submit"
-                  className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700"
-                >
-                  افزودن
-                </button>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+                  <input
+                    type="text"
+                    placeholder="نام محصول..."
+                    value={newProdName}
+                    onChange={(e) => setNewProdName(e.target.value)}
+                    className="col-span-2 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-800"
+                  />
+                  <input
+                    type="number"
+                    placeholder="قیمت"
+                    value={newProdPrice}
+                    onChange={(e) => setNewProdPrice(e.target.value)}
+                    className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs tabular-nums dark:border-slate-700 dark:bg-slate-800"
+                  />
+                  <input
+                    type="number"
+                    placeholder="موجودی"
+                    value={newProdStock}
+                    onChange={(e) => setNewProdStock(e.target.value)}
+                    className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs tabular-nums dark:border-slate-700 dark:bg-slate-800"
+                  />
+                  <button
+                    type="submit"
+                    className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700"
+                  >
+                    افزودن
+                  </button>
+                </div>
+                {productActiveFields.length > 0 && (
+                  <DynamicFieldsRenderer
+                    entity="product"
+                    defs={state.customFieldDefs}
+                    values={prodCustomFields}
+                    onChange={setProdCustomFields}
+                    errors={prodCustomErrors}
+                  />
+                )}
               </form>
               <div className="divide-y divide-slate-200 dark:divide-slate-800">
                 {state.products.map((p) => {
@@ -870,6 +943,11 @@ export function OrdersPage() {
                             {toFa(p.stock)}
                           </span>{' '}
                           (حداقل مجاز: {toFa(p.minStock ?? 8)})
+                          {productTableFields.map((def) => {
+                            const val = p.customFields?.[def.key];
+                            if (!val) return null;
+                            return ` · ${def.label}: ${formatCustomFieldValue(def, val)}`;
+                          })}
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
@@ -1383,6 +1461,19 @@ export function OrdersPage() {
               className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-left text-sm uppercase dark:border-slate-700 dark:bg-slate-800"
             />
           </div>
+
+          {orderActiveFields.length > 0 && (
+            <div className="border-t border-slate-200 pt-3 dark:border-slate-800">
+              <p className="mb-2 text-xs font-semibold text-slate-500">فیلدهای سفارشی سفارش</p>
+              <DynamicFieldsRenderer
+                entity="order"
+                defs={state.customFieldDefs}
+                values={orderCustomFields}
+                onChange={setOrderCustomFields}
+                errors={orderCustomErrors}
+              />
+            </div>
+          )}
 
           <div className="flex justify-end gap-2 pt-2">
             <button

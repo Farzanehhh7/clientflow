@@ -2,10 +2,12 @@ import dayjs from 'dayjs';
 import jalaliday from 'jalaliday';
 import type {
   AppState,
+  CommissionRuleConfig,
   CommissionTier,
   CustomFieldDef,
   Customer,
   CustomerSegment,
+  Quote,
 } from '../types';
 
 dayjs.extend(jalaliday);
@@ -65,6 +67,10 @@ export function evaluateSegment(
   segment: CustomerSegment,
   stats: CustomerComputedStats,
 ): boolean {
+  if (segment.segmentType === 'static') {
+    const idSet = new Set(segment.staticCustomerIds ?? []);
+    return idSet.has(customer.id);
+  }
   if (segment.conditions.length === 0) return true;
 
   const results = segment.conditions.map((cond) => {
@@ -84,13 +90,23 @@ export function evaluateSegment(
         const cur = customer.personType ?? 'individual';
         return cond.op === 'neq' ? cur !== val : cur === val;
       }
+      case 'ownerName': {
+        const cur = (customer.ownerName ?? '').toLowerCase();
+        if (cond.op === 'neq') return cur !== val.toLowerCase();
+        if (cond.op === 'contains') return cur.includes(val.toLowerCase());
+        return cur === val.toLowerCase();
+      }
       case 'tag': {
         const hasTag = customer.tags.some((t) => t.toLowerCase().includes(val.toLowerCase()));
         return cond.op === 'neq' ? !hasTag : hasTag;
       }
       case 'consentSms': {
         const cur = customer.consentSms !== false ? 'true' : 'false';
-        return cur === val;
+        return cond.op === 'neq' ? cur !== val : cur === val;
+      }
+      case 'consentEmail': {
+        const cur = customer.consentEmail !== false ? 'true' : 'false';
+        return cond.op === 'neq' ? cur !== val : cur === val;
       }
       case 'minSpent': {
         const target = Number(val) || 0;
@@ -240,3 +256,106 @@ export function daysUntilJalaliMonthDay(jalaliStr?: string): number | null {
   }
   return null;
 }
+
+/** Compute commission based on CommissionRuleConfig ('percentage' or 'tiered') */
+export function computeCommissionAmount(
+  amount: number,
+  tiers: CommissionTier[],
+  rule?: CommissionRuleConfig,
+): {
+  total: number;
+  summary: string;
+  breakdown: { rangeLabel: string; ratePct: number; portion: number; commission: number }[];
+} {
+  if (amount <= 0) return { total: 0, summary: '۰٪', breakdown: [] };
+  if (rule?.mode === 'percentage') {
+    const rate = Math.max(0, rule.flatRatePct);
+    const total = Math.round((amount * rate) / 100);
+    return {
+      total,
+      summary: `ثابت ${rate}٪`,
+      breakdown: [
+        {
+          rangeLabel: 'کل مبلغ فروش',
+          ratePct: rate,
+          portion: amount,
+          commission: total,
+        },
+      ],
+    };
+  }
+  const stepped = computeSteppedCommission(amount, tiers);
+  return {
+    total: stepped.total,
+    summary: `پلکانی (${stepped.breakdown.length} پله)`,
+    breakdown: stepped.breakdown,
+  };
+}
+
+/** Calculate Quote line discounts, overall discount, effective discount %, tax, grandTotal, and Manager Approval rule (>20%) */
+export function computeQuoteFinancials(
+  quote: Pick<Quote, 'items' | 'discountPct' | 'taxPct'>,
+  approvalThresholdPct = 20,
+) {
+  let grossSubtotal = 0;
+  let lineDiscounts = 0;
+  for (const it of quote.items) {
+    const lineGross = Math.max(0, it.qty) * Math.max(0, it.price);
+    const lineDiscPct = Math.min(100, Math.max(0, it.discountPct ?? 0));
+    const lineDiscAmt = Math.round((lineGross * lineDiscPct) / 100);
+    grossSubtotal += lineGross;
+    lineDiscounts += lineDiscAmt;
+  }
+  const afterLineDiscounts = Math.max(0, grossSubtotal - lineDiscounts);
+  const overallDiscount = Math.round((afterLineDiscounts * Math.min(100, Math.max(0, quote.discountPct))) / 100);
+  const totalDiscount = lineDiscounts + overallDiscount;
+  const netSubtotal = Math.max(0, grossSubtotal - totalDiscount);
+  const taxAmount = Math.round((netSubtotal * Math.max(0, quote.taxPct)) / 100);
+  const grandTotal = netSubtotal + taxAmount;
+  const effectiveDiscountPct =
+    grossSubtotal > 0 ? Math.round((totalDiscount / grossSubtotal) * 1000) / 10 : quote.discountPct;
+  const requiresManagerApproval = effectiveDiscountPct > approvalThresholdPct;
+
+  return {
+    grossSubtotal,
+    lineDiscounts,
+    overallDiscount,
+    totalDiscount,
+    netSubtotal,
+    taxAmount,
+    grandTotal,
+    effectiveDiscountPct,
+    requiresManagerApproval,
+  };
+}
+
+/** Heuristic lead score suggestion (0..100) */
+export function computeLeadScoreHint(input: {
+  source?: string;
+  estimatedAmount?: number;
+  hasEmail?: boolean;
+  hasCompany?: boolean;
+}): number {
+  let score = 35;
+  const amt = input.estimatedAmount ?? 0;
+  if (amt >= 20_000_000) score += 25;
+  else if (amt >= 10_000_000) score += 18;
+  else if (amt >= 4_000_000) score += 10;
+
+  if (input.hasEmail) score += 10;
+  if (input.hasCompany) score += 15;
+  if (input.source === 'معرفی' || input.source === 'مشتری قدیمی') score += 15;
+  else if (input.source === 'سایت' || input.source === 'لندینگ') score += 8;
+
+  return Math.min(100, Math.max(10, score));
+}
+
+export function formatDurationHoursFa(hours: number): string {
+  const toFaNum = (n: number) => String(Math.round(n)).replace(/\d/g, (d) => '۰۱۲۳۴۵۶۷۸۹'[Number(d)]);
+  if (!Number.isFinite(hours) || hours < 1) return 'کمتر از ۱ ساعت';
+  if (hours < 24) return `${toFaNum(hours)} ساعت`;
+  const days = Math.floor(hours / 24);
+  const rem = Math.round(hours % 24);
+  return rem > 0 ? `${toFaNum(days)} روز و ${toFaNum(rem)} ساعت` : `${toFaNum(days)} روز`;
+}
+

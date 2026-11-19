@@ -1,13 +1,10 @@
 import { useState } from 'react';
 import {
-  ArrowDown,
-  ArrowUp,
   Building2,
   Compass,
   Database,
   Download,
   Globe,
-  GripVertical,
   Hash,
   History,
   Layers,
@@ -22,11 +19,11 @@ import {
   Wifi,
   WifiOff,
 } from 'lucide-react';
+import { FieldsAndFormsTab } from '../components/settings/FieldsAndFormsTab';
 import { SetupWizardModal } from '../components/SetupWizardModal';
 import { INDUSTRY_PACKS } from '../data/packs';
 import { useClientFlow } from '../store/useClientFlowStore';
 import type {
-  CustomFieldType,
   EntityRelationType,
   IndustryPack,
   NumberingConfig,
@@ -47,20 +44,6 @@ const WEEKDAY_OPTIONS: { dayIndex: number; label: string }[] = [
   { dayIndex: 5, label: 'جمعه' },
 ];
 
-const FIELD_TYPE_LABELS: Record<CustomFieldType, string> = {
-  text: 'متنی',
-  number: 'عددی',
-  money: 'مبلغ پولی (تومان)',
-  select: 'لیست انتخابی تک‌گزینه',
-  multiselect: 'چندانتخابی (Multi-select)',
-  date: 'تاریخ (شمسی/میلادی)',
-  phone: 'شماره تماس',
-  nationalId: 'کد ملی',
-  file: 'پیوست فایل / مدرک',
-  lookup: 'ارجاع به موجودیت (Lookup)',
-  formula: 'فرمول محاسباتی',
-};
-
 interface SettingsPageProps {
   onStartTour?: () => void;
 }
@@ -71,10 +54,9 @@ export function SettingsPage({ onStartTour }: SettingsPageProps) {
     updateSettings,
     exportStateJson,
     importStateJson,
+    exportConfigJson,
+    importConfigJson,
     resetDemoData,
-    addCustomFieldDef,
-    removeCustomFieldDef,
-    reorderCustomFieldDefs,
     addCustomEntityDef,
     deleteCustomEntityDef,
     addEntityRelation,
@@ -115,17 +97,6 @@ export function SettingsPage({ onStartTour }: SettingsPageProps) {
   const [pkName, setPkName] = useState('');
   const [pkKey, setPkKey] = useState('');
   const [pkDesc, setPkDesc] = useState('');
-
-  // Visual Form Builder (11 field types + conditional + lookup + formula + drag reorder)
-  const [cfLabel, setCfLabel] = useState('');
-  const [cfKey, setCfKey] = useState('');
-  const [cfType, setCfType] = useState<CustomFieldType>('text');
-  const [cfOptions, setCfOptions] = useState('');
-  const [cfLookupEntity, setCfLookupEntity] = useState<'customer' | 'product' | 'service' | 'resource'>('customer');
-  const [cfFormulaExpr, setCfFormulaExpr] = useState('');
-  const [cfVisibleKey, setCfVisibleKey] = useState('');
-  const [cfVisibleEquals, setCfVisibleEquals] = useState('');
-  const [draggingFieldId, setDraggingFieldId] = useState<string | null>(null);
 
   // Custom Entity Builder
   const [entName, setEntName] = useState('');
@@ -219,59 +190,26 @@ export function SettingsPage({ onStartTour }: SettingsPageProps) {
     e.target.value = '';
   };
 
-  const handleAddCustomField = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!cfLabel.trim()) return;
-    const key = cfKey.trim().replace(/[^a-zA-Z0-9_]/g, '') || `cf_${Date.now().toString(36)}`;
-    addCustomFieldDef({
-      key,
-      label: cfLabel.trim(),
-      type: cfType,
-      options:
-        cfType === 'select' || cfType === 'multiselect'
-          ? cfOptions
-              .split(/[,،]/)
-              .map((o) => o.trim())
-              .filter(Boolean)
-          : undefined,
-      lookupEntity: cfType === 'lookup' ? cfLookupEntity : undefined,
-      formulaExpr: cfType === 'formula' ? cfFormulaExpr.trim() : undefined,
-      visibleWhen:
-        cfVisibleKey && cfVisibleEquals.trim()
-          ? { fieldKey: cfVisibleKey, equals: cfVisibleEquals.trim() }
-          : undefined,
-    });
-    setCfLabel('');
-    setCfKey('');
-    setCfOptions('');
-    setCfFormulaExpr('');
-    setCfVisibleKey('');
-    setCfVisibleEquals('');
+  const handleDownloadConfigJson = () => {
+    const json = exportConfigJson();
+    const blob = new Blob([json], { type: 'application/json;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `clientflow-config-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
-  const sortedFields = [...state.customFieldDefs].sort(
-    (a, b) => (a.order ?? 999) - (b.order ?? 999),
-  );
-
-  const moveFieldByStep = (idx: number, dir: -1 | 1) => {
-    const nextIdx = idx + dir;
-    if (nextIdx < 0 || nextIdx >= sortedFields.length) return;
-    const copy = [...sortedFields];
-    const [item] = copy.splice(idx, 1);
-    copy.splice(nextIdx, 0, item);
-    reorderCustomFieldDefs(copy.map((f) => f.id));
-  };
-
-  const handleDropField = (targetId: string) => {
-    if (!draggingFieldId || draggingFieldId === targetId) return;
-    const copy = [...sortedFields];
-    const fromIdx = copy.findIndex((f) => f.id === draggingFieldId);
-    const toIdx = copy.findIndex((f) => f.id === targetId);
-    if (fromIdx < 0 || toIdx < 0) return;
-    const [moved] = copy.splice(fromIdx, 1);
-    copy.splice(toIdx, 0, moved);
-    reorderCustomFieldDefs(copy.map((f) => f.id));
-    setDraggingFieldId(null);
+  const handleUploadConfigJson = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    const res = importConfigJson(text);
+    if (!res.ok) {
+      pushToast(res.error ?? 'خطا در ورود پیکربندی', 'error');
+    }
+    e.target.value = '';
   };
 
   const handleCreateEntity = (e: React.FormEvent) => {
@@ -331,7 +269,7 @@ export function SettingsPage({ onStartTour }: SettingsPageProps) {
             [
               ['general', 'هسته، شعب، شماره‌گذاری و PWA'],
               ['packs', '۱۰ بسته صنعتی و Pack Builder'],
-              ['config', 'فرم‌ساز بصری، خدمات و بافر'],
+              ['config', 'فیلدها و فرم‌ها (Fields & Forms)'],
               ['entities', 'موجودیت‌های سفارشی و نسخه‌گذاری'],
               ['audit', `گزارش ممیزی (${toFa(state.auditLogs.length)})`],
             ] as const
@@ -863,23 +801,36 @@ export function SettingsPage({ onStartTour }: SettingsPageProps) {
 
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
             <div>
-              <h2 className="text-sm font-semibold">پشتیبان‌گیری، بازیابی JSON و بازنشانی</h2>
+              <h2 className="text-sm font-semibold">پشتیبان‌گیری، خروجی پیکربندی JSON و بازنشانی</h2>
               <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-                دریافت یا بازیابی خروجی کامل وضعیت برنامه.
+                می‌توانید فقط تنظیمات و فیلدها (Config JSON) را جابجا کنید یا از کل برنامه و داده‌ها پشتیبان بگیرید.
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={handleDownloadConfigJson}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-3.5 py-2 text-xs font-medium text-indigo-700 hover:bg-indigo-100 dark:border-indigo-900 dark:bg-indigo-950/40 dark:text-indigo-300"
+              >
+                <Download size={15} />
+                خروجی JSON پیکربندی
+              </button>
+              <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-3.5 py-2 text-xs font-medium text-indigo-700 hover:bg-indigo-100 dark:border-indigo-900 dark:bg-indigo-950/40 dark:text-indigo-300">
+                <Upload size={15} />
+                ورود پیکربندی JSON
+                <input type="file" accept=".json,application/json" onChange={handleUploadConfigJson} className="hidden" />
+              </label>
               <button
                 type="button"
                 onClick={handleDownloadJson}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
               >
                 <Download size={15} />
-                خروجی JSON
+                پشتیبان کامل JSON
               </button>
               <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-slate-200 px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">
                 <Upload size={15} />
-                بازیابی JSON
+                بازیابی کامل JSON
                 <input type="file" accept=".json,application/json" onChange={handleUploadJson} className="hidden" />
               </label>
               <button
@@ -1071,176 +1022,10 @@ export function SettingsPage({ onStartTour }: SettingsPageProps) {
         </div>
       )}
 
-      {/* TAB 3: VISUAL FORM BUILDER & SERVICES */}
+      {/* TAB 3: FIELDS & FORMS + SERVICES */}
       {tab === 'config' && (
         <div className="space-y-6">
-          <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
-            <h2 className="mb-1 text-sm font-semibold">فرم‌ساز بصری فیلدهای پویا (۱۱ نوع فیلد + نمایش شرطی + کشیدن و رها کردن)</h2>
-            <p className="mb-4 text-xs text-slate-500">
-              ترتیب فیلدها را با Drag &amp; Drop تغییر دهید، شرط نمایش تعریف کنید و از فیلدهای فرمولی یا ارجاعی (Lookup) استفاده نمایید.
-            </p>
-
-            <form onSubmit={handleAddCustomField} className="mb-5 space-y-3 rounded-xl border border-slate-200 bg-slate-50/50 p-4 dark:border-slate-800 dark:bg-slate-800/30">
-              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
-                <input
-                  type="text"
-                  placeholder="عنوان فیلد (مثلاً: تخفیف ویژه)"
-                  value={cfLabel}
-                  onChange={(e) => setCfLabel(e.target.value)}
-                  className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-900"
-                />
-                <input
-                  type="text"
-                  dir="ltr"
-                  placeholder="کلید انگلیسی اختیاری (مثلاً discount_val)"
-                  value={cfKey}
-                  onChange={(e) => setCfKey(e.target.value)}
-                  className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-left font-mono text-xs dark:border-slate-700 dark:bg-slate-900"
-                />
-                <select
-                  value={cfType}
-                  onChange={(e) => setCfType(e.target.value as CustomFieldType)}
-                  className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-900"
-                >
-                  {(Object.keys(FIELD_TYPE_LABELS) as CustomFieldType[]).map((t) => (
-                    <option key={t} value={t}>
-                      {FIELD_TYPE_LABELS[t]}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {(cfType === 'select' || cfType === 'multiselect') && (
-                <input
-                  type="text"
-                  placeholder="گزینه‌ها با ویرگول جدا شود (مثلاً: لیزر، بوتاکس، فیشال)..."
-                  value={cfOptions}
-                  onChange={(e) => setCfOptions(e.target.value)}
-                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-900"
-                />
-              )}
-
-              {cfType === 'lookup' && (
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="text-slate-500">ارجاع به موجودیت:</span>
-                  <select
-                    value={cfLookupEntity}
-                    onChange={(e) =>
-                      setCfLookupEntity(e.target.value as 'customer' | 'product' | 'service' | 'resource')
-                    }
-                    className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-900"
-                  >
-                    <option value="customer">مشتریان</option>
-                    <option value="product">محصولات</option>
-                    <option value="service">خدمات</option>
-                    <option value="resource">منابع / پزشکان</option>
-                  </select>
-                </div>
-              )}
-
-              {cfType === 'formula' && (
-                <input
-                  type="text"
-                  dir="ltr"
-                  placeholder="فرمول با کلید فیلدها، مثلاً: {sessions_count} * 500000"
-                  value={cfFormulaExpr}
-                  onChange={(e) => setCfFormulaExpr(e.target.value)}
-                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-left font-mono text-xs dark:border-slate-700 dark:bg-slate-900"
-                />
-              )}
-
-              <div className="flex flex-wrap items-center gap-2 pt-1">
-                <span className="text-[11px] text-slate-500">نمایش شرطی (اختیاری): فقط اگر فیلد</span>
-                <select
-                  value={cfVisibleKey}
-                  onChange={(e) => setCfVisibleKey(e.target.value)}
-                  className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-900"
-                >
-                  <option value="">-- بدون شرط --</option>
-                  {sortedFields.map((f) => (
-                    <option key={f.id} value={f.key}>
-                      {f.label} ({f.key})
-                    </option>
-                  ))}
-                </select>
-                {cfVisibleKey && (
-                  <input
-                    type="text"
-                    placeholder="مساوی با مقدار..."
-                    value={cfVisibleEquals}
-                    onChange={(e) => setCfVisibleEquals(e.target.value)}
-                    className="w-40 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs dark:border-slate-700 dark:bg-slate-900"
-                  />
-                )}
-                <button
-                  type="submit"
-                  className="mr-auto inline-flex items-center gap-1 rounded-lg bg-indigo-600 px-3.5 py-1.5 text-xs font-medium text-white hover:bg-indigo-700"
-                >
-                  <Plus size={14} />
-                  افزودن به فرم
-                </button>
-              </div>
-            </form>
-
-            <div className="divide-y divide-slate-200 rounded-lg border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
-              {sortedFields.map((f, idx) => (
-                <div
-                  key={f.id}
-                  draggable
-                  onDragStart={() => setDraggingFieldId(f.id)}
-                  onDragOver={(e) => e.preventDefault()}
-                  onDrop={() => handleDropField(f.id)}
-                  className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5 text-xs hover:bg-slate-50/70 dark:hover:bg-slate-800/40"
-                >
-                  <div className="flex items-center gap-2">
-                    <GripVertical size={15} className="cursor-grab text-slate-400" />
-                    <div>
-                      <span className="font-semibold text-slate-900 dark:text-slate-100">{f.label}</span>
-                      <span className="mx-1.5 font-mono text-[11px] text-slate-400">({f.key})</span>
-                      <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-600 dark:bg-slate-800 dark:text-slate-300">
-                        {FIELD_TYPE_LABELS[f.type]}
-                      </span>
-                      {f.visibleWhen && (
-                        <span className="mr-1.5 text-[11px] text-amber-600 dark:text-amber-400">
-                          شرط: {f.visibleWhen.fieldKey} = {f.visibleWhen.equals}
-                        </span>
-                      )}
-                      {f.formulaExpr && (
-                        <span className="mr-1.5 font-mono text-[11px] text-indigo-500" dir="ltr">
-                          [{f.formulaExpr}]
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => moveFieldByStep(idx, -1)}
-                      disabled={idx === 0}
-                      className="rounded p-1 text-slate-400 hover:bg-slate-100 disabled:opacity-30 dark:hover:bg-slate-800"
-                    >
-                      <ArrowUp size={13} />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => moveFieldByStep(idx, 1)}
-                      disabled={idx === sortedFields.length - 1}
-                      className="rounded p-1 text-slate-400 hover:bg-slate-100 disabled:opacity-30 dark:hover:bg-slate-800"
-                    >
-                      <ArrowDown size={13} />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => removeCustomFieldDef(f.id)}
-                      className="rounded p-1 text-slate-400 hover:text-rose-600"
-                    >
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
+          <FieldsAndFormsTab />
 
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
             <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">

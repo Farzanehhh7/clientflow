@@ -29,7 +29,29 @@ export type CustomerAttachment = {
   note?: string;
 };
 
-export type Customer = {
+export type BaseEntityMeta = {
+  tenantId?: string;
+  updatedAt?: string;
+  createdBy?: string;
+  isDeleted?: boolean;
+  deletedAt?: string;
+  version?: number;
+};
+
+export type ConsentChannel = 'sms' | 'email' | 'photo';
+export type ConsentLog = BaseEntityMeta & {
+  id: string;
+  customerId: string;
+  channel: ConsentChannel;
+  granted: boolean;
+  source: string;
+  actor: string;
+  note?: string;
+  at: string;
+  createdAt: string;
+};
+
+export type Customer = BaseEntityMeta & {
   id: string;
   name: string;
   phone: string;
@@ -44,19 +66,23 @@ export type Customer = {
   lifecycle?: CustomerLifecycle;
   tags: string[];
   source?: string;
+  ownerName?: string;
   createdAt: string;
   notes?: string;
   birthDateJalali?: string; // e.g. 1368/08/27
   anniversaryDateJalali?: string; // e.g. 1402/08/28
   isAnonymized?: boolean;
-  // Clinic pack optional fields
+  mergedIntoCustomerId?: string;
+  // Consent flags
+  consentSms?: boolean;
+  consentEmail?: boolean;
+  consentPhoto?: boolean;
+  consentUpdatedAt?: string;
+  // Legacy optional pack fields (migrated cleanly to pack config / customFields)
   patientCode?: string;
   birthYear?: string;
   allergies?: string;
-  consentSms?: boolean;
-  consentPhoto?: boolean;
   attachments?: CustomerAttachment[];
-  // Software pack optional fields
   licenseKey?: string;
   contractExpiresAt?: string;
   branchId?: string;
@@ -65,7 +91,7 @@ export type Customer = {
 };
 
 export type CustomerRelationType = 'referrer' | 'family' | 'colleague';
-export type CustomerRelation = {
+export type CustomerRelation = BaseEntityMeta & {
   id: string;
   fromCustomerId: string;
   toCustomerId: string;
@@ -76,21 +102,43 @@ export type CustomerRelation = {
 
 export type SegmentCondition = {
   id: string;
-  field: 'lifecycle' | 'source' | 'personType' | 'tag' | 'minSpent' | 'minScore' | 'consentSms';
+  field: 'lifecycle' | 'source' | 'personType' | 'tag' | 'ownerName' | 'minSpent' | 'minScore' | 'consentSms' | 'consentEmail';
   op: 'eq' | 'neq' | 'contains' | 'gte';
   value: string;
 };
 
-export type CustomerSegment = {
+export type CustomerSegment = BaseEntityMeta & {
   id: string;
   name: string;
   description?: string;
+  segmentType?: 'dynamic' | 'static';
+  staticCustomerIds?: string[];
   logic: 'AND' | 'OR';
   conditions: SegmentCondition[];
   createdAt: string;
 };
 
-export type CsvImportBatch = {
+export type CustomerSavedViewFilter = {
+  query: string;
+  selectedTag: string;
+  lifecycleFilter: 'all' | CustomerLifecycle;
+  activeSegmentId: string;
+  personTypeFilter: 'all' | CustomerPersonType;
+  ownerFilter: string;
+  sortBy: 'createdAt' | 'score' | 'name' | 'totalSpent';
+  sortDir: 'asc' | 'desc';
+};
+
+export type CustomerSavedView = BaseEntityMeta & {
+  id: string;
+  name: string;
+  userKey: string;
+  filters: CustomerSavedViewFilter;
+  isDefault?: boolean;
+  createdAt: string;
+};
+
+export type CsvImportBatch = BaseEntityMeta & {
   id: string;
   fileName: string;
   customerIds: string[];
@@ -99,12 +147,21 @@ export type CsvImportBatch = {
   rolledBack?: boolean;
 };
 
+export type CustomFieldEntity =
+  | 'customer'
+  | 'order'
+  | 'appointment'
+  | 'opportunity'
+  | 'ticket'
+  | 'product';
+
 export type CustomFieldType =
   | 'text'
   | 'number'
   | 'select'
   | 'date'
   | 'multiselect'
+  | 'checkbox'
   | 'file'
   | 'money'
   | 'phone'
@@ -112,13 +169,27 @@ export type CustomFieldType =
   | 'lookup'
   | 'formula';
 
+export type CustomFieldValidation = {
+  min?: number;
+  max?: number;
+  minLength?: number;
+  maxLength?: number;
+  pattern?: string;
+  message?: string;
+};
+
 export type CustomFieldDef = {
   id: string;
   key: string;
   label: string;
+  entity?: CustomFieldEntity;
   type: CustomFieldType;
   options?: string[];
   required?: boolean;
+  unique?: boolean;
+  active?: boolean;
+  showInTable?: boolean;
+  validation?: CustomFieldValidation;
   lookupEntity?: 'customer' | 'product' | 'service' | 'resource';
   formulaExpr?: string;
   visibleWhen?: { fieldKey: string; equals: string };
@@ -164,17 +235,31 @@ export type ConfigSnapshot = {
   commissionTiers: CommissionTier[];
 };
 
-export type Interaction = {
+export type InteractionOutcome =
+  | 'answered'
+  | 'no_answer'
+  | 'interested'
+  | 'quote_requested'
+  | 'follow_up'
+  | 'not_interested';
+
+export type Interaction = BaseEntityMeta & {
   id: string;
   customerId: string;
   channel: 'call' | 'sms' | 'whatsapp' | 'visit' | 'note';
   text: string;
+  outcome?: InteractionOutcome;
+  followUpAt?: string; // ISO UTC
   at: string;
 };
 
 export type Service = {
   id: string;
   name: string;
+  category?: string;
+  unit?: string;
+  taxRate?: number;
+  active?: boolean;
   durationMin: number;
   price: number;
   bufferBeforeMin?: number;
@@ -229,6 +314,7 @@ export type Appointment = {
   cancelReason?: string;
   reminder2hSent?: boolean;
   branchId?: string;
+  customFields?: Record<string, string>;
 };
 
 export type OrderStatus = 'new' | 'confirmed' | 'shipped' | 'delivered' | 'cancelled';
@@ -257,6 +343,7 @@ export type Order = {
   carrier?: ShippingCarrier;
   shipments?: OrderShipment[];
   branchId?: string;
+  customFields?: Record<string, string>;
 };
 
 export type OrderStatusLog = { id: string; orderId: string; from: string; to: string; at: string };
@@ -317,10 +404,14 @@ export type Product = {
   id: string;
   name: string;
   sku: string;
+  category?: string;
+  unit?: string;
+  taxRate?: number;
   price: number;
   stock: number;
   minStock?: number;
   active: boolean;
+  customFields?: Record<string, string>;
 };
 
 export type StockMovement = {
@@ -335,6 +426,19 @@ export type StockMovement = {
   at: string;
 };
 
+export type PriceListTier = 'retail' | 'wholesale' | 'vip';
+export type PriceList = {
+  id: string;
+  name: string;
+  tier: PriceListTier;
+  discountPct: number;
+  validFrom: string; // ISO
+  validTo: string; // ISO
+  active: boolean;
+  itemOverrides?: Record<string, number>; // productId or serviceId -> unit price
+  notes?: string;
+};
+
 export type Coupon = {
   id: string;
   code: string;
@@ -342,6 +446,9 @@ export type Coupon = {
   maxUses: number;
   usedCount: number;
   active: boolean;
+  validFrom?: string;
+  validTo?: string;
+  minOrderAmount?: number;
 };
 
 export type ProjectStatus = 'planning' | 'in_progress' | 'testing' | 'deployed' | 'completed';
@@ -379,6 +486,27 @@ export type Project = {
   createdAt: string;
 };
 
+export type SalesLeadStatus = 'new' | 'qualified' | 'converted' | 'disqualified';
+export type SalesLead = {
+  id: string;
+  name: string;
+  phone: string;
+  email?: string;
+  companyName?: string;
+  source: string;
+  score: number; // 0..100
+  estimatedAmount: number;
+  ownerName: string;
+  assignedByRule?: 'manual' | 'round_robin';
+  status: SalesLeadStatus;
+  convertedCustomerId?: string;
+  convertedOpportunityId?: string;
+  notes?: string;
+  branchId?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type PipelineStage = 'lead' | 'contacted' | 'proposal' | 'negotiation' | 'won' | 'lost';
 export type PipelineStageConfig = {
   key: PipelineStage;
@@ -387,8 +515,25 @@ export type PipelineStageConfig = {
   slaHours: number;
 };
 
+export type SalesPipeline = {
+  id: string;
+  name: string;
+  description?: string;
+  isDefault?: boolean;
+  stages: PipelineStageConfig[];
+};
+
+export type OpportunityStageHistoryEntry = {
+  stage: PipelineStage;
+  label: string;
+  enteredAt: string;
+  exitedAt?: string;
+  durationHours?: number;
+};
+
 export type Opportunity = {
   id: string;
+  pipelineId?: string;
   title: string;
   customerId?: string;
   contactName: string;
@@ -397,14 +542,30 @@ export type Opportunity = {
   stage: PipelineStage;
   amount: number;
   probability: number;
+  expectedCloseDate?: string; // ISO
+  leadScore?: number;
   ownerName: string;
   lostReason?: string;
   branchId?: string;
+  stageHistory?: OpportunityStageHistoryEntry[];
+  customFields?: Record<string, string>;
   createdAt: string;
   updatedAt: string;
 };
 
-export type QuoteStatus = 'draft' | 'sent' | 'approved' | 'rejected';
+export type QuoteStatus = 'draft' | 'sent' | 'accepted' | 'rejected' | 'expired' | 'approved';
+export type QuoteApprovalStatus = 'not_required' | 'pending_manager' | 'approved' | 'rejected';
+
+export type QuoteLineItem = {
+  productId?: string;
+  name: string;
+  unit?: string;
+  qty: number;
+  price: number;
+  discountPct?: number;
+  taxRate?: number;
+};
+
 export type Quote = {
   id: string;
   quoteNo: string;
@@ -414,11 +575,16 @@ export type Quote = {
   customerId?: string;
   contactName: string;
   phone?: string;
-  items: { name: string; qty: number; price: number }[];
+  priceListId?: string;
+  priceListName?: string;
+  items: QuoteLineItem[];
   discountPct: number;
   taxPct: number;
   notes?: string;
   status: QuoteStatus;
+  approvalStatus?: QuoteApprovalStatus;
+  approvedBy?: string;
+  approvedAt?: string;
   shareToken: string;
   validUntil: string;
   clientComment?: string;
@@ -427,6 +593,8 @@ export type Quote = {
 
 export type SalesTarget = {
   id: string;
+  targetType?: 'user' | 'team';
+  teamName?: string;
   ownerName: string;
   periodLabel: string;
   targetAmount: number;
@@ -436,6 +604,29 @@ export type CommissionTier = {
   id: string;
   upToAmount: number | null; // null = infinity
   ratePct: number;
+};
+
+export type CommissionRuleMode = 'percentage' | 'tiered';
+export type CommissionRuleConfig = {
+  mode: CommissionRuleMode;
+  flatRatePct: number;
+  autoCreateLedgerOnWon: boolean;
+};
+
+export type CommissionLedgerStatus = 'pending' | 'approved' | 'paid';
+export type CommissionLedgerEntry = {
+  id: string;
+  opportunityId: string;
+  opportunityTitle: string;
+  ownerName: string;
+  dealAmount: number;
+  commissionAmount: number;
+  rateSummary: string;
+  status: CommissionLedgerStatus;
+  approvedBy?: string;
+  approvedAt?: string;
+  paidAt?: string;
+  createdAt: string;
 };
 
 export type WorkflowType = 'discount_approval' | 'order_return' | 'vip_schedule' | 'complaint' | 'custom';
@@ -657,6 +848,23 @@ export type Ticket = {
   createdAt: string;
   resolvedAt?: string;
   replyNote?: string;
+  customFields?: Record<string, string>;
+};
+
+export type ClientFlowConfigBundle = {
+  schemaVersion: number;
+  exportedAt: string;
+  businessName: string;
+  industryPack: IndustryPack;
+  customFieldDefs: CustomFieldDef[];
+  customEntityDefs: CustomEntityDef[];
+  entityRelations: EntityRelationDef[];
+  pipelineStages: PipelineStageConfig[];
+  commissionTiers: CommissionTier[];
+  workflowDefinitions: WorkflowDefinition[];
+  rules: Rule[];
+  numbering: NumberingConfig;
+  dashboardWidgets: DashboardWidgetConfig[];
 };
 
 export type RuleTriggerType = 'schedule' | 'on_create' | 'on_update' | 'on_stage_change' | 'on_ticket_create';
@@ -767,6 +975,23 @@ export type IndustryPack =
   | 'freelancer'
   | 'general';
 
+export type PackCustomerConfig = {
+  singularLabel: string;
+  pluralLabel: string;
+  highlightFieldKey?: string;
+  highlightColumnLabel?: string;
+};
+
+export type PackSalesConfig = {
+  pipelineName: string;
+  leadSingular: string;
+  leadPlural: string;
+  dealSingular: string;
+  dealPlural: string;
+  quoteLabel: string;
+  defaultStages: PipelineStageConfig[];
+};
+
 export type PackTemplate = {
   id: string;
   key: string;
@@ -775,6 +1000,8 @@ export type PackTemplate = {
   tier: 'full' | 'medium' | 'light';
   description: string;
   descriptionEn: string;
+  customerMeta?: PackCustomerConfig;
+  salesMeta?: PackSalesConfig;
   customFields: Omit<CustomFieldDef, 'id'>[];
   customEntities: Omit<CustomEntityDef, 'id' | 'createdAt'>[];
   services: Omit<Service, 'id'>[];
@@ -863,6 +1090,8 @@ export type AppState = {
   customers: Customer[];
   customerRelations: CustomerRelation[];
   customerSegments: CustomerSegment[];
+  customerSavedViews: CustomerSavedView[];
+  consentLogs: ConsentLog[];
   csvImportBatches: CsvImportBatch[];
   customFieldDefs: CustomFieldDef[];
   customEntityDefs: CustomEntityDef[];
@@ -886,11 +1115,16 @@ export type AppState = {
   coupons: Coupon[];
   projects: Project[];
   timeEntries: TimeEntry[];
+  leads: SalesLead[];
+  pipelines: SalesPipeline[];
   pipelineStages: PipelineStageConfig[];
   opportunities: Opportunity[];
+  priceLists: PriceList[];
   quotes: Quote[];
   salesTargets: SalesTarget[];
   commissionTiers: CommissionTier[];
+  commissionRule: CommissionRuleConfig;
+  commissionLedger: CommissionLedgerEntry[];
   workflowDefinitions: WorkflowDefinition[];
   workflows: WorkflowInstance[];
   contentItems: ContentItem[];
