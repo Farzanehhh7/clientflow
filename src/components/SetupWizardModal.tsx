@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { CheckCircle2 } from 'lucide-react';
+import { INDUSTRY_PACKS } from '../data/packs';
 import { useClientFlow } from '../store/useClientFlowStore';
 import type { IndustryPack } from '../types';
 import { toFa } from '../utils/jalali';
@@ -20,15 +21,9 @@ const WEEKDAY_OPTIONS: { dayIndex: number; label: string }[] = [
   { dayIndex: 5, label: 'جمعه' },
 ];
 
-const PACKS: { id: IndustryPack; title: string; desc: string }[] = [
-  { id: 'clinic', title: 'کلینیک و مطب', desc: 'پرونده مراجع، رضایت‌نامه، یادآوری ویزیت کنترل' },
-  { id: 'shop', title: 'فروشگاه آنلاین', desc: 'کاتالوگ محصول، کد تخفیف، پیگیری سفارش رهاشده' },
-  { id: 'software', title: 'شرکت نرم‌افزاری / IT', desc: 'لایسنس، تاریخ انقضای قرارداد، هشدار تمدید' },
-  { id: 'general', title: 'عمومی (ساده)', desc: 'پیکربندی استاندارد بدون فیلدهای تخصصی' },
-];
-
 export function SetupWizardModal({ open, onClose }: SetupWizardModalProps) {
-  const { state, updateSettings, addService, addResource, addProduct, pushToast } = useClientFlow();
+  const { state, updateSettings, applyIndustryPack, addService, addResource, addProduct, pushToast } =
+    useClientFlow();
   const [step, setStep] = useState<1 | 2 | 3>(1);
 
   const [businessName, setBusinessName] = useState(state.settings.businessName);
@@ -50,11 +45,11 @@ export function SetupWizardModal({ open, onClose }: SetupWizardModalProps) {
   const handleFinish = () => {
     updateSettings({
       businessName: businessName.trim() || state.settings.businessName,
-      industryPack: pack,
       workStartHour,
       workEndHour,
       workDays: workDays.length > 0 ? workDays : [6, 0, 1, 2, 3, 4],
     });
+    applyIndustryPack(pack, true);
     if (starterService.trim()) {
       addService({ name: starterService.trim(), durationMin: 30, price: 500000 });
     }
@@ -70,13 +65,13 @@ export function SetupWizardModal({ open, onClose }: SetupWizardModalProps) {
         active: true,
       });
     }
-    pushToast('پیکربندی اولیه کسب‌وکار با ویزارد تکمیل شد.');
+    pushToast('پیکربندی اولیه کسب‌وکار و نصب بسته صنعتی با ویزارد تکمیل شد.');
     setStep(1);
     onClose();
   };
 
   return (
-    <Modal open={open} onClose={onClose} title="ویزارد راه‌اندازی سریع کسب‌وکار" maxWidth="lg">
+    <Modal open={open} onClose={onClose} title="ویزارد راه‌اندازی سریع کسب‌وکار (۱۰ پک صنعتی)" maxWidth="xl">
       <div className="space-y-5">
         <div className="flex items-center justify-between border-b border-slate-200 pb-3 text-xs dark:border-slate-800">
           {(
@@ -117,22 +112,27 @@ export function SetupWizardModal({ open, onClose }: SetupWizardModalProps) {
 
             <div>
               <div className="mb-2 text-xs font-medium text-slate-600 dark:text-slate-400">
-                انتخاب بسته صنعتی
+                انتخاب بسته صنعتی ({toFa(INDUSTRY_PACKS.length)} پک تخصصی آماده)
               </div>
-              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-                {PACKS.map((p) => (
+              <div className="grid max-h-72 grid-cols-1 gap-2.5 overflow-y-auto pr-1 sm:grid-cols-2">
+                {INDUSTRY_PACKS.map((p) => (
                   <button
-                    key={p.id}
+                    key={p.key}
                     type="button"
-                    onClick={() => setPack(p.id)}
+                    onClick={() => setPack(p.key as IndustryPack)}
                     className={`rounded-xl border p-3 text-right transition-colors ${
-                      pack === p.id
+                      pack === p.key
                         ? 'border-indigo-600 bg-indigo-50/60 dark:border-indigo-500 dark:bg-indigo-950/30'
                         : 'border-slate-200 hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/40'
                     }`}
                   >
-                    <div className="text-xs font-semibold">{p.title}</div>
-                    <div className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">{p.desc}</div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-semibold">{p.name}</span>
+                      <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                        {p.tier === 'full' ? 'کامل' : p.tier === 'medium' ? 'متوسط' : 'سبک'}
+                      </span>
+                    </div>
+                    <div className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">{p.description}</div>
                   </button>
                 ))}
               </div>
@@ -276,7 +276,7 @@ export function SetupWizardModal({ open, onClose }: SetupWizardModalProps) {
                 className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-medium text-white hover:bg-emerald-700"
               >
                 <CheckCircle2 size={15} />
-                ذخیره و پایان راه‌اندازی
+                ذخیره و نصب بسته صنعتی
               </button>
             )}
           </div>

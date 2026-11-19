@@ -1,11 +1,15 @@
 import { useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  Banknote,
   Boxes,
+  CheckCircle2,
   CheckSquare,
   Clock,
+  CreditCard,
   Eye,
   FolderKanban,
+  Landmark,
   PackageCheck,
   Plus,
   Printer,
@@ -16,6 +20,7 @@ import {
 } from 'lucide-react';
 import { InvoicePreviewModal } from '../components/InvoicePreviewModal';
 import { Modal } from '../components/Modal';
+import { PaymentGatewayModal } from '../components/PaymentGatewayModal';
 import { useClientFlow } from '../store/useClientFlowStore';
 import type {
   Invoice,
@@ -24,6 +29,7 @@ import type {
   PaymentMethod,
   Product,
   ProjectStatus,
+  SayadiChequeStatus,
   ShippingCarrier,
 } from '../types';
 import { formatJalali, formatJalaliDateTime, formatToman, toFa } from '../utils/jalali';
@@ -95,6 +101,8 @@ export function OrdersPage() {
     toggleCoupon,
     createInvoiceForOrder,
     recordInvoicePayment,
+    addSayadiCheque,
+    updateSayadiChequeStatus,
     createWorkflowInstance,
     addProject,
     updateProjectStatus,
@@ -116,11 +124,25 @@ export function OrdersPage() {
   const [shipNote, setShipNote] = useState('');
   const [shipQtys, setShipQtys] = useState<Record<string, number>>({});
 
-  // Payment & Preview modals
+  // Payment, Sandbox Gateway & Preview modals
   const [payInvoice, setPayInvoice] = useState<Invoice | null>(null);
+  const [gatewayInvoice, setGatewayInvoice] = useState<Invoice | null>(null);
   const [previewInvoice, setPreviewInvoice] = useState<Invoice | null>(null);
   const [payAmount, setPayAmount] = useState('0');
   const [payMethod, setPayMethod] = useState<PaymentMethod>('online');
+
+  // Sayadi Cheque modal state
+  const [chequeModalOpen, setChequeModalOpen] = useState(false);
+  const [chqNo, setChqNo] = useState('');
+  const [chqSayadiId, setChqSayadiId] = useState('');
+  const [chqBank, setChqBank] = useState('بانک ملت');
+  const [chqDrawer, setChqDrawer] = useState('');
+  const [chqCustomerId, setChqCustomerId] = useState(state.customers[0]?.id ?? '');
+  const [chqInvoiceId, setChqInvoiceId] = useState('');
+  const [chqAmount, setChqAmount] = useState('5000000');
+  const [chqDueJalali, setChqDueJalali] = useState('1404/02/15');
+  const [chqDueDays, setChqDueDays] = useState('30');
+  const [chqNotes, setChqNotes] = useState('');
 
   // Create Order form
   const [customerId, setCustomerId] = useState(state.customers[0]?.id ?? '');
@@ -174,20 +196,35 @@ export function OrdersPage() {
         o.status !== 'cancelled',
     );
 
+  const activeBranch = state.settings.activeBranchId;
+
+  const branchOrders = useMemo(() => {
+    if (!activeBranch || activeBranch === 'all') return state.orders;
+    return state.orders.filter((o) => !o.branchId || o.branchId === activeBranch);
+  }, [state.orders, activeBranch]);
+
+  const branchInvoices = useMemo(() => {
+    if (!activeBranch || activeBranch === 'all') return state.invoices;
+    return state.invoices.filter((inv) => !inv.branchId || inv.branchId === activeBranch);
+  }, [state.invoices, activeBranch]);
+
   const filteredOrders = useMemo(() => {
-    return state.orders.filter((o) => {
+    return branchOrders.filter((o) => {
       if (statusFilter === 'all') return true;
       if (statusFilter === 'overdue') return isOrderOverdue(o);
       return o.status === statusFilter;
     });
-  }, [state.orders, statusFilter]);
+  }, [branchOrders, statusFilter]);
 
   const financeSummary = useMemo(() => {
-    const totalBilled = state.invoices.reduce((s, inv) => s + inv.grandTotal, 0);
-    const totalPaid = state.invoices.reduce((s, inv) => s + inv.paidAmount, 0);
+    const totalBilled = branchInvoices.reduce((s, inv) => s + inv.grandTotal, 0);
+    const totalPaid = branchInvoices.reduce((s, inv) => s + inv.paidAmount, 0);
     const receivables = totalBilled - totalPaid;
-    return { totalBilled, totalPaid, receivables };
-  }, [state.invoices]);
+    const pendingCheques = state.sayadiCheques
+      .filter((c) => c.status === 'received' || c.status === 'deposited')
+      .reduce((s, c) => s + c.amount, 0);
+    return { totalBilled, totalPaid, receivables, pendingCheques };
+  }, [branchInvoices, state.sayadiCheques]);
 
   const orderTotal = (o: Order) =>
     o.items.reduce((sum, it) => sum + it.qty * it.price, 0) - (o.discountAmount ?? 0);
@@ -278,7 +315,7 @@ export function OrdersPage() {
                 : 'text-slate-600 dark:text-slate-400'
             }`}
           >
-            سفارش‌ها ({toFa(state.orders.length)})
+            سفارش‌ها ({toFa(branchOrders.length)})
           </button>
           <button
             type="button"
@@ -289,7 +326,7 @@ export function OrdersPage() {
                 : 'text-slate-600 dark:text-slate-400'
             }`}
           >
-            فاکتورها و مالی ({toFa(state.invoices.length)})
+            فاکتورها، درگاه پرداخت و چک صیادی ({toFa(branchInvoices.length)})
           </button>
           <button
             type="button"
@@ -466,10 +503,10 @@ export function OrdersPage() {
         </>
       )}
 
-      {/* TAB 2: INVOICES */}
+      {/* TAB 2: INVOICES, SANDBOX GATEWAY & SAYADI CHEQUES */}
       {activeTab === 'invoices' && (
-        <div className="space-y-4">
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <div className="space-y-6">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
               <div className="text-xs text-slate-500">جمع کل فاکتورهای صادره (با ۱۰٪ مالیات)</div>
               <div className="mt-1.5 text-xl font-bold tabular-nums">{formatToman(financeSummary.totalBilled)}</div>
@@ -484,6 +521,12 @@ export function OrdersPage() {
               <div className="text-xs text-slate-500">مطالبات باز (مانده بدهی)</div>
               <div className="mt-1.5 text-xl font-bold tabular-nums text-rose-600 dark:text-rose-400">
                 {formatToman(financeSummary.receivables)}
+              </div>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+              <div className="text-xs text-slate-500">چک‌های صیادی در جریان وصول</div>
+              <div className="mt-1.5 text-xl font-bold tabular-nums text-indigo-600 dark:text-indigo-400">
+                {formatToman(financeSummary.pendingCheques)}
               </div>
             </div>
           </div>
@@ -503,7 +546,7 @@ export function OrdersPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-                  {state.invoices.map((inv) => {
+                  {branchInvoices.map((inv) => {
                     const cust = state.customers.find((c) => c.id === inv.customerId);
                     const balance = Math.max(0, inv.grandTotal - inv.paidAmount);
                     return (
@@ -526,7 +569,7 @@ export function OrdersPage() {
                           <span className="mr-1.5 text-slate-400">· {METHOD_LABEL[inv.method]}</span>
                         </td>
                         <td className="px-4 py-2.5 text-left">
-                          <div className="flex items-center justify-end gap-1.5">
+                          <div className="flex flex-wrap items-center justify-end gap-1.5">
                             <button
                               type="button"
                               onClick={() => setPreviewInvoice(inv)}
@@ -537,23 +580,215 @@ export function OrdersPage() {
                               چاپ
                             </button>
                             {balance > 0 && (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setPayInvoice(inv);
-                                  setPayAmount(String(balance));
-                                  setPayMethod(inv.method);
-                                }}
-                                className="rounded-md bg-indigo-600 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-700"
-                              >
-                                ثبت پرداخت
-                              </button>
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => setGatewayInvoice(inv)}
+                                  className="inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-100 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-300"
+                                >
+                                  <CreditCard size={13} />
+                                  درگاه آنلاین
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setPayInvoice(inv);
+                                    setPayAmount(String(balance));
+                                    setPayMethod(inv.method);
+                                  }}
+                                  className="rounded-md bg-indigo-600 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-700"
+                                >
+                                  ثبت پرداخت
+                                </button>
+                              </>
                             )}
                           </div>
                         </td>
                       </tr>
                     );
                   })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Sayadi Cheques Section (FR-FIN-05) */}
+          <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="flex items-center gap-2 text-sm font-semibold">
+                  <Landmark size={16} className="text-indigo-500" />
+                  مدیریت چک‌های صیادی (FR-FIN-05)
+                </h2>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  ثبت شناسه ۱۶ رقمی صیادی، پیگیری سررسید، واگذاری به بانک، وصول خودکار روی فاکتور و ایجاد تسک فوری در صورت برگشت چک.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setChequeModalOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 py-2 text-xs font-medium text-white hover:bg-indigo-700"
+              >
+                <Plus size={14} />
+                ثبت چک صیادی جدید
+              </button>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-right text-xs">
+                <thead className="border-b border-slate-200 bg-slate-50/70 text-slate-500 dark:border-slate-800 dark:bg-slate-800/40">
+                  <tr>
+                    <th className="px-3 py-2.5 font-medium">شماره چک / شناسه صیاد</th>
+                    <th className="px-3 py-2.5 font-medium">مشتری / صادرکننده</th>
+                    <th className="px-3 py-2.5 font-medium">بانک</th>
+                    <th className="px-3 py-2.5 font-medium">مبلغ</th>
+                    <th className="px-3 py-2.5 font-medium">سررسید شمسی</th>
+                    <th className="px-3 py-2.5 font-medium">فاکتور متصل</th>
+                    <th className="px-3 py-2.5 font-medium">وضعیت</th>
+                    <th className="px-3 py-2.5 font-medium text-left">تغییر وضعیت</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+                  {state.sayadiCheques.map((chq) => {
+                    const cust = state.customers.find((c) => c.id === chq.customerId);
+                    const linkedInv = state.invoices.find((i) => i.id === chq.invoiceId);
+                    const statusBadge: Record<SayadiChequeStatus, { label: string; cls: string }> = {
+                      received: {
+                        label: 'دریافت‌شده (نزد صندوق)',
+                        cls: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
+                      },
+                      deposited: {
+                        label: 'واگذارشده به بانک (در جریان)',
+                        cls: 'bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300',
+                      },
+                      cleared: {
+                        label: 'وصول‌شده',
+                        cls: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300',
+                      },
+                      bounced: {
+                        label: 'برگشتی (نیاز به پیگیری فوری)',
+                        cls: 'bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300',
+                      },
+                    };
+                    const badge = statusBadge[chq.status];
+                    return (
+                      <tr key={chq.id} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/30">
+                        <td className="px-3 py-2.5">
+                          <div className="font-mono font-semibold tabular-nums">{toFa(chq.chequeNo)}</div>
+                          <div className="font-mono text-[10px] text-slate-400" dir="ltr">
+                            صیاد: {chq.sayadiId}
+                          </div>
+                        </td>
+                        <td className="px-3 py-2.5">
+                          <div className="font-medium text-slate-900 dark:text-slate-100">
+                            {cust?.name ?? chq.drawerName}
+                          </div>
+                          <div className="text-[11px] text-slate-500">صادرکننده: {chq.drawerName}</div>
+                        </td>
+                        <td className="px-3 py-2.5 text-slate-600 dark:text-slate-300">{chq.bankName}</td>
+                        <td className="px-3 py-2.5 font-semibold tabular-nums">{formatToman(chq.amount)}</td>
+                        <td className="px-3 py-2.5 tabular-nums">{toFa(chq.dueDateJalali)}</td>
+                        <td className="px-3 py-2.5 font-mono text-[11px] text-indigo-600 dark:text-indigo-400">
+                          {linkedInv ? linkedInv.invoiceNo : '—'}
+                        </td>
+                        <td className="px-3 py-2.5">
+                          <span className={`inline-block rounded px-2 py-0.5 text-[11px] font-medium ${badge.cls}`}>
+                            {badge.label}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2.5 text-left">
+                          <div className="flex flex-wrap justify-end gap-1">
+                            {chq.status === 'received' && (
+                              <button
+                                type="button"
+                                onClick={() => updateSayadiChequeStatus(chq.id, 'deposited')}
+                                className="rounded border border-sky-200 px-2 py-1 text-[11px] text-sky-700 hover:bg-sky-50 dark:border-sky-900 dark:text-sky-300"
+                              >
+                                واگذاری به بانک
+                              </button>
+                            )}
+                            {(chq.status === 'received' || chq.status === 'deposited') && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => updateSayadiChequeStatus(chq.id, 'cleared')}
+                                  className="inline-flex items-center gap-1 rounded bg-emerald-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-emerald-700"
+                                >
+                                  <CheckCircle2 size={12} />
+                                  وصول شد
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => updateSayadiChequeStatus(chq.id, 'bounced')}
+                                  className="rounded border border-rose-200 px-2 py-1 text-[11px] text-rose-600 hover:bg-rose-50 dark:border-rose-900 dark:text-rose-400"
+                                >
+                                  برگشت خورد
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Sandbox Gateway Transactions Ledger (FR-FIN-04) */}
+          <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+            <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold">
+              <Banknote size={16} className="text-emerald-500" />
+              دفتر کل تراکنش‌های درگاه پرداخت آنلاین (FR-FIN-04)
+            </h2>
+            <div className="overflow-x-auto">
+              <table className="w-full text-right text-xs">
+                <thead className="border-b border-slate-200 bg-slate-50/70 text-slate-500 dark:border-slate-800 dark:bg-slate-800/40">
+                  <tr>
+                    <th className="px-3 py-2 font-medium">فاکتور</th>
+                    <th className="px-3 py-2 font-medium">درگاه</th>
+                    <th className="px-3 py-2 font-medium">مبلغ</th>
+                    <th className="px-3 py-2 font-medium">شماره کارت</th>
+                    <th className="px-3 py-2 font-medium">کد رهگیری / پیام</th>
+                    <th className="px-3 py-2 font-medium">وضعیت</th>
+                    <th className="px-3 py-2 font-medium">زمان</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+                  {state.paymentTransactions.map((tx) => (
+                    <tr key={tx.id}>
+                      <td className="px-3 py-2 font-mono">{tx.invoiceNo}</td>
+                      <td className="px-3 py-2 uppercase">{tx.gateway}</td>
+                      <td className="px-3 py-2 font-semibold tabular-nums">{formatToman(tx.amount)}</td>
+                      <td className="px-3 py-2 font-mono text-slate-500" dir="ltr">
+                        {tx.cardMasked ?? '—'}
+                      </td>
+                      <td className="px-3 py-2 text-slate-600 dark:text-slate-300">
+                        {tx.refId ? (
+                          <span className="font-mono font-semibold text-emerald-600 dark:text-emerald-400" dir="ltr">
+                            {tx.refId}
+                          </span>
+                        ) : (
+                          tx.errorMessage ?? '—'
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        <span
+                          className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
+                            tx.status === 'succeeded'
+                              ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300'
+                              : tx.status === 'failed'
+                                ? 'bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300'
+                                : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
+                          }`}
+                        >
+                          {tx.status === 'succeeded' ? 'موفق' : tx.status === 'failed' ? 'ناموفق' : 'انصراف'}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 tabular-nums text-slate-400">{formatJalaliDateTime(tx.at)}</td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
@@ -1565,6 +1800,178 @@ export function OrdersPage() {
           </div>
         </form>
       </Modal>
+
+      {/* Register Sayadi Cheque Modal */}
+      <Modal open={chequeModalOpen} onClose={() => setChequeModalOpen(false)} title="ثبت چک صیادی جدید" maxWidth="md">
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!chqNo.trim() || !chqDrawer.trim()) return;
+            const days = Math.max(1, Number(chqDueDays) || 30);
+            addSayadiCheque({
+              chequeNo: chqNo.trim(),
+              sayadiId:
+                chqSayadiId.trim() ||
+                `44${Math.floor(10000000000000 + Math.random() * 89999999999999)}`,
+              bankName: chqBank.trim() || 'بانک ملت',
+              drawerName: chqDrawer.trim(),
+              customerId: chqCustomerId,
+              invoiceId: chqInvoiceId || undefined,
+              amount: Math.max(1000, Number(chqAmount) || 0),
+              dueDateJalali: chqDueJalali.trim() || '1404/02/15',
+              dueDateIso: new Date(Date.now() + days * 24 * 3600_000).toISOString(),
+              status: 'received',
+              notes: chqNotes.trim() || undefined,
+            });
+            setChequeModalOpen(false);
+            setChqNo('');
+            setChqSayadiId('');
+            setChqDrawer('');
+            setChqNotes('');
+          }}
+          className="space-y-3"
+        >
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-xs text-slate-500">شماره برگه چک *</label>
+              <input
+                type="text"
+                required
+                dir="ltr"
+                value={chqNo}
+                onChange={(e) => setChqNo(e.target.value)}
+                placeholder="654321"
+                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-left font-mono text-xs dark:border-slate-700 dark:bg-slate-800"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-slate-500">شناسه ۱۶ رقمی صیادی</label>
+              <input
+                type="text"
+                dir="ltr"
+                maxLength={16}
+                value={chqSayadiId}
+                onChange={(e) => setChqSayadiId(e.target.value)}
+                placeholder="تولید خودکار در صورت خالی‌ماندن"
+                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-left font-mono text-xs dark:border-slate-700 dark:bg-slate-800"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-slate-500">مشتری</label>
+              <select
+                value={chqCustomerId}
+                onChange={(e) => setChqCustomerId(e.target.value)}
+                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-800"
+              >
+                {state.customers.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-slate-500">صادرکننده چک *</label>
+              <input
+                type="text"
+                required
+                value={chqDrawer}
+                onChange={(e) => setChqDrawer(e.target.value)}
+                placeholder="نام صاحب حساب چک"
+                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-800"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-slate-500">نام بانک</label>
+              <input
+                type="text"
+                value={chqBank}
+                onChange={(e) => setChqBank(e.target.value)}
+                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-800"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-slate-500">مبلغ چک (تومان)</label>
+              <input
+                type="number"
+                required
+                min={1000}
+                value={chqAmount}
+                onChange={(e) => setChqAmount(e.target.value)}
+                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs tabular-nums dark:border-slate-700 dark:bg-slate-800"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-slate-500">تاریخ سررسید شمسی</label>
+              <input
+                type="text"
+                dir="ltr"
+                value={chqDueJalali}
+                onChange={(e) => setChqDueJalali(e.target.value)}
+                placeholder="1404/02/15"
+                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-left font-mono text-xs dark:border-slate-700 dark:bg-slate-800"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-slate-500">تعداد روز تا سررسید</label>
+              <input
+                type="number"
+                min={1}
+                value={chqDueDays}
+                onChange={(e) => setChqDueDays(e.target.value)}
+                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs tabular-nums dark:border-slate-700 dark:bg-slate-800"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs text-slate-500">اتصال به فاکتور (اختیاری - تسویه خودکار هنگام وصول)</label>
+            <select
+              value={chqInvoiceId}
+              onChange={(e) => setChqInvoiceId(e.target.value)}
+              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-800"
+            >
+              <option value="">-- بدون اتصال به فاکتور --</option>
+              {state.invoices
+                .filter((inv) => inv.grandTotal > inv.paidAmount)
+                .map((inv) => (
+                  <option key={inv.id} value={inv.id}>
+                    {inv.invoiceNo} (مانده: {formatToman(inv.grandTotal - inv.paidAmount)})
+                  </option>
+                ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs text-slate-500">یادداشت</label>
+            <input
+              type="text"
+              value={chqNotes}
+              onChange={(e) => setChqNotes(e.target.value)}
+              placeholder="توضیحات بابت چک..."
+              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-800"
+            />
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2">
+            <button
+              type="button"
+              onClick={() => setChequeModalOpen(false)}
+              className="rounded-lg border border-slate-200 px-4 py-2 text-xs dark:border-slate-700"
+            >
+              انصراف
+            </button>
+            <button
+              type="submit"
+              className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-medium text-white hover:bg-indigo-700"
+            >
+              ثبت چک صیادی
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      <PaymentGatewayModal invoice={gatewayInvoice} onClose={() => setGatewayInvoice(null)} />
 
       <InvoicePreviewModal
         invoice={previewInvoice}

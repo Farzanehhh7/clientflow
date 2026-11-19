@@ -2,28 +2,40 @@ import { useState } from 'react';
 import {
   ArrowDown,
   ArrowUp,
+  Building2,
+  Compass,
   Database,
   Download,
+  Globe,
   GripVertical,
+  Hash,
   History,
+  Layers,
   Link2,
+  PackagePlus,
   Plus,
   RotateCcw,
   Save,
   Sparkles,
   Trash2,
   Upload,
+  Wifi,
+  WifiOff,
 } from 'lucide-react';
 import { SetupWizardModal } from '../components/SetupWizardModal';
+import { INDUSTRY_PACKS } from '../data/packs';
 import { useClientFlow } from '../store/useClientFlowStore';
 import type {
-  CustomFieldDef,
   CustomFieldType,
   EntityRelationType,
   IndustryPack,
+  NumberingConfig,
+  PackTemplate,
   UserRole,
 } from '../types';
+import { formatDocumentNumber } from '../utils/i18n';
 import { formatJalaliDateTime, formatToman, toFa } from '../utils/jalali';
+import { PWAInstallButton, useOnlineStatus } from '../utils/usePWA';
 
 const WEEKDAY_OPTIONS: { dayIndex: number; label: string }[] = [
   { dayIndex: 6, label: 'شنبه' },
@@ -49,7 +61,11 @@ const FIELD_TYPE_LABELS: Record<CustomFieldType, string> = {
   formula: 'فرمول محاسباتی',
 };
 
-export function SettingsPage() {
+interface SettingsPageProps {
+  onStartTour?: () => void;
+}
+
+export function SettingsPage({ onStartTour }: SettingsPageProps) {
   const {
     state,
     updateSettings,
@@ -67,17 +83,38 @@ export function SettingsPage() {
     restoreConfigSnapshot,
     addService,
     addResource,
+    applyIndustryPack,
+    saveCustomPack,
+    importCustomPack,
+    addBranch,
+    deleteBranch,
     pushToast,
   } = useClientFlow();
 
-  const [tab, setTab] = useState<'general' | 'config' | 'entities' | 'audit'>('general');
+  const [tab, setTab] = useState<'general' | 'packs' | 'config' | 'entities' | 'audit'>('general');
   const [wizardOpen, setWizardOpen] = useState(false);
+  const realOnline = useOnlineStatus();
 
   const [businessName, setBusinessName] = useState(state.settings.businessName);
   const [workStartHour, setWorkStartHour] = useState(state.settings.workStartHour);
   const [workEndHour, setWorkEndHour] = useState(state.settings.workEndHour);
   const [workDays, setWorkDays] = useState<number[]>(state.settings.workDays);
   const [commissionPct, setCommissionPct] = useState(String(state.settings.commissionPct));
+
+  // Jalali Numbering Config (FR-CORE-05)
+  const [numbering, setNumbering] = useState<NumberingConfig>(state.settings.numbering);
+
+  // Multi-Branch form (FR-CORE-04)
+  const [brName, setBrName] = useState('');
+  const [brCode, setBrCode] = useState('');
+  const [brCity, setBrCity] = useState('');
+  const [brManager, setBrManager] = useState('');
+  const [brParentId, setBrParentId] = useState(state.branches[0]?.id ?? '');
+
+  // Pack Builder form (Section 7)
+  const [pkName, setPkName] = useState('');
+  const [pkKey, setPkKey] = useState('');
+  const [pkDesc, setPkDesc] = useState('');
 
   // Visual Form Builder (11 field types + conditional + lookup + formula + drag reorder)
   const [cfLabel, setCfLabel] = useState('');
@@ -108,7 +145,7 @@ export function SettingsPage() {
   const [snapVersion, setSnapVersion] = useState(`v1.${state.configSnapshots.length + 1}.0`);
   const [snapNote, setSnapNote] = useState('');
 
-  // Service & Resource builder (with bufferBeforeMin & bufferAfterMin)
+  // Service & Resource builder
   const [srvName, setSrvName] = useState('');
   const [srvDuration, setSrvDuration] = useState('30');
   const [srvPrice, setSrvPrice] = useState('500000');
@@ -152,6 +189,32 @@ export function SettingsPage() {
     const res = importStateJson(text);
     if (!res.ok) {
       pushToast(res.error ?? 'خطا در بازیابی فایل', 'error');
+    }
+    e.target.value = '';
+  };
+
+  const downloadPackJson = (pack: PackTemplate) => {
+    const blob = new Blob([JSON.stringify(pack, null, 2)], { type: 'application/json;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `clientflow-pack-${pack.key}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImportPackFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const parsed = JSON.parse(await file.text()) as PackTemplate;
+      if (!parsed || !parsed.key || !parsed.name) {
+        pushToast('ساختار فایل پک JSON معتبر نیست.', 'error');
+      } else {
+        importCustomPack(parsed);
+      }
+    } catch {
+      pushToast('خطا در خواندن فایل پک JSON.', 'error');
     }
     e.target.value = '';
   };
@@ -266,7 +329,8 @@ export function SettingsPage() {
         <div className="flex flex-wrap items-center gap-1 rounded-lg bg-slate-100 p-1 w-fit dark:bg-slate-900">
           {(
             [
-              ['general', 'کسب‌وکار و بسته صنعتی'],
+              ['general', 'هسته، شعب، شماره‌گذاری و PWA'],
+              ['packs', '۱۰ بسته صنعتی و Pack Builder'],
               ['config', 'فرم‌ساز بصری، خدمات و بافر'],
               ['entities', 'موجودیت‌های سفارشی و نسخه‌گذاری'],
               ['audit', `گزارش ممیزی (${toFa(state.auditLogs.length)})`],
@@ -297,6 +361,7 @@ export function SettingsPage() {
         </button>
       </div>
 
+      {/* TAB 1: GENERAL, BRANCHES, NUMBERING, UX & PWA */}
       {tab === 'general' && (
         <>
           <form
@@ -396,42 +461,375 @@ export function SettingsPage() {
                 type="submit"
                 className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-medium text-white hover:bg-indigo-700"
               >
-                ذخیره تنظیمات
+                ذخیره تنظیمات پایه
               </button>
             </div>
           </form>
 
+          {/* Multi-Branch Hierarchy (FR-CORE-04) */}
           <div className="space-y-4 rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
-            <h2 className="text-sm font-semibold">بسته صنعتی فعال (Industry Pack)</h2>
-            <p className="text-xs text-slate-500 dark:text-slate-400">
-              انتخاب بسته صنعتی، فیلدهای تخصصی پرونده و قوانین اتوماسیون متناسب را فعال می‌کند.
-            </p>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              {(
-                [
-                  ['clinic', 'کلینیک و مطب', 'پرونده مراجع، رضایت‌نامه، یادآوری ویزیت کنترل'],
-                  ['shop', 'فروشگاه آنلاین', 'کاتالوگ محصول، انبار خودکار، پیگیری سفارش رهاشده'],
-                  ['software', 'شرکت نرم‌افزاری / IT', 'لایسنس، پروژه‌ها و استقرار، هشدار تمدید'],
-                  ['general', 'عمومی (ساده)', 'پیکربندی استاندارد بدون فیلدهای تخصصی'],
-                ] as [IndustryPack, string, string][]
-              ).map(([pack, title, desc]) => {
-                const active = state.settings.industryPack === pack;
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="flex items-center gap-2 text-sm font-semibold">
+                  <Building2 size={16} className="text-indigo-500" />
+                  ساختار چندشعبه‌ای (Multi-Branch Hierarchy - FR-CORE-04)
+                </h2>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  تعریف شعبه‌ها و زیرشعبه‌ها و انتخاب شعبه فعال جهت تفکیک آمار داشبورد، فروش و نوبت‌ها.
+                </p>
+              </div>
+              <select
+                value={state.settings.activeBranchId}
+                onChange={(e) => updateSettings({ activeBranchId: e.target.value })}
+                className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium dark:border-slate-700 dark:bg-slate-800"
+              >
+                <option value="all">نمایش تجمیعی همه شعبه‌ها</option>
+                {state.branches.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    شعبه فعال: {b.name} ({b.city})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (!brName.trim()) return;
+                addBranch({
+                  name: brName.trim(),
+                  code: brCode.trim().toUpperCase() || `BR-${state.branches.length + 1}`,
+                  city: brCity.trim() || 'تهران',
+                  managerName: brManager.trim() || undefined,
+                  parentBranchId: brParentId || undefined,
+                  active: true,
+                });
+                setBrName('');
+                setBrCode('');
+                setBrCity('');
+                setBrManager('');
+              }}
+              className="grid grid-cols-1 gap-2 sm:grid-cols-6"
+            >
+              <input
+                type="text"
+                required
+                placeholder="نام شعبه..."
+                value={brName}
+                onChange={(e) => setBrName(e.target.value)}
+                className="sm:col-span-2 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-800"
+              />
+              <input
+                type="text"
+                dir="ltr"
+                placeholder="کد (SHZ-01)"
+                value={brCode}
+                onChange={(e) => setBrCode(e.target.value)}
+                className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-left font-mono text-xs dark:border-slate-700 dark:bg-slate-800"
+              />
+              <input
+                type="text"
+                placeholder="شهر"
+                value={brCity}
+                onChange={(e) => setBrCity(e.target.value)}
+                className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-800"
+              />
+              <select
+                value={brParentId}
+                onChange={(e) => setBrParentId(e.target.value)}
+                className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-800"
+              >
+                <option value="">شعبه مادر (مستقل)</option>
+                {state.branches.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    زیرشعبه: {b.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="submit"
+                className="inline-flex items-center justify-center gap-1 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700"
+              >
+                <Plus size={14} />
+                افزودن شعبه
+              </button>
+            </form>
+
+            <div className="divide-y divide-slate-200 rounded-lg border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
+              {state.branches.map((b) => {
+                const parent = state.branches.find((p) => p.id === b.parentBranchId);
                 return (
-                  <button
-                    key={pack}
-                    type="button"
-                    onClick={() => updateSettings({ industryPack: pack })}
-                    className={`rounded-xl border p-3.5 text-right transition-colors ${
-                      active
-                        ? 'border-indigo-600 bg-indigo-50/60 dark:border-indigo-500 dark:bg-indigo-950/30'
-                        : 'border-slate-200 hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/40'
-                    }`}
-                  >
-                    <div className="text-sm font-semibold">{title}</div>
-                    <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">{desc}</div>
-                  </button>
+                  <div key={b.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5 text-xs">
+                    <div>
+                      <span className="font-semibold text-slate-900 dark:text-slate-100">{b.name}</span>
+                      <span className="mx-2 font-mono text-[11px] text-indigo-600 dark:text-indigo-400">
+                        ({b.code})
+                      </span>
+                      <span className="text-slate-500">
+                        شهر: {b.city}
+                        {b.managerName ? ` · مدیر: ${b.managerName}` : ''}
+                        {parent ? ` · زیرمجموعه «${parent.name}»` : ' · ستاد اصلی'}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => updateSettings({ activeBranchId: b.id })}
+                        className={`rounded px-2 py-1 text-[11px] font-medium ${
+                          state.settings.activeBranchId === b.id
+                            ? 'bg-indigo-600 text-white'
+                            : 'border border-slate-200 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300'
+                        }`}
+                      >
+                        {state.settings.activeBranchId === b.id ? 'شعبه فعال' : 'انتخاب'}
+                      </button>
+                      {state.branches.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => deleteBranch(b.id)}
+                          className="p-1 text-slate-400 hover:text-rose-600"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 );
               })}
+            </div>
+          </div>
+
+          {/* Configurable Jalali Numbering Pattern (FR-CORE-05) */}
+          <div className="space-y-4 rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+            <h2 className="flex items-center gap-2 text-sm font-semibold">
+              <Hash size={16} className="text-emerald-500" />
+              الگوی شماره‌گذاری شمسی اسناد (فاکتور، پیش‌فاکتور و سفارش - FR-CORE-05)
+            </h2>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-5">
+              <div>
+                <label className="mb-1 block text-[11px] text-slate-500">پیشوند فاکتور</label>
+                <input
+                  type="text"
+                  dir="ltr"
+                  value={numbering.invoicePrefix}
+                  onChange={(e) => setNumbering({ ...numbering, invoicePrefix: e.target.value.toUpperCase() })}
+                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 font-mono text-xs dark:border-slate-700 dark:bg-slate-800"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-[11px] text-slate-500">پیشوند پیش‌فاکتور</label>
+                <input
+                  type="text"
+                  dir="ltr"
+                  value={numbering.quotePrefix}
+                  onChange={(e) => setNumbering({ ...numbering, quotePrefix: e.target.value.toUpperCase() })}
+                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 font-mono text-xs dark:border-slate-700 dark:bg-slate-800"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-[11px] text-slate-500">پیشوند سفارش</label>
+                <input
+                  type="text"
+                  dir="ltr"
+                  value={numbering.orderPrefix}
+                  onChange={(e) => setNumbering({ ...numbering, orderPrefix: e.target.value.toUpperCase() })}
+                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 font-mono text-xs dark:border-slate-700 dark:bg-slate-800"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-[11px] text-slate-500">تعداد ارقام سریال</label>
+                <select
+                  value={numbering.padLength}
+                  onChange={(e) => setNumbering({ ...numbering, padLength: Number(e.target.value) })}
+                  className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs tabular-nums dark:border-slate-700 dark:bg-slate-800"
+                >
+                  {[3, 4, 5, 6].map((n) => (
+                    <option key={n} value={n}>
+                      {toFa(n)} رقمی
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-[11px] text-slate-500">جداکننده</label>
+                <select
+                  value={numbering.separator}
+                  onChange={(e) => setNumbering({ ...numbering, separator: e.target.value as '-' | '/' })}
+                  className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 font-mono text-xs dark:border-slate-700 dark:bg-slate-800"
+                >
+                  <option value="-">خط تیره (-)</option>
+                  <option value="/">اسلش (/)</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-slate-50 px-3.5 py-2.5 text-xs dark:bg-slate-800/60">
+              <label className="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={numbering.includeJalaliYear}
+                  onChange={(e) => setNumbering({ ...numbering, includeJalaliYear: e.target.checked })}
+                  className="h-4 w-4 rounded border-slate-300 text-indigo-600"
+                />
+                <span>درج سال شمسی جاری در الگوی شماره سند</span>
+              </label>
+
+              <div className="flex flex-wrap items-center gap-3 font-mono text-indigo-600 dark:text-indigo-400" dir="ltr">
+                <span>{formatDocumentNumber('invoice', 14, numbering)}</span>
+                <span>·</span>
+                <span>{formatDocumentNumber('quote', 8, numbering)}</span>
+                <span>·</span>
+                <span>{formatDocumentNumber('order', 25, numbering)}</span>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => updateSettings({ numbering })}
+                className="rounded-lg bg-indigo-600 px-3.5 py-1.5 font-medium text-white hover:bg-indigo-700"
+              >
+                ذخیره الگو
+              </button>
+            </div>
+          </div>
+
+          {/* UX Modes (Solo/Enterprise), Bilingual (fa/en), PWA Offline & Guided Tour */}
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            <div className="space-y-4 rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+              <h2 className="flex items-center gap-2 text-sm font-semibold">
+                <Layers size={16} className="text-indigo-500" />
+                نمای ساده / سازمانی و دوزبانه‌سازی (FR-CORE-06, FR-UX-07)
+              </h2>
+
+              <div>
+                <div className="mb-1.5 text-xs text-slate-500">سطح نمایش رابط کاربری (UI Complexity)</div>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => updateSettings({ uiMode: 'solo' })}
+                    className={`rounded-lg border p-2.5 text-right text-xs ${
+                      state.settings.uiMode === 'solo'
+                        ? 'border-indigo-600 bg-indigo-50/70 font-semibold text-indigo-800 dark:border-indigo-500 dark:bg-indigo-950/40 dark:text-indigo-200'
+                        : 'border-slate-200 dark:border-slate-700'
+                    }`}
+                  >
+                    نمای ساده (Solo)
+                    <div className="mt-0.5 text-[10px] font-normal text-slate-500">
+                      منوی خلوت و متمرکز بر عملیات روزمره
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => updateSettings({ uiMode: 'enterprise' })}
+                    className={`rounded-lg border p-2.5 text-right text-xs ${
+                      state.settings.uiMode === 'enterprise'
+                        ? 'border-indigo-600 bg-indigo-50/70 font-semibold text-indigo-800 dark:border-indigo-500 dark:bg-indigo-950/40 dark:text-indigo-200'
+                        : 'border-slate-200 dark:border-slate-700'
+                    }`}
+                  >
+                    نمای سازمانی (Enterprise)
+                    <div className="mt-0.5 text-[10px] font-normal text-slate-500">
+                      تمام ماژول‌های BPMS، اتوماسیون و شعب
+                    </div>
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 pt-3 dark:border-slate-800">
+                <div className="flex items-center gap-2 text-xs">
+                  <Globe size={15} className="text-sky-500" />
+                  <span>زبان و جهت رابط:</span>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => updateSettings({ language: 'fa' })}
+                    className={`rounded-lg border px-3 py-1.5 text-xs font-medium ${
+                      state.settings.language === 'fa'
+                        ? 'border-indigo-600 bg-indigo-600 text-white'
+                        : 'border-slate-200 dark:border-slate-700'
+                    }`}
+                  >
+                    فارسی (RTL)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => updateSettings({ language: 'en' })}
+                    className={`rounded-lg border px-3 py-1.5 text-xs font-medium ${
+                      state.settings.language === 'en'
+                        ? 'border-indigo-600 bg-indigo-600 text-white'
+                        : 'border-slate-200 dark:border-slate-700'
+                    }`}
+                  >
+                    English (LTR)
+                  </button>
+                </div>
+              </div>
+
+              <label className="flex cursor-pointer items-center justify-between text-xs">
+                <span>نمایش ارقام به‌صورت لاتین (123 به جای ۱۲۳)</span>
+                <input
+                  type="checkbox"
+                  checked={Boolean(state.settings.latinDigits)}
+                  onChange={(e) => updateSettings({ latinDigits: e.target.checked })}
+                  className="h-4 w-4 rounded border-slate-300 text-indigo-600"
+                />
+              </label>
+            </div>
+
+            <div className="space-y-4 rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+              <h2 className="flex items-center gap-2 text-sm font-semibold">
+                {realOnline && !state.settings.simulatedOffline ? (
+                  <Wifi size={16} className="text-emerald-500" />
+                ) : (
+                  <WifiOff size={16} className="text-amber-500" />
+                )}
+                حالت آفلاین PWA، نصب وب‌اپ و تور راهنما (FR-UX-03/08)
+              </h2>
+
+              <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3 text-xs dark:border-slate-800 dark:bg-slate-800/40">
+                <div className="flex items-center justify-between">
+                  <span className="font-medium">وضعیت Service Worker و شبکه:</span>
+                  <span
+                    className={`font-semibold ${
+                      realOnline && !state.settings.simulatedOffline
+                        ? 'text-emerald-600 dark:text-emerald-400'
+                        : 'text-amber-600 dark:text-amber-400'
+                    }`}
+                  >
+                    {realOnline && !state.settings.simulatedOffline ? 'آنلاین (کش فعال)' : 'حالت آفلاین فعال'}
+                  </span>
+                </div>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  فایل‌های هسته و LocalStorage برای کار بدون اینترنت در مرورگر و موبایل ذخیره می‌شوند.
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                <label className="flex cursor-pointer items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(state.settings.simulatedOffline)}
+                    onChange={(e) => updateSettings({ simulatedOffline: e.target.checked })}
+                    className="h-4 w-4 rounded border-slate-300 text-amber-600"
+                  />
+                  <span>شبیه‌سازی حالت آفلاین (تست نوار وضعیت PWA)</span>
+                </label>
+                <PWAInstallButton lang={state.settings.language} />
+              </div>
+
+              {onStartTour && (
+                <div className="flex items-center justify-between border-t border-slate-200 pt-3 text-xs dark:border-slate-800">
+                  <span className="text-slate-600 dark:text-slate-300">آموزش تعاملی قابلیت‌های سیستم</span>
+                  <button
+                    type="button"
+                    onClick={onStartTour}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1.5 font-medium text-indigo-700 hover:bg-indigo-100 dark:border-indigo-900 dark:bg-indigo-950/40 dark:text-indigo-300"
+                  >
+                    <Compass size={14} />
+                    اجرای مجدد تور راهنما
+                  </button>
+                </div>
+              )}
             </div>
           </div>
 
@@ -497,9 +895,185 @@ export function SettingsPage() {
         </>
       )}
 
+      {/* TAB 2: 10 INDUSTRY PACKS & PACK BUILDER */}
+      {tab === 'packs' && (
+        <div className="space-y-6">
+          <div className="space-y-4 rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+            <div>
+              <h2 className="text-sm font-semibold">کتابخانه ۱۰ بسته صنعتی آماده (Industry Packs - بخش ۷)</h2>
+              <p className="mt-0.5 text-xs text-slate-500">
+                با نصب هر بسته، فیلدهای سفارشی، موجودیت‌های تخصصی، خدمات، محصولات و قوانین اتوماسیون متناسب با آن صنعت به‌صورت غیرمخرب به سیستم اضافه می‌شوند.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {INDUSTRY_PACKS.map((pk) => {
+                const active = state.settings.industryPack === pk.key;
+                const tierLabel = pk.tier === 'full' ? 'کامل' : pk.tier === 'medium' ? 'متوسط' : 'سبک';
+                return (
+                  <div
+                    key={pk.id}
+                    className={`flex flex-col justify-between rounded-xl border p-4 transition-colors ${
+                      active
+                        ? 'border-indigo-600 bg-indigo-50/50 dark:border-indigo-500 dark:bg-indigo-950/30'
+                        : 'border-slate-200 dark:border-slate-800'
+                    }`}
+                  >
+                    <div>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-sm font-bold text-slate-900 dark:text-slate-100">{pk.name}</span>
+                        <span className="rounded bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                          {tierLabel}
+                        </span>
+                      </div>
+                      <p className="mt-1.5 text-xs leading-5 text-slate-500 dark:text-slate-400">
+                        {pk.description}
+                      </p>
+                      <div className="mt-2.5 flex flex-wrap gap-1.5 text-[10px] text-slate-500">
+                        <span>{toFa(pk.customFields.length)} فیلد</span>
+                        <span>·</span>
+                        <span>{toFa(pk.customEntities.length)} موجودیت</span>
+                        <span>·</span>
+                        <span>{toFa(pk.services.length)} خدمت</span>
+                        <span>·</span>
+                        <span>{toFa(pk.products.length)} محصول</span>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 flex items-center justify-between gap-2 border-t border-slate-200/70 pt-3 dark:border-slate-800">
+                      <button
+                        type="button"
+                        onClick={() => applyIndustryPack(pk.key as IndustryPack, true)}
+                        className={`flex-1 rounded-lg px-3 py-1.5 text-xs font-medium ${
+                          active
+                            ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+                            : 'bg-indigo-600 text-white hover:bg-indigo-700'
+                        }`}
+                      >
+                        {active ? 'فعال (نصب مجدد اقلام پک)' : 'نصب و فعال‌سازی پک'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => downloadPackJson(pk)}
+                        title="دانلود ساختار JSON پک"
+                        className="rounded-lg border border-slate-200 p-1.5 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                      >
+                        <Download size={14} />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Pack Builder: Export & Import Custom Tenant Packs */}
+          <div className="space-y-4 rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="flex items-center gap-2 text-sm font-semibold">
+                  <PackagePlus size={16} className="text-indigo-500" />
+                  پک‌ساز (Pack Builder): استخراج پک از تنظیمات فعلی و ورود پک JSON
+                </h2>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  تمامی فیلدهای سفارشی، موجودیت‌ها، خدمات، کالاها و قوانین فعلی شما را در قالب یک بسته قابل اشتراک‌گذاری ذخیره می‌کند.
+                </p>
+              </div>
+              <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">
+                <Upload size={14} />
+                ورود پک JSON
+                <input type="file" accept=".json,application/json" onChange={handleImportPackFile} className="hidden" />
+              </label>
+            </div>
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (!pkName.trim()) return;
+                const created = saveCustomPack({
+                  name: pkName.trim(),
+                  key: pkKey.trim() || `custom_${Date.now().toString(36)}`,
+                  description: pkDesc.trim() || 'پک استخراج‌شده از Tenant فعلی',
+                });
+                setPkName('');
+                setPkKey('');
+                setPkDesc('');
+                downloadPackJson(created);
+              }}
+              className="grid grid-cols-1 gap-2.5 sm:grid-cols-4"
+            >
+              <input
+                type="text"
+                required
+                placeholder="نام پک سفارشی (مثلاً: کلینیک دندانپزشکی)"
+                value={pkName}
+                onChange={(e) => setPkName(e.target.value)}
+                className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-800"
+              />
+              <input
+                type="text"
+                dir="ltr"
+                placeholder="کلید انگلیسی (dental_pack)"
+                value={pkKey}
+                onChange={(e) => setPkKey(e.target.value)}
+                className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-left font-mono text-xs dark:border-slate-700 dark:bg-slate-800"
+              />
+              <input
+                type="text"
+                placeholder="توضیحات کوتاه پک..."
+                value={pkDesc}
+                onChange={(e) => setPkDesc(e.target.value)}
+                className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-800"
+              />
+              <button
+                type="submit"
+                className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700"
+              >
+                <Save size={14} />
+                ساخت و دانلود JSON پک
+              </button>
+            </form>
+
+            {state.customPacks.length > 0 && (
+              <div className="divide-y divide-slate-200 rounded-lg border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
+                {state.customPacks.map((cp) => (
+                  <div key={cp.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5 text-xs">
+                    <div>
+                      <span className="font-semibold">{cp.name}</span>
+                      <span className="mx-2 font-mono text-[11px] text-slate-400">({cp.key})</span>
+                      <span className="text-slate-500">
+                        · {toFa(cp.customFields.length)} فیلد، {toFa(cp.customEntities.length)} موجودیت،{' '}
+                        {toFa(cp.rules.length)} قانون
+                      </span>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => downloadPackJson(cp)}
+                        className="inline-flex items-center gap-1 rounded border border-slate-200 px-2.5 py-1 text-[11px] hover:bg-slate-50 dark:border-slate-700"
+                      >
+                        <Download size={12} />
+                        خروجی JSON
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => applyIndustryPack(cp.key as IndustryPack, true)}
+                        className="rounded bg-indigo-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-indigo-700"
+                      >
+                        اعمال پک
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* TAB 3: VISUAL FORM BUILDER & SERVICES */}
       {tab === 'config' && (
         <div className="space-y-6">
-          {/* Visual Form Builder with Drag & Drop + 11 Field Types + Conditional Rules */}
           <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
             <h2 className="mb-1 text-sm font-semibold">فرم‌ساز بصری فیلدهای پویا (۱۱ نوع فیلد + نمایش شرطی + کشیدن و رها کردن)</h2>
             <p className="mb-4 text-xs text-slate-500">
@@ -668,7 +1242,6 @@ export function SettingsPage() {
             </div>
           </div>
 
-          {/* Services (with Buffer Before/After) & Resources */}
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
             <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
               <h2 className="mb-3 text-sm font-semibold">خدمات نوبت‌دهی و زمان بافر (آماده‌سازی)</h2>
@@ -799,10 +1372,9 @@ export function SettingsPage() {
         </div>
       )}
 
-      {/* Custom Entities, Relations (1:1 / 1:N / N:M) & Config Versioning */}
+      {/* TAB 4: CUSTOM ENTITIES, RELATIONS & CONFIG VERSIONING */}
       {tab === 'entities' && (
         <div className="space-y-6">
-          {/* Custom Entities */}
           <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
             <div className="mb-1 flex items-center gap-2 text-sm font-semibold">
               <Database size={16} className="text-indigo-500" />
@@ -878,7 +1450,6 @@ export function SettingsPage() {
             </div>
           </div>
 
-          {/* Entity Relations 1:1, 1:N, N:M */}
           <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
             <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
               <Link2 size={16} className="text-emerald-500" />
@@ -969,7 +1540,6 @@ export function SettingsPage() {
             </div>
           </div>
 
-          {/* Config Versioning & Rollback */}
           <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
             <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
               <History size={16} className="text-amber-500" />
@@ -1035,6 +1605,7 @@ export function SettingsPage() {
         </div>
       )}
 
+      {/* TAB 5: AUDIT LOGS */}
       {tab === 'audit' && (
         <div className="divide-y divide-slate-200 rounded-xl border border-slate-200 bg-white dark:divide-slate-800 dark:border-slate-800 dark:bg-slate-900">
           {state.auditLogs.length === 0 ? (

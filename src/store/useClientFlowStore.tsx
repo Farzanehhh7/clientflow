@@ -1,10 +1,13 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
-import { createInitialState } from '../data/seed';
+import { INDUSTRY_PACKS, buildPackFromState } from '../data/packs';
+import { createInitialState, defaultDashboardWidgets } from '../data/seed';
 import type {
   AppState,
   Appointment,
   AppointmentStatus,
   AuditLogEntry,
+  AutomationPolicy,
+  Branch,
   BusinessSettings,
   CommissionTier,
   ConfigSnapshot,
@@ -19,11 +22,17 @@ import type {
   CustomerAttachment,
   CustomerRelation,
   CustomerSegment,
+  DashboardWidgetConfig,
   DeploymentCheckItem,
   EntityRelationDef,
+  IndustryPack,
   Interaction,
   Invoice,
   KbArticle,
+  LandingForm,
+  MarketingCampaign,
+  MediaAsset,
+  NotificationChannel,
   NpsSurvey,
   OfficialHoliday,
   Opportunity,
@@ -31,7 +40,9 @@ import type {
   OrderShipment,
   OrderStatus,
   OutboxMessage,
+  PackTemplate,
   PaymentMethod,
+  PaymentTransaction,
   PipelineStage,
   PipelineStageConfig,
   Product,
@@ -42,17 +53,35 @@ import type {
   Resource,
   ResourceTimeOff,
   Rule,
+  RuleTriggerType,
   SalesTarget,
+  SayadiCheque,
+  SayadiChequeStatus,
+  ScheduledReport,
   Service,
   StockMovement,
   Task,
   Ticket,
+  TicketMessage,
   TimeEntry,
+  UtmTouch,
   WaitlistEntry,
+  WorkflowDefinition,
   WorkflowInstance,
+  WorkflowStep,
   WorkflowType,
 } from '../types';
+import {
+  countTodayCustomerNotifications,
+  evaluateRuleConditions,
+  getTargetRecordsForRule,
+  isWithinQuietHours,
+  renderRuleTemplate,
+  simulateRuleDryRun,
+  type DryRunResult,
+} from '../utils/automationEngine';
 import { daysUntilJalaliMonthDay } from '../utils/crmHelpers';
+import { formatDocumentNumber } from '../utils/i18n';
 import { getDateKeyFromIso, hasConflict, isHolidayOrTimeOff, isValidIranMobile, isValidNationalId } from '../utils/overlap';
 
 const STORAGE_KEY = 'clientflow_state_v2';
@@ -101,10 +130,33 @@ function mergeLoadedState(parsed: Partial<AppState> | null | undefined): AppStat
     resourceTimeOffs: parsed.resourceTimeOffs ?? fallback.resourceTimeOffs,
     officialHolidays: parsed.officialHolidays ?? fallback.officialHolidays,
     waitlist: parsed.waitlist ?? fallback.waitlist,
+    workflowDefinitions: parsed.workflowDefinitions ?? fallback.workflowDefinitions,
+    campaigns: parsed.campaigns ?? fallback.campaigns,
+    mediaAssets: parsed.mediaAssets ?? fallback.mediaAssets,
+    landingForms: parsed.landingForms ?? fallback.landingForms,
+    utmTouches: parsed.utmTouches ?? fallback.utmTouches,
+    ticketMessages: parsed.ticketMessages ?? fallback.ticketMessages,
+    sayadiCheques: parsed.sayadiCheques ?? fallback.sayadiCheques,
+    paymentTransactions: parsed.paymentTransactions ?? fallback.paymentTransactions,
+    scheduledReports: parsed.scheduledReports ?? fallback.scheduledReports,
+    branches: parsed.branches ?? fallback.branches,
+    customPacks: parsed.customPacks ?? fallback.customPacks,
+    automationPolicy: {
+      ...fallback.automationPolicy,
+      ...(parsed.automationPolicy ?? {}),
+    },
     settings: {
       ...fallback.settings,
       ...(parsed.settings ?? {}),
       salesTeam: parsed.settings?.salesTeam ?? fallback.settings.salesTeam,
+      numbering: {
+        ...fallback.settings.numbering,
+        ...(parsed.settings?.numbering ?? {}),
+      },
+      dashboardWidgets:
+        parsed.settings?.dashboardWidgets && parsed.settings.dashboardWidgets.length > 0
+          ? parsed.settings.dashboardWidgets
+          : fallback.settings.dashboardWidgets,
     },
   };
 }
@@ -214,39 +266,125 @@ type ClientFlowContextValue = {
   createQuoteVersion: (parentQuoteId: string, patch?: Partial<Pick<Quote, 'items' | 'discountPct' | 'notes'>>) => void;
   updateQuoteStatus: (id: string, status: QuoteStatus, clientComment?: string) => void;
 
-  // Workflows (BPMS)
+  // Workflows (BPMS + Visual BPMN Designer)
+  saveWorkflowDefinition: (def: Omit<WorkflowDefinition, 'id' | 'updatedAt'> & { id?: string }) => void;
+  publishWorkflowDefinition: (id: string) => void;
+  cloneWorkflowDraft: (id: string) => void;
+  deleteWorkflowDefinition: (id: string) => void;
   createWorkflowInstance: (data: {
     title: string;
     type: WorkflowType;
+    definitionId?: string;
     customerId?: string;
     relatedRef?: string;
   }) => void;
-  decideWorkflowStep: (id: string, decision: 'approved' | 'rejected', comment?: string) => { ok: boolean; error?: string };
+  decideWorkflowStep: (
+    id: string,
+    decision: 'approved' | 'rejected',
+    comment?: string,
+    stepData?: Record<string, string>,
+    branchIndex?: number,
+  ) => { ok: boolean; error?: string };
+  claimWorkflowStep: (id: string) => void;
+  reassignWorkflowStep: (id: string, assignee: string) => void;
+  delegateWorkflowStep: (id: string, delegateTo: string) => void;
+  advanceWorkflowTimer: (id: string) => void;
 
-  // Marketing Content Calendar
+  // Marketing Content Calendar, Campaigns (A/B), Media Library, Landing Forms & UTM
   addContentItem: (item: Omit<ContentItem, 'id' | 'reach' | 'leadsCount'>) => void;
   updateContentStatus: (id: string, status: ContentStatus) => void;
+  updateContentItem: (
+    id: string,
+    patch: Partial<Pick<ContentItem, 'title' | 'caption' | 'reach' | 'leadsCount' | 'hasBeforeAfterConsent' | 'status' | 'mediaAssetId'>>,
+  ) => void;
+  addCampaign: (c: Omit<MarketingCampaign, 'id' | 'createdAt' | 'status'>) => void;
+  launchCampaign: (id: string) => void;
+  simulateCampaignStats: (id: string) => void;
+  addMediaAsset: (asset: Omit<MediaAsset, 'id' | 'uploadedAt'>) => void;
+  deleteMediaAsset: (id: string) => void;
+  addLandingForm: (form: Omit<LandingForm, 'id' | 'submissionsCount' | 'createdAt'>) => void;
+  submitLandingForm: (
+    formId: string,
+    data: { name: string; phone: string; email?: string; companyName?: string; notes?: string },
+  ) => { ok: boolean; error?: string };
 
-  // Tasks, Tickets, Knowledge Base
+  // Tasks, Tickets, TicketMessages, SLA Escalation, Merge & Knowledge Base Versioning
   addTask: (data: { title: string; customerId?: string; dueAt: string }) => void;
   toggleTaskDone: (id: string) => void;
-  addTicket: (data: { customerId: string; subject: string; priority: Ticket['priority'] }) => void;
-  updateTicket: (id: string, patch: Partial<Pick<Ticket, 'status' | 'priority' | 'replyNote'>>) => void;
+  addTicket: (data: {
+    customerId: string;
+    subject: string;
+    priority: Ticket['priority'];
+    category?: string;
+    team?: string;
+    assignee?: string;
+    rootCause?: string;
+    initialBody?: string;
+  }) => void;
+  updateTicket: (
+    id: string,
+    patch: Partial<Pick<Ticket, 'status' | 'priority' | 'replyNote' | 'assignee' | 'team' | 'category' | 'rootCause'>>,
+  ) => void;
+  addTicketMessage: (
+    ticketId: string,
+    msg: { authorName: string; authorType: 'customer' | 'agent'; visibility: 'public' | 'internal'; body: string },
+  ) => void;
+  mergeTickets: (primaryId: string, duplicateId: string) => { ok: boolean; error?: string };
+  checkAndEscalateTickets: (silent?: boolean) => number;
   addKbArticle: (article: Omit<KbArticle, 'id' | 'helpfulCount' | 'updatedAt'>) => void;
+  updateKbArticle: (
+    id: string,
+    patch: { title: string; category: string; body: string; changeNote?: string },
+  ) => void;
+  restoreKbVersion: (id: string, version: number) => void;
   voteKbHelpful: (id: string) => void;
 
   // NPS
   submitNpsSurvey: (data: Omit<NpsSurvey, 'id' | 'createdAt'>) => void;
   triggerNpsPrompt: (prompt: PendingNpsPrompt) => void;
 
-  // Automation
+  // Automation & Multi-Channel Notification Queue
   toggleRule: (id: string) => void;
   addRule: (rule: Omit<Rule, 'id'>) => void;
-  sendSimulatedSms: (customerId: string, body: string) => { ok: boolean; error?: string };
+  updateRule: (id: string, patch: Partial<Rule>) => void;
+  deleteRule: (id: string) => void;
+  updateAutomationPolicy: (patch: Partial<AutomationPolicy>) => void;
+  dryRunRule: (rule: Rule, hourOverride?: number) => DryRunResult;
+  sendSimulatedSms: (customerId: string, body: string, channel?: NotificationChannel) => { ok: boolean; error?: string };
   runAutomationNow: (silent?: boolean) => number;
+  retryNotification: (id: string) => void;
+  processNotificationRetries: () => void;
+  simulateDeliveryFailure: (id: string) => void;
   clearOutbox: () => void;
 
-  // Settings & System
+  // Finance: Sayadi Cheques & Sandbox Payment Gateway (FR-FIN-04/05)
+  addSayadiCheque: (data: Omit<SayadiCheque, 'id' | 'createdAt' | 'updatedAt'>) => void;
+  updateSayadiChequeStatus: (id: string, status: SayadiChequeStatus, note?: string) => void;
+  processSandboxPayment: (data: {
+    invoiceId: string;
+    gateway: PaymentTransaction['gateway'];
+    amount: number;
+    cardMasked: string;
+    outcome: 'succeeded' | 'failed' | 'cancelled';
+  }) => { ok: boolean; refId?: string; errorMessage?: string };
+
+  // Reports & Dashboard Customization (FR-RPT-01/04)
+  updateDashboardWidgets: (widgets: DashboardWidgetConfig[]) => void;
+  resetDashboardWidgets: () => void;
+  addScheduledReport: (rep: Omit<ScheduledReport, 'id' | 'nextRunAt'>) => void;
+  toggleScheduledReport: (id: string) => void;
+  deleteScheduledReport: (id: string) => void;
+  runScheduledReportNow: (id: string) => void;
+
+  // Packs & Pack Builder (Section 7)
+  applyIndustryPack: (packKey: IndustryPack, installDefaults?: boolean) => void;
+  saveCustomPack: (meta: { key: string; name: string; nameEn?: string; description: string }) => PackTemplate;
+  importCustomPack: (pack: PackTemplate) => void;
+
+  // Multi-Branch (FR-CORE-04) & Settings & System
+  addBranch: (branch: Omit<Branch, 'id'>) => void;
+  updateBranch: (id: string, patch: Partial<Branch>) => void;
+  deleteBranch: (id: string) => void;
   updateSettings: (patch: Partial<BusinessSettings>) => void;
   resetDemoData: () => void;
   exportStateJson: () => string;
@@ -286,7 +424,10 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
     } else {
       root.classList.remove('dark');
     }
-  }, [state.settings.darkMode]);
+    const lang = state.settings.language ?? 'fa';
+    root.lang = lang;
+    root.dir = lang === 'en' ? 'ltr' : 'rtl';
+  }, [state.settings.darkMode, state.settings.language]);
 
   const makeAudit = (
     entity: string,
@@ -317,6 +458,111 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
   const dismissPendingNps = useCallback(() => setPendingNps(null), []);
   const triggerNpsPrompt = useCallback((prompt: PendingNpsPrompt) => setPendingNps(prompt), []);
 
+  // --- EVENT-DRIVEN AUTOMATION ENGINE (FR-AUT) ---
+  const fireAutomationEvent = useCallback(
+    (
+      triggerType: RuleTriggerType,
+      targetEntity: NonNullable<Rule['targetEntity']>,
+      record: Record<string, unknown>,
+    ) => {
+      const cur = stateRef.current;
+      const matchingRules = cur.rules.filter(
+        (r) =>
+          r.active &&
+          r.triggerType === triggerType &&
+          (r.targetEntity ?? 'customer') === targetEntity &&
+          (!r.pack || r.pack === 'all' || r.pack === cur.settings.industryPack),
+      );
+      if (matchingRules.length === 0) return;
+
+      const nowIso = new Date().toISOString();
+      const newOutbox: OutboxMessage[] = [];
+      const newTasks: Task[] = [];
+      const newLogs: AppState['automationLogs'] = [];
+      const newProcessed: string[] = [];
+
+      for (const rule of matchingRules) {
+        const candidates = getTargetRecordsForRule(rule, cur, { entity: targetEntity, record });
+        let ruleActions = 0;
+        for (const cand of candidates) {
+          if (!evaluateRuleConditions(rule, cand.record, cand.customer)) continue;
+          const key = `${rule.id}_${cand.entityId}_${triggerType}`;
+          if (cur.processedRuleKeys.includes(key)) continue;
+          newProcessed.push(key);
+
+          const actionType = rule.actionType ?? 'send_notification';
+          const ch = rule.actionChannel ?? 'sms';
+          const quiet = (rule.respectQuietHours ?? true) && isWithinQuietHours(cur.automationPolicy);
+          const cap = rule.dailyCapPerCustomer ?? cur.automationPolicy.defaultDailyCap;
+          const todayCount = countTodayCustomerNotifications(
+            [...cur.outbox, ...newOutbox],
+            cand.customer?.id,
+            cand.customer?.phone,
+          );
+
+          if ((actionType === 'send_notification' || actionType === 'both') && cand.customer) {
+            const consentOk = ch !== 'sms' || cand.customer.consentSms !== false;
+            if (consentOk && (cap <= 0 || todayCount < cap)) {
+              ruleActions++;
+              newOutbox.push({
+                id: `msg_evt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+                to: cand.customer.phone,
+                customerId: cand.customer.id,
+                customerName: cand.customer.name,
+                body: renderRuleTemplate(
+                  rule.messageTemplate || 'سلام {{customer.name}}، رویداد جدید در {{businessName}} ثبت شد.',
+                  { customer: cand.customer, entity: cand.record, businessName: cur.settings.businessName },
+                ),
+                channel: ch,
+                ruleId: rule.id,
+                ruleName: rule.name,
+                deliveryStatus: quiet ? 'deferred_quiet' : 'delivered',
+                retryCount: 0,
+                maxRetries: cur.automationPolicy.maxRetries,
+                at: nowIso,
+              });
+            }
+          }
+
+          if (actionType === 'create_task' || actionType === 'both') {
+            ruleActions++;
+            newTasks.push({
+              id: `t_evt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+              title: renderRuleTemplate(
+                rule.taskTitleTemplate || 'پیگیری خودکار {{customer.name}}',
+                { customer: cand.customer, entity: cand.record, businessName: cur.settings.businessName },
+              ),
+              customerId: cand.customer?.id,
+              dueAt: new Date(Date.now() + 24 * 3600_000).toISOString(),
+              done: false,
+              createdByRuleId: rule.id,
+            });
+          }
+        }
+        if (ruleActions > 0) {
+          newLogs.push({
+            id: `al_evt_${Date.now()}_${rule.id}`,
+            ruleId: rule.id,
+            ruleName: rule.name,
+            summary: `اجرای رویدادمحور (${triggerType}): ${ruleActions} اقدام انجام شد.`,
+            at: nowIso,
+          });
+        }
+      }
+
+      if (newOutbox.length > 0 || newTasks.length > 0) {
+        setState((prev) => ({
+          ...prev,
+          outbox: [...newOutbox, ...prev.outbox],
+          tasks: [...newTasks, ...prev.tasks],
+          automationLogs: [...newLogs, ...prev.automationLogs],
+          processedRuleKeys: [...prev.processedRuleKeys, ...newProcessed],
+        }));
+      }
+    },
+    [],
+  );
+
   // --- CRM & CUSTOMERS ---
   const addCustomer = useCallback(
     (data: Omit<Customer, 'id' | 'createdAt'>) => {
@@ -327,8 +573,13 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
       if (data.nationalId && !isValidNationalId(data.nationalId)) {
         return { ok: false, error: 'کد ملی معتبر نیست (باید ۱۰ رقم عددی باشد).' };
       }
+      const activeBranch =
+        stateRef.current.settings.activeBranchId !== 'all'
+          ? stateRef.current.settings.activeBranchId
+          : stateRef.current.branches[0]?.id;
       const customer: Customer = {
         ...data,
+        branchId: data.branchId ?? activeBranch,
         id: `c_${Date.now()}`,
         createdAt: new Date().toISOString(),
       };
@@ -337,10 +588,11 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         customers: [customer, ...prev.customers],
         auditLogs: [makeAudit('مشتری', 'create', `مشتری «${customer.name}» ثبت شد.`), ...prev.auditLogs].slice(0, 100),
       }));
+      setTimeout(() => fireAutomationEvent('on_create', 'customer', customer as unknown as Record<string, unknown>), 50);
       pushToast(`مشتری «${customer.name}» ثبت شد.`);
       return { ok: true, customer };
     },
-    [pushToast],
+    [fireAutomationEvent, pushToast],
   );
 
   const updateCustomer = useCallback(
@@ -351,15 +603,20 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
       if (data.nationalId && !isValidNationalId(data.nationalId)) {
         return { ok: false, error: 'کد ملی معتبر نیست (باید ۱۰ رقم عددی باشد).' };
       }
+      const existing = stateRef.current.customers.find((c) => c.id === id);
       setState((prev) => ({
         ...prev,
         customers: prev.customers.map((c) => (c.id === id ? { ...c, ...data } : c)),
         auditLogs: [makeAudit('مشتری', 'update', `اطلاعات مشتری ${data.name ?? id} ویرایش شد.`), ...prev.auditLogs].slice(0, 100),
       }));
+      if (existing) {
+        const merged = { ...existing, ...data };
+        setTimeout(() => fireAutomationEvent('on_update', 'customer', merged as unknown as Record<string, unknown>), 50);
+      }
       pushToast('اطلاعات مشتری به‌روزرسانی شد.');
       return { ok: true };
     },
-    [pushToast],
+    [fireAutomationEvent, pushToast],
   );
 
   const deleteCustomer = useCallback(
@@ -870,7 +1127,11 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
           error: 'تداخل زمانی (با احتساب زمان بافر خدمت)! این منبع در بازه انتخاب‌شده نوبت فعال دیگری دارد.',
         };
       }
-      const apt: Appointment = { ...data, id: `a_${Date.now()}` };
+      const activeBranch =
+        stateRef.current.settings.activeBranchId !== 'all'
+          ? stateRef.current.settings.activeBranchId
+          : stateRef.current.branches[0]?.id;
+      const apt: Appointment = { ...data, branchId: data.branchId ?? activeBranch, id: `a_${Date.now()}` };
       setState((prev) => ({
         ...prev,
         appointments: [apt, ...prev.appointments],
@@ -1172,6 +1433,10 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
       }
 
       const nowIso = new Date().toISOString();
+      const activeBranch =
+        stateRef.current.settings.activeBranchId !== 'all'
+          ? stateRef.current.settings.activeBranchId
+          : stateRef.current.branches[0]?.id;
       const order: Order = {
         id: `o_${Date.now()}`,
         customerId: data.customerId,
@@ -1183,6 +1448,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         couponCode: validCoupon,
         discountAmount,
         shipments: [],
+        branchId: activeBranch,
       };
 
       setState((prev) => ({
@@ -1197,10 +1463,11 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
           : prev.coupons,
         auditLogs: [makeAudit('سفارش', 'create', `سفارش ${order.id} ثبت شد.`), ...prev.auditLogs].slice(0, 100),
       }));
+      setTimeout(() => fireAutomationEvent('on_create', 'order', order as unknown as Record<string, unknown>), 50);
       pushToast('سفارش جدید ثبت شد.');
       return { ok: true };
     },
-    [pushToast],
+    [fireAutomationEvent, pushToast],
   );
 
   const updateOrderStatus = useCallback(
@@ -1291,6 +1558,15 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
           ...prev.auditLogs,
         ].slice(0, 100),
       }));
+
+      setTimeout(
+        () =>
+          fireAutomationEvent('on_stage_change', 'order', {
+            ...target,
+            status: nextStatus,
+          } as unknown as Record<string, unknown>),
+        50,
+      );
 
       if (newMovements.length > 0) {
         pushToast(
@@ -1429,9 +1705,11 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
       const tax = Math.round((subtotal - discount) * 0.1);
       const grandTotal = subtotal - discount + tax;
       const nowIso = new Date().toISOString();
+      const invSeq = 1 + stateRef.current.invoices.length;
+      const invNo = formatDocumentNumber('invoice', invSeq, stateRef.current.settings.numbering);
       const inv: Invoice = {
         id: `inv_${Date.now()}`,
-        invoiceNo: `INV-1405-${1001 + stateRef.current.invoices.length}`,
+        invoiceNo: invNo,
         orderId,
         customerId: order.customerId,
         subtotal,
@@ -1443,6 +1721,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         status: 'issued',
         issuedAt: nowIso,
         dueAt: order.promisedAt ?? new Date(Date.now() + 48 * 3600_000).toISOString(),
+        branchId: order.branchId,
       };
       setState((prev) => ({
         ...prev,
@@ -1644,6 +1923,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
     (id: string, stage: PipelineStage, lostReason?: string) => {
       const stageCfg = stateRef.current.pipelineStages.find((s) => s.key === stage);
       const nextProb = stageCfg?.probability ?? DEFAULT_STAGE_PROB[stage];
+      const existingOpp = stateRef.current.opportunities.find((o) => o.id === id);
       setState((prev) => ({
         ...prev,
         opportunities: prev.opportunities.map((o) =>
@@ -1658,9 +1938,19 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
             : o,
         ),
       }));
+      if (existingOpp) {
+        setTimeout(
+          () =>
+            fireAutomationEvent('on_stage_change', 'opportunity', {
+              ...existingOpp,
+              stage,
+            } as unknown as Record<string, unknown>),
+          50,
+        );
+      }
       pushToast('مرحله فرصت فروش به‌روزرسانی شد.');
     },
-    [pushToast],
+    [fireAutomationEvent, pushToast],
   );
 
   const convertOpportunityToCustomer = useCallback(
@@ -1725,11 +2015,12 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
 
   const createQuote = useCallback(
     (data: Omit<Quote, 'id' | 'quoteNo' | 'version' | 'shareToken' | 'createdAt'>) => {
-      const seq = 101 + stateRef.current.quotes.length;
+      const seq = 1 + stateRef.current.quotes.length;
+      const quoteNo = formatDocumentNumber('quote', seq, stateRef.current.settings.numbering);
       const quote: Quote = {
         ...data,
         id: `q_${Date.now()}`,
-        quoteNo: `QT-1405-${seq}`,
+        quoteNo,
         version: 1,
         shareToken: `qt-share-${seq}-v1`,
         createdAt: new Date().toISOString(),
@@ -1789,39 +2080,158 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
     [pushToast],
   );
 
-  // --- WORKFLOWS, MARKETING, TASKS, TICKETS, KB, NPS, AUTOMATION ---
-  const createWorkflowInstance = useCallback(
-    (data: { title: string; type: WorkflowType; customerId?: string; relatedRef?: string }) => {
-      const templateSteps: Record<WorkflowType, WorkflowInstance['steps']> = {
-        discount_approval: [
-          { name: 'بررسی درخواست و توجیه کارشناس', role: 'staff', status: 'pending' },
-          { name: 'تأیید نهایی مدیر (تخفیف > ۲۰٪)', role: 'admin', status: 'pending' },
-        ],
-        order_return: [
-          { name: 'بررسی دلیل مرجوعی و سلامت کالا', role: 'staff', status: 'pending' },
-          { name: 'تأیید استرداد / جایگزینی توسط مدیر', role: 'admin', status: 'pending' },
-        ],
-        vip_schedule: [
-          { name: 'هماهنگی زمان ویژه با پذیرش', role: 'staff', status: 'pending' },
-          { name: 'تأیید سرپرست کلینیک', role: 'admin', status: 'pending' },
-        ],
-        complaint: [
-          { name: 'ریشه‌یابی و تماس با مشتری', role: 'staff', status: 'pending' },
-          { name: 'بستن نهایی و تأیید مدیر پشتیبانی', role: 'admin', status: 'pending' },
-        ],
+  // --- WORKFLOWS, VISUAL BPMN, MARKETING, TASKS, TICKETS, KB, NPS, AUTOMATION ---
+  const saveWorkflowDefinition = useCallback(
+    (def: Omit<WorkflowDefinition, 'id' | 'updatedAt'> & { id?: string }) => {
+      const nowIso = new Date().toISOString();
+      if (def.id) {
+        setState((prev) => ({
+          ...prev,
+          workflowDefinitions: prev.workflowDefinitions.map((d) =>
+            d.id === def.id ? { ...d, ...def, updatedAt: nowIso } : d,
+          ),
+          auditLogs: [makeAudit('گردش کار', 'update', `طراحی بصری فرآیند «${def.name}» ذخیره شد.`), ...prev.auditLogs].slice(0, 100),
+        }));
+        pushToast(`طراحی «${def.name}» ذخیره شد.`);
+      } else {
+        const created: WorkflowDefinition = {
+          ...def,
+          id: `wfd_${Date.now()}`,
+          updatedAt: nowIso,
+        };
+        setState((prev) => ({
+          ...prev,
+          workflowDefinitions: [created, ...prev.workflowDefinitions],
+          auditLogs: [makeAudit('گردش کار', 'create', `الگوی جدید فرآیند «${def.name}» ساخته شد.`), ...prev.auditLogs].slice(0, 100),
+        }));
+        pushToast(`الگوی «${def.name}» ساخته شد.`);
+      }
+    },
+    [pushToast],
+  );
+
+  const publishWorkflowDefinition = useCallback(
+    (id: string) => {
+      const target = stateRef.current.workflowDefinitions.find((d) => d.id === id);
+      if (!target) return;
+      setState((prev) => ({
+        ...prev,
+        workflowDefinitions: prev.workflowDefinitions.map((d) =>
+          d.id === id
+            ? {
+                ...d,
+                status: 'published',
+                version: d.status === 'published' ? d.version + 1 : d.version,
+                updatedAt: new Date().toISOString(),
+              }
+            : d,
+        ),
+        auditLogs: [makeAudit('گردش کار', 'approve', `نسخه جدید فرآیند «${target.name}» منتشر شد.`), ...prev.auditLogs].slice(0, 100),
+      }));
+      pushToast(`فرآیند «${target.name}» منتشر (Published) شد.`);
+    },
+    [pushToast],
+  );
+
+  const cloneWorkflowDraft = useCallback(
+    (id: string) => {
+      const target = stateRef.current.workflowDefinitions.find((d) => d.id === id);
+      if (!target) return;
+      const cloned: WorkflowDefinition = {
+        ...target,
+        id: `wfd_draft_${Date.now()}`,
+        version: target.version + 1,
+        status: 'draft',
+        name: `${target.name} (پیش‌نویس ویرایش)`,
+        updatedAt: new Date().toISOString(),
       };
+      setState((prev) => ({
+        ...prev,
+        workflowDefinitions: [cloned, ...prev.workflowDefinitions],
+      }));
+      pushToast(`نسخه پیش‌نویس جدید از «${target.name}» ایجاد شد.`, 'info');
+    },
+    [pushToast],
+  );
+
+  const deleteWorkflowDefinition = useCallback(
+    (id: string) => {
+      setState((prev) => ({
+        ...prev,
+        workflowDefinitions: prev.workflowDefinitions.filter((d) => d.id !== id),
+      }));
+      pushToast('الگوی فرآیند حذف شد.', 'info');
+    },
+    [pushToast],
+  );
+
+  const createWorkflowInstance = useCallback(
+    (data: {
+      title: string;
+      type: WorkflowType;
+      definitionId?: string;
+      customerId?: string;
+      relatedRef?: string;
+    }) => {
+      const cur = stateRef.current;
+      const nowIso = new Date().toISOString();
+      const matchedDef =
+        (data.definitionId && cur.workflowDefinitions.find((d) => d.id === data.definitionId)) ||
+        cur.workflowDefinitions.find((d) => d.type === data.type && d.status === 'published') ||
+        cur.workflowDefinitions.find((d) => d.type === data.type);
+
+      let steps: WorkflowStep[] = [];
+      let slaHours = 24;
+      if (matchedDef) {
+        slaHours = matchedDef.slaHours;
+        const execNodes = matchedDef.nodes.filter((n) => n.type !== 'start' && n.type !== 'end');
+        steps = execNodes.map((n, idx) => ({
+          id: n.id,
+          name: n.label,
+          nodeType: n.type,
+          role: n.role,
+          status: 'pending',
+          startedAt: idx === 0 ? nowIso : undefined,
+          timerHours: n.timerHours,
+          timerExpiresAt:
+            idx === 0 && n.type === 'timer' && n.timerHours
+              ? new Date(Date.now() + n.timerHours * 3600_000).toISOString()
+              : undefined,
+          formFields: n.formFields,
+          parallelBranches:
+            n.type === 'parallel_gateway'
+              ? (n.parallelBranches && n.parallelBranches.length > 0
+                  ? n.parallelBranches
+                  : ['تأیید اول', 'تأیید دوم']
+                ).map((bn) => ({
+                  branchName: bn,
+                  role: n.role,
+                  status: 'pending' as const,
+                }))
+              : undefined,
+        }));
+      }
+
+      if (steps.length === 0) {
+        steps = [
+          { name: 'بررسی درخواست و ثبت مستندات', nodeType: 'task', role: 'staff', status: 'pending', startedAt: nowIso },
+          { name: 'تأیید نهایی مدیر سیستم', nodeType: 'task', role: 'admin', status: 'pending' },
+        ];
+      }
 
       const wf: WorkflowInstance = {
         id: `wf_${Date.now()}`,
         title: data.title.trim(),
-        type: data.type,
+        type: matchedDef?.type ?? data.type,
+        definitionId: matchedDef?.id,
+        definitionVersion: matchedDef?.version,
         customerId: data.customerId || undefined,
         relatedRef: data.relatedRef || undefined,
         currentStepIndex: 0,
-        steps: templateSteps[data.type],
+        steps,
         status: 'running',
-        createdAt: new Date().toISOString(),
-        slaHours: 24,
+        createdAt: nowIso,
+        slaHours,
       };
       setState((prev) => ({
         ...prev,
@@ -1834,41 +2244,128 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
   );
 
   const decideWorkflowStep = useCallback(
-    (id: string, decision: 'approved' | 'rejected', comment?: string) => {
+    (
+      id: string,
+      decision: 'approved' | 'rejected',
+      comment?: string,
+      stepData?: Record<string, string>,
+      branchIndex?: number,
+    ) => {
       const wf = stateRef.current.workflows.find((w) => w.id === id);
       if (!wf || wf.status !== 'running') return { ok: false, error: 'فرایند فعال نیست.' };
       const step = wf.steps[wf.currentStepIndex];
       if (!step) return { ok: false, error: 'مرحله معتبر نیست.' };
 
       const curRole = stateRef.current.settings.role;
-      if (step.role === 'admin' && curRole !== 'admin') {
+      const actorName = curRole === 'admin' ? 'مدیر سیستم' : 'کارشناس';
+      const nowIso = new Date().toISOString();
+
+      // Handle parallel gateway branch vote
+      if (step.nodeType === 'parallel_gateway' && step.parallelBranches && typeof branchIndex === 'number') {
+        const targetBranch = step.parallelBranches[branchIndex];
+        if (!targetBranch) return { ok: false, error: 'شاخه موازی نامعتبر است.' };
+        if (targetBranch.role === 'admin' && curRole !== 'admin') {
+          pushToast('این شاخه موازی نیازمند تأیید مدیر سیستم است.', 'error');
+          return { ok: false, error: 'نیازمند نقش مدیر سیستم' };
+        }
+        const nextBranches = step.parallelBranches.map((b, i) =>
+          i === branchIndex ? { ...b, status: decision, actor: actorName, at: nowIso } : b,
+        );
+        const anyRejected = nextBranches.some((b) => b.status === 'rejected');
+        const allApproved = nextBranches.every((b) => b.status === 'approved');
+        const isLast = wf.currentStepIndex >= wf.steps.length - 1;
+
+        const updatedSteps = wf.steps.map((s, idx) => {
+          if (idx === wf.currentStepIndex) {
+            return {
+              ...s,
+              parallelBranches: nextBranches,
+              status: anyRejected ? ('rejected' as const) : allApproved ? ('approved' as const) : ('pending' as const),
+              actor: allApproved || anyRejected ? actorName : s.actor,
+              at: allApproved || anyRejected ? nowIso : s.at,
+              comment: comment?.trim() || s.comment,
+            };
+          }
+          if (allApproved && idx === wf.currentStepIndex + 1) {
+            return { ...s, startedAt: nowIso };
+          }
+          return s;
+        });
+
+        const nextStatus: WorkflowInstance['status'] = anyRejected
+          ? 'rejected'
+          : allApproved && isLast
+            ? 'approved'
+            : 'running';
+        const nextIndex = allApproved && !isLast ? wf.currentStepIndex + 1 : wf.currentStepIndex;
+
+        setState((prev) => ({
+          ...prev,
+          workflows: prev.workflows.map((w) =>
+            w.id === id
+              ? {
+                  ...w,
+                  steps: updatedSteps,
+                  status: nextStatus,
+                  currentStepIndex: nextIndex,
+                  completedAt: nextStatus !== 'running' ? nowIso : w.completedAt,
+                }
+              : w,
+          ),
+          auditLogs: [
+            makeAudit('گردش کار', 'approve', `شاخه «${targetBranch.branchName}» در «${wf.title}» ${decision === 'approved' ? 'تأیید' : 'رد'} شد.`),
+            ...prev.auditLogs,
+          ].slice(0, 100),
+        }));
+        pushToast(`شاخه «${targetBranch.branchName}» ${decision === 'approved' ? 'تأیید' : 'رد'} شد.`);
+        return { ok: true };
+      }
+
+      if (step.role === 'admin' && curRole !== 'admin' && !step.delegatedTo) {
         pushToast('این مرحله نیازمند تأیید مدیر سیستم (Admin) است.', 'error');
         return { ok: false, error: 'این مرحله نیازمند تأیید مدیر سیستم (Admin) است.' };
       }
-
-      const nowIso = new Date().toISOString();
-      const updatedSteps = wf.steps.map((s, idx) =>
-        idx === wf.currentStepIndex
-          ? {
-              ...s,
-              status: decision,
-              actor: curRole === 'admin' ? 'مدیر سیستم' : 'کارشناس',
-              comment: comment?.trim() || undefined,
-              at: nowIso,
-            }
-          : s,
-      );
 
       const isLast = wf.currentStepIndex >= wf.steps.length - 1;
       const nextStatus: WorkflowInstance['status'] =
         decision === 'rejected' ? 'rejected' : isLast ? 'approved' : 'running';
       const nextIndex = decision === 'approved' && !isLast ? wf.currentStepIndex + 1 : wf.currentStepIndex;
 
+      const updatedSteps = wf.steps.map((s, idx) => {
+        if (idx === wf.currentStepIndex) {
+          return {
+            ...s,
+            status: decision,
+            actor: step.delegatedTo ? `${actorName} (تفویض به ${step.delegatedTo})` : actorName,
+            comment: comment?.trim() || undefined,
+            stepData: stepData ?? s.stepData,
+            at: nowIso,
+          };
+        }
+        if (decision === 'approved' && !isLast && idx === wf.currentStepIndex + 1) {
+          return {
+            ...s,
+            startedAt: nowIso,
+            timerExpiresAt:
+              s.nodeType === 'timer' && s.timerHours
+                ? new Date(Date.now() + s.timerHours * 3600_000).toISOString()
+                : s.timerExpiresAt,
+          };
+        }
+        return s;
+      });
+
       setState((prev) => ({
         ...prev,
         workflows: prev.workflows.map((w) =>
           w.id === id
-            ? { ...w, steps: updatedSteps, status: nextStatus, currentStepIndex: nextIndex }
+            ? {
+                ...w,
+                steps: updatedSteps,
+                status: nextStatus,
+                currentStepIndex: nextIndex,
+                completedAt: nextStatus !== 'running' ? nowIso : w.completedAt,
+              }
             : w,
         ),
         auditLogs: [
@@ -1880,10 +2377,84 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
           ...prev.auditLogs,
         ].slice(0, 100),
       }));
-      pushToast(decision === 'approved' ? 'مرحله گردش کار تأیید شد.' : 'فرایند رد شد.', decision === 'approved' ? 'success' : 'info');
+      pushToast(
+        decision === 'approved' ? 'مرحله گردش کار تأیید شد.' : 'فرایند رد شد.',
+        decision === 'approved' ? 'success' : 'info',
+      );
       return { ok: true };
     },
     [pushToast],
+  );
+
+  const claimWorkflowStep = useCallback(
+    (id: string) => {
+      const roleName = stateRef.current.settings.role === 'admin' ? 'مدیر سیستم' : 'کارشناس';
+      setState((prev) => ({
+        ...prev,
+        workflows: prev.workflows.map((w) =>
+          w.id === id
+            ? {
+                ...w,
+                steps: w.steps.map((s, idx) =>
+                  idx === w.currentStepIndex ? { ...s, claimedBy: roleName, assignee: roleName } : s,
+                ),
+              }
+            : w,
+        ),
+        auditLogs: [makeAudit('گردش کار', 'update', `گام فعلی گردش کار ${id} توسط «${roleName}» Claim شد.`), ...prev.auditLogs].slice(0, 100),
+      }));
+      pushToast('این گام به نام شما در دست گرفته شد (Claimed).');
+    },
+    [pushToast],
+  );
+
+  const reassignWorkflowStep = useCallback(
+    (id: string, assignee: string) => {
+      setState((prev) => ({
+        ...prev,
+        workflows: prev.workflows.map((w) =>
+          w.id === id
+            ? {
+                ...w,
+                steps: w.steps.map((s, idx) =>
+                  idx === w.currentStepIndex ? { ...s, assignee, claimedBy: undefined } : s,
+                ),
+              }
+            : w,
+        ),
+        auditLogs: [makeAudit('گردش کار', 'update', `مسئول گام فعلی به «${assignee}» تغییر کرد.`), ...prev.auditLogs].slice(0, 100),
+      }));
+      pushToast(`مسئول گام به «${assignee}» تغییر یافت.`);
+    },
+    [pushToast],
+  );
+
+  const delegateWorkflowStep = useCallback(
+    (id: string, delegateTo: string) => {
+      setState((prev) => ({
+        ...prev,
+        workflows: prev.workflows.map((w) =>
+          w.id === id
+            ? {
+                ...w,
+                steps: w.steps.map((s, idx) =>
+                  idx === w.currentStepIndex ? { ...s, delegatedTo: delegateTo } : s,
+                ),
+              }
+            : w,
+        ),
+        auditLogs: [makeAudit('گردش کار', 'update', `اختیار تأیید گام به «${delegateTo}» تفویض شد.`), ...prev.auditLogs].slice(0, 100),
+      }));
+      pushToast(`اختیار این گام به «${delegateTo}» تفویض شد.`, 'info');
+    },
+    [pushToast],
+  );
+
+  const advanceWorkflowTimer = useCallback(
+    (id: string) => {
+      decideWorkflowStep(id, 'approved', 'تایمر انتظار منقضی و گام به‌صورت خودکار عبور داده شد.');
+    },
+    [decideWorkflowStep],
   );
 
   const addContentItem = useCallback(
@@ -1914,6 +2485,234 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
     [pushToast],
   );
 
+  const updateContentItem = useCallback(
+    (
+      id: string,
+      patch: Partial<Pick<ContentItem, 'title' | 'caption' | 'reach' | 'leadsCount' | 'hasBeforeAfterConsent' | 'status' | 'mediaAssetId'>>,
+    ) => {
+      setState((prev) => ({
+        ...prev,
+        contentItems: prev.contentItems.map((c) => (c.id === id ? { ...c, ...patch } : c)),
+      }));
+      pushToast('مشخصات و شاخص‌های محتوا ذخیره شد.');
+    },
+    [pushToast],
+  );
+
+  const addCampaign = useCallback(
+    (c: Omit<MarketingCampaign, 'id' | 'createdAt' | 'status'>) => {
+      const created: MarketingCampaign = {
+        ...c,
+        id: `cmp_${Date.now()}`,
+        status: 'draft',
+        createdAt: new Date().toISOString(),
+      };
+      setState((prev) => ({
+        ...prev,
+        campaigns: [created, ...prev.campaigns],
+        auditLogs: [makeAudit('بازاریابی', 'create', `کمپین «${created.name}» ایجاد شد.`), ...prev.auditLogs].slice(0, 100),
+      }));
+      pushToast(`کمپین «${created.name}» ایجاد شد.`);
+    },
+    [pushToast],
+  );
+
+  const launchCampaign = useCallback(
+    (id: string) => {
+      const cur = stateRef.current;
+      const cmp = cur.campaigns.find((c) => c.id === id);
+      if (!cmp) return;
+      const nowIso = new Date().toISOString();
+      const targets = cur.customers.filter((cust) => {
+        if (cmp.channel === 'sms' && cust.consentSms === false) return false;
+        return !cust.isAnonymized;
+      });
+      const sampleTargets = targets.slice(0, 8);
+      const messages: OutboxMessage[] = sampleTargets.map((cust, idx) => {
+        const useB = cmp.abTestEnabled && cmp.variantB && idx % 2 === 1;
+        const tpl = useB ? cmp.variantB!.body : cmp.variantA.body;
+        return {
+          id: `msg_cmp_${Date.now()}_${idx}`,
+          to: cust.phone,
+          customerId: cust.id,
+          customerName: cust.name,
+          body: renderRuleTemplate(tpl, {
+            customer: cust,
+            businessName: cur.settings.businessName,
+          }),
+          channel: cmp.channel,
+          ruleName: `کمپین: ${cmp.name} (${useB ? 'نسخه B' : 'نسخه A'})`,
+          deliveryStatus: 'delivered',
+          retryCount: 0,
+          maxRetries: cur.automationPolicy.maxRetries,
+          at: nowIso,
+        };
+      });
+
+      const sentA = cmp.abTestEnabled ? Math.ceil(targets.length / 2) : targets.length;
+      const sentB = cmp.abTestEnabled ? Math.floor(targets.length / 2) : 0;
+
+      setState((prev) => ({
+        ...prev,
+        outbox: [...messages, ...prev.outbox],
+        campaigns: prev.campaigns.map((c) =>
+          c.id === id
+            ? {
+                ...c,
+                status: 'running',
+                launchedAt: nowIso,
+                variantA: { ...c.variantA, sent: sentA },
+                variantB: c.variantB ? { ...c.variantB, sent: sentB } : undefined,
+              }
+            : c,
+        ),
+        auditLogs: [makeAudit('بازاریابی', 'automation', `کمپین «${cmp.name}» برای ${targets.length} مخاطب ارسال شد.`), ...prev.auditLogs].slice(0, 100),
+      }));
+      pushToast(`کمپین «${cmp.name}» ارسال شد (${targets.length} مخاطب).`);
+    },
+    [pushToast],
+  );
+
+  const simulateCampaignStats = useCallback(
+    (id: string) => {
+      setState((prev) => ({
+        ...prev,
+        campaigns: prev.campaigns.map((c) => {
+          if (c.id !== id) return c;
+          const sentA = Math.max(c.variantA.sent, 20);
+          const clicksA = Math.max(c.variantA.clicks, Math.round(sentA * 0.28));
+          const convA = Math.max(c.variantA.conversions, Math.round(sentA * 0.09));
+          let variantB = c.variantB;
+          let winner: 'A' | 'B' | undefined = 'A';
+          if (c.abTestEnabled && variantB) {
+            const sentB = Math.max(variantB.sent, 20);
+            const clicksB = Math.max(variantB.clicks, Math.round(sentB * 0.42));
+            const convB = Math.max(variantB.conversions, Math.round(sentB * 0.16));
+            variantB = { ...variantB, sent: sentB, clicks: clicksB, conversions: convB };
+            winner = convB / sentB >= convA / sentA ? 'B' : 'A';
+          }
+          return {
+            ...c,
+            status: 'completed',
+            variantA: { ...c.variantA, sent: sentA, clicks: clicksA, conversions: convA },
+            variantB,
+            winner,
+          };
+        }),
+      }));
+      pushToast('نتایج بازخورد و تست A/B کمپین شبیه‌سازی و برنده مشخص شد.');
+    },
+    [pushToast],
+  );
+
+  const addMediaAsset = useCallback(
+    (asset: Omit<MediaAsset, 'id' | 'uploadedAt'>) => {
+      const created: MediaAsset = {
+        ...asset,
+        id: `med_${Date.now()}`,
+        uploadedAt: new Date().toISOString(),
+      };
+      setState((prev) => ({
+        ...prev,
+        mediaAssets: [created, ...prev.mediaAssets],
+      }));
+      pushToast(`فایل «${created.name}» به کتابخانه رسانه اضافه شد.`);
+    },
+    [pushToast],
+  );
+
+  const deleteMediaAsset = useCallback(
+    (id: string) => {
+      setState((prev) => ({
+        ...prev,
+        mediaAssets: prev.mediaAssets.filter((m) => m.id !== id),
+      }));
+      pushToast('فایل از کتابخانه رسانه حذف شد.', 'info');
+    },
+    [pushToast],
+  );
+
+  const addLandingForm = useCallback(
+    (form: Omit<LandingForm, 'id' | 'submissionsCount' | 'createdAt'>) => {
+      const created: LandingForm = {
+        ...form,
+        id: `lf_${Date.now()}`,
+        submissionsCount: 0,
+        createdAt: new Date().toISOString(),
+      };
+      setState((prev) => ({
+        ...prev,
+        landingForms: [created, ...prev.landingForms],
+      }));
+      pushToast(`فرم فرود «${created.title}» ساخته شد.`);
+    },
+    [pushToast],
+  );
+
+  const submitLandingForm = useCallback(
+    (
+      formId: string,
+      data: { name: string; phone: string; email?: string; companyName?: string; notes?: string },
+    ) => {
+      const cur = stateRef.current;
+      const form = cur.landingForms.find((f) => f.id === formId);
+      if (!form) return { ok: false, error: 'فرم یافت نشد.' };
+      if (!data.name.trim() || !isValidIranMobile(data.phone)) {
+        return { ok: false, error: 'نام و شماره موبایل معتبر الزامی است.' };
+      }
+      const nowIso = new Date().toISOString();
+      const existing = cur.customers.find((c) => c.phone === data.phone.trim());
+      const customerId = existing ? existing.id : `c_lf_${Date.now()}`;
+      const newCustomer: Customer | null = existing
+        ? null
+        : {
+            id: customerId,
+            name: data.name.trim(),
+            phone: data.phone.trim(),
+            email: data.email?.trim() || undefined,
+            personType: data.companyName?.trim() ? 'organization' : 'individual',
+            companyName: data.companyName?.trim() || undefined,
+            lifecycle: form.defaultLifecycle,
+            tags: ['فرم فرود', form.utmCampaign],
+            source: form.sourceTag,
+            notes: data.notes?.trim() || `ثبت‌شده از فرم ${form.title}`,
+            consentSms: true,
+            createdAt: nowIso,
+          };
+
+      const touch: UtmTouch = {
+        id: `utm_${Date.now()}`,
+        customerId,
+        customerName: data.name.trim(),
+        formId: form.id,
+        utmSource: form.utmSource,
+        utmMedium: form.utmMedium,
+        utmCampaign: form.utmCampaign,
+        landedAt: nowIso,
+        converted: true,
+      };
+
+      setState((prev) => ({
+        ...prev,
+        customers: newCustomer ? [newCustomer, ...prev.customers] : prev.customers,
+        utmTouches: [touch, ...prev.utmTouches],
+        landingForms: prev.landingForms.map((f) =>
+          f.id === formId ? { ...f, submissionsCount: f.submissionsCount + 1 } : f,
+        ),
+        auditLogs: [
+          makeAudit('بازاریابی', 'create', `ثبت سرنخ «${data.name}» از فرم فرود (${form.utmCampaign}).`),
+          ...prev.auditLogs,
+        ].slice(0, 100),
+      }));
+      if (newCustomer) {
+        setTimeout(() => fireAutomationEvent('on_create', 'customer', newCustomer as unknown as Record<string, unknown>), 50);
+      }
+      pushToast(`اطلاعات «${data.name}» از فرم فرود ثبت و در ردیابی UTM ذخیره شد.`);
+      return { ok: true };
+    },
+    [fireAutomationEvent, pushToast],
+  );
+
   const addTask = useCallback(
     (data: { title: string; customerId?: string; dueAt: string }) => {
       if (!data.title.trim()) return;
@@ -1938,35 +2737,219 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
   }, []);
 
   const addTicket = useCallback(
-    (data: { customerId: string; subject: string; priority: Ticket['priority'] }) => {
+    (data: {
+      customerId: string;
+      subject: string;
+      priority: Ticket['priority'];
+      category?: string;
+      team?: string;
+      assignee?: string;
+      rootCause?: string;
+      initialBody?: string;
+    }) => {
       if (!data.subject.trim()) return;
+      const nowIso = new Date().toISOString();
+      const slaHours = data.priority === 'high' ? 4 : data.priority === 'normal' ? 24 : 48;
+      const cust = stateRef.current.customers.find((c) => c.id === data.customerId);
       const ticket: Ticket = {
         id: `k_${Date.now()}`,
         customerId: data.customerId,
         subject: data.subject.trim(),
         priority: data.priority,
         status: 'open',
-        createdAt: new Date().toISOString(),
+        category: data.category || 'پشتیبانی عمومی',
+        team: data.team || 'پذیرش',
+        assignee: data.assignee || stateRef.current.settings.salesTeam[0],
+        slaHours,
+        rootCause: data.rootCause,
+        createdAt: nowIso,
       };
-      setState((prev) => ({ ...prev, tickets: [ticket, ...prev.tickets] }));
+      const initMsg: TicketMessage | null = data.initialBody?.trim()
+        ? {
+            id: `tm_${Date.now()}`,
+            ticketId: ticket.id,
+            authorName: cust?.name ?? 'مشتری',
+            authorType: 'customer',
+            visibility: 'public',
+            body: data.initialBody.trim(),
+            createdAt: nowIso,
+          }
+        : null;
+
+      setState((prev) => ({
+        ...prev,
+        tickets: [ticket, ...prev.tickets],
+        ticketMessages: initMsg ? [...prev.ticketMessages, initMsg] : prev.ticketMessages,
+        auditLogs: [makeAudit('پشتیبانی', 'create', `تیکت «${ticket.subject}» ثبت شد.`), ...prev.auditLogs].slice(0, 100),
+      }));
+      setTimeout(() => fireAutomationEvent('on_ticket_create', 'ticket', ticket as unknown as Record<string, unknown>), 50);
       pushToast('تیکت جدید ثبت شد.');
     },
-    [pushToast],
+    [fireAutomationEvent, pushToast],
   );
 
   const updateTicket = useCallback(
-    (id: string, patch: Partial<Pick<Ticket, 'status' | 'priority' | 'replyNote'>>) => {
+    (
+      id: string,
+      patch: Partial<Pick<Ticket, 'status' | 'priority' | 'replyNote' | 'assignee' | 'team' | 'category' | 'rootCause'>>,
+    ) => {
+      const nowIso = new Date().toISOString();
       setState((prev) => ({
         ...prev,
-        tickets: prev.tickets.map((t) => (t.id === id ? { ...t, ...patch } : t)),
+        tickets: prev.tickets.map((t) =>
+          t.id === id
+            ? {
+                ...t,
+                ...patch,
+                resolvedAt: patch.status === 'resolved' && !t.resolvedAt ? nowIso : t.resolvedAt,
+              }
+            : t,
+        ),
       }));
       pushToast('تیکت به‌روزرسانی شد.');
     },
     [pushToast],
   );
 
+  const addTicketMessage = useCallback(
+    (
+      ticketId: string,
+      msg: { authorName: string; authorType: 'customer' | 'agent'; visibility: 'public' | 'internal'; body: string },
+    ) => {
+      if (!msg.body.trim()) return;
+      const nowIso = new Date().toISOString();
+      const created: TicketMessage = {
+        id: `tm_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+        ticketId,
+        authorName: msg.authorName,
+        authorType: msg.authorType,
+        visibility: msg.visibility,
+        body: msg.body.trim(),
+        createdAt: nowIso,
+      };
+      setState((prev) => ({
+        ...prev,
+        ticketMessages: [...prev.ticketMessages, created],
+        tickets: prev.tickets.map((t) =>
+          t.id === ticketId
+            ? {
+                ...t,
+                replyNote: msg.visibility === 'public' && msg.authorType === 'agent' ? msg.body.trim() : t.replyNote,
+                status: msg.authorType === 'customer' && t.status === 'resolved' ? 'open' : t.status,
+              }
+            : t,
+        ),
+      }));
+      pushToast(msg.visibility === 'internal' ? 'یادداشت داخلی کارشناس ثبت شد.' : 'پیام در رشته تیکت ثبت شد.');
+    },
+    [pushToast],
+  );
+
+  const mergeTickets = useCallback(
+    (primaryId: string, duplicateId: string) => {
+      if (primaryId === duplicateId) return { ok: false, error: 'دو تیکت نمی‌توانند یکسان باشند.' };
+      const cur = stateRef.current;
+      const primary = cur.tickets.find((t) => t.id === primaryId);
+      const dup = cur.tickets.find((t) => t.id === duplicateId);
+      if (!primary || !dup) return { ok: false, error: 'تیکت یافت نشد.' };
+      const nowIso = new Date().toISOString();
+      const mergeNote: TicketMessage = {
+        id: `tm_merge_${Date.now()}`,
+        ticketId: primaryId,
+        authorName: 'سیستم پشتیبانی',
+        authorType: 'agent',
+        visibility: 'internal',
+        body: `تیکت تکراری «${dup.subject}» (${dup.id}) با این تیکت ادغام شد.`,
+        createdAt: nowIso,
+      };
+      setState((prev) => ({
+        ...prev,
+        ticketMessages: [
+          ...prev.ticketMessages.map((m) => (m.ticketId === duplicateId ? { ...m, ticketId: primaryId } : m)),
+          mergeNote,
+        ],
+        tickets: prev.tickets.map((t) => {
+          if (t.id === primaryId) {
+            return { ...t, mergedFromIds: [...(t.mergedFromIds ?? []), duplicateId] };
+          }
+          if (t.id === duplicateId) {
+            return {
+              ...t,
+              status: 'resolved',
+              resolvedAt: nowIso,
+              mergedIntoTicketId: primaryId,
+              replyNote: `ادغام‌شده در تیکت ${primaryId}`,
+            };
+          }
+          return t;
+        }),
+        auditLogs: [makeAudit('پشتیبانی', 'merge', `تیکت ${duplicateId} در ${primaryId} ادغام شد.`), ...prev.auditLogs].slice(0, 100),
+      }));
+      pushToast(`تیکت «${dup.subject}» با موفقیت ادغام شد.`);
+      return { ok: true };
+    },
+    [pushToast],
+  );
+
+  const checkAndEscalateTickets = useCallback(
+    (silent = false) => {
+      const cur = stateRef.current;
+      const nowMs = Date.now();
+      const nowIso = new Date().toISOString();
+      const toEscalate = cur.tickets.filter((t) => {
+        if (t.status === 'resolved' || t.escalated) return false;
+        const limitH = t.slaHours ?? (t.priority === 'high' ? 4 : t.priority === 'normal' ? 24 : 48);
+        const ageH = (nowMs - new Date(t.createdAt).getTime()) / 3600_000;
+        return ageH >= limitH;
+      });
+
+      if (toEscalate.length === 0) {
+        if (!silent) pushToast('تیکت جدیدی با نقض SLA برای تصعید یافت نشد.', 'info');
+        return 0;
+      }
+
+      const escIds = new Set(toEscalate.map((t) => t.id));
+      const newMsgs: TicketMessage[] = toEscalate.map((t, idx) => ({
+        id: `tm_esc_${Date.now()}_${idx}`,
+        ticketId: t.id,
+        authorName: 'سیستم SLA',
+        authorType: 'agent',
+        visibility: 'internal',
+        body: `تصعید خودکار: تیکت به دلیل عبور از مهلت پاسخگویی (${t.slaHours ?? 24} ساعت) به مدیر پشتیبانی ارجاع شد.`,
+        createdAt: nowIso,
+      }));
+
+      setState((prev) => ({
+        ...prev,
+        tickets: prev.tickets.map((t) =>
+          escIds.has(t.id)
+            ? {
+                ...t,
+                escalated: true,
+                escalatedAt: nowIso,
+                escalatedTo: 'مدیر پشتیبانی',
+                priority: 'high',
+              }
+            : t,
+        ),
+        ticketMessages: [...prev.ticketMessages, ...newMsgs],
+        auditLogs: [
+          makeAudit('پشتیبانی', 'automation', `${toEscalate.length} تیکت به دلیل نقض SLA به مدیر پشتیبانی تصعید شد.`),
+          ...prev.auditLogs,
+        ].slice(0, 100),
+      }));
+      if (!silent) {
+        pushToast(`${toEscalate.length} تیکت دارای نقض SLA به مدیر پشتیبانی تصعید شد.`, 'info');
+      }
+      return toEscalate.length;
+    },
+    [pushToast],
+  );
+
   const addKbArticle = useCallback(
     (article: Omit<KbArticle, 'id' | 'helpfulCount' | 'updatedAt'>) => {
+      const nowIso = new Date().toISOString();
+      const editor = stateRef.current.settings.role === 'admin' ? 'مدیر سیستم' : 'کارشناس';
       setState((prev) => ({
         ...prev,
         kbArticles: [
@@ -1974,12 +2957,110 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
             ...article,
             id: `kb_${Date.now()}`,
             helpfulCount: 0,
-            updatedAt: new Date().toISOString(),
+            updatedAt: nowIso,
+            version: 1,
+            versions: [
+              {
+                version: 1,
+                title: article.title,
+                category: article.category,
+                body: article.body,
+                updatedAt: nowIso,
+                editor,
+                changeNote: 'ایجاد مقاله',
+              },
+            ],
           },
           ...prev.kbArticles,
         ],
       }));
       pushToast(`مقاله «${article.title}» در پایگاه دانش ثبت شد.`);
+    },
+    [pushToast],
+  );
+
+  const updateKbArticle = useCallback(
+    (id: string, patch: { title: string; category: string; body: string; changeNote?: string }) => {
+      const nowIso = new Date().toISOString();
+      const editor = stateRef.current.settings.role === 'admin' ? 'مدیر سیستم' : 'کارشناس';
+      setState((prev) => ({
+        ...prev,
+        kbArticles: prev.kbArticles.map((art) => {
+          if (art.id !== id) return art;
+          const prevVersions = art.versions ?? [
+            {
+              version: art.version ?? 1,
+              title: art.title,
+              category: art.category,
+              body: art.body,
+              updatedAt: art.updatedAt,
+              editor: 'مدیر سیستم',
+              changeNote: 'نسخه قبلی',
+            },
+          ];
+          const nextVer = (art.version ?? 1) + 1;
+          return {
+            ...art,
+            title: patch.title.trim(),
+            category: patch.category.trim(),
+            body: patch.body.trim(),
+            updatedAt: nowIso,
+            version: nextVer,
+            versions: [
+              ...prevVersions,
+              {
+                version: nextVer,
+                title: patch.title.trim(),
+                category: patch.category.trim(),
+                body: patch.body.trim(),
+                updatedAt: nowIso,
+                editor,
+                changeNote: patch.changeNote?.trim() || 'ویرایش محتوا',
+              },
+            ],
+          };
+        }),
+      }));
+      pushToast('نسخه جدید مقاله پایگاه دانش ذخیره شد.');
+    },
+    [pushToast],
+  );
+
+  const restoreKbVersion = useCallback(
+    (id: string, version: number) => {
+      const art = stateRef.current.kbArticles.find((a) => a.id === id);
+      const targetVer = art?.versions?.find((v) => v.version === version);
+      if (!art || !targetVer) return;
+      const nowIso = new Date().toISOString();
+      const nextVer = (art.version ?? 1) + 1;
+      setState((prev) => ({
+        ...prev,
+        kbArticles: prev.kbArticles.map((a) =>
+          a.id === id
+            ? {
+                ...a,
+                title: targetVer.title,
+                category: targetVer.category,
+                body: targetVer.body,
+                updatedAt: nowIso,
+                version: nextVer,
+                versions: [
+                  ...(a.versions ?? []),
+                  {
+                    version: nextVer,
+                    title: targetVer.title,
+                    category: targetVer.category,
+                    body: targetVer.body,
+                    updatedAt: nowIso,
+                    editor: 'مدیر سیستم',
+                    changeNote: `بازگردانی از نسخه ${version}`,
+                  },
+                ],
+              }
+            : a,
+        ),
+      }));
+      pushToast(`نسخه ${version} مقاله بازیابی شد.`, 'info');
     },
     [pushToast],
   );
@@ -2030,42 +3111,170 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
     [pushToast],
   );
 
+  const updateRule = useCallback(
+    (id: string, patch: Partial<Rule>) => {
+      setState((prev) => ({
+        ...prev,
+        rules: prev.rules.map((r) => (r.id === id ? { ...r, ...patch } : r)),
+      }));
+      pushToast('قانون اتوماسیون به‌روزرسانی شد.');
+    },
+    [pushToast],
+  );
+
+  const deleteRule = useCallback(
+    (id: string) => {
+      setState((prev) => ({
+        ...prev,
+        rules: prev.rules.filter((r) => r.id !== id),
+      }));
+      pushToast('قانون اتوماسیون حذف شد.', 'info');
+    },
+    [pushToast],
+  );
+
+  const updateAutomationPolicy = useCallback(
+    (patch: Partial<AutomationPolicy>) => {
+      setState((prev) => ({
+        ...prev,
+        automationPolicy: { ...prev.automationPolicy, ...patch },
+      }));
+      pushToast('تنظیمات ساعات سکوت و سقف ارسال ذخیره شد.');
+    },
+    [pushToast],
+  );
+
+  const dryRunRule = useCallback((rule: Rule, hourOverride?: number) => {
+    return simulateRuleDryRun(rule, stateRef.current, hourOverride);
+  }, []);
+
   const sendSimulatedSms = useCallback(
-    (customerId: string, body: string) => {
-      const cust = stateRef.current.customers.find((c) => c.id === customerId);
+    (customerId: string, body: string, channel: NotificationChannel = 'sms') => {
+      const cur = stateRef.current;
+      const cust = cur.customers.find((c) => c.id === customerId);
       if (!cust) return { ok: false, error: 'مشتری انتخاب‌شده یافت نشد.' };
-      if (!body.trim()) return { ok: false, error: 'متن پیامک نمی‌تواند خالی باشد.' };
-      if (cust.consentSms === false) {
+      if (!body.trim()) return { ok: false, error: 'متن پیام نمی‌تواند خالی باشد.' };
+      if (channel === 'sms' && cust.consentSms === false) {
         return { ok: false, error: 'این مشتری رضایت دریافت پیامک را غیرفعال کرده است.' };
       }
       const nowIso = new Date().toISOString();
-      const msg = {
+      const quiet = isWithinQuietHours(cur.automationPolicy);
+      const msg: OutboxMessage = {
         id: `msg_manual_${Date.now()}`,
-        to: cust.phone,
+        to: channel === 'email' ? cust.email || cust.phone : cust.phone,
+        customerId: cust.id,
         customerName: cust.name,
         body: body.trim(),
-        channel: 'sms' as const,
+        channel,
         ruleName: 'ارسال دستی کارشناس',
+        deliveryStatus: quiet ? 'deferred_quiet' : 'delivered',
+        retryCount: 0,
+        maxRetries: cur.automationPolicy.maxRetries,
         at: nowIso,
       };
       const interaction: Interaction = {
         id: `int_sms_${Date.now()}`,
         customerId: cust.id,
-        channel: 'sms',
-        text: `پیامک شبیه‌سازی‌شده: ${body.trim()}`,
+        channel: channel === 'sms' ? 'sms' : 'note',
+        text: `اعلان شبیه‌سازی‌شده (${channel}): ${body.trim()}`,
         at: nowIso,
       };
       setState((prev) => ({
         ...prev,
         outbox: [msg, ...prev.outbox],
         interactions: [interaction, ...prev.interactions],
-        auditLogs: [makeAudit('پیامک', 'create', `پیامک دستی برای «${cust.name}» ثبت شد.`), ...prev.auditLogs].slice(0, 100),
+        auditLogs: [makeAudit('اعلان', 'create', `اعلان ${channel} دستی برای «${cust.name}» ثبت شد.`), ...prev.auditLogs].slice(0, 100),
       }));
-      pushToast(`پیامک شبیه‌سازی‌شده برای «${cust.name}» در صندوق ارسال ثبت شد.`);
+      pushToast(`اعلان ${channel} برای «${cust.name}» ثبت شد.`);
       return { ok: true };
     },
     [pushToast],
   );
+
+  const retryNotification = useCallback(
+    (id: string) => {
+      setState((prev) => ({
+        ...prev,
+        outbox: prev.outbox.map((m) =>
+          m.id === id
+            ? {
+                ...m,
+                deliveryStatus: 'delivered',
+                retryCount: (m.retryCount ?? 0) + 1,
+                lastError: undefined,
+                nextRetryAt: undefined,
+              }
+            : m,
+        ),
+      }));
+      pushToast('ارسال مجدد با موفقیت انجام و تحویل شد.');
+    },
+    [pushToast],
+  );
+
+  const simulateDeliveryFailure = useCallback(
+    (id: string) => {
+      setState((prev) => ({
+        ...prev,
+        outbox: prev.outbox.map((m) => {
+          if (m.id !== id) return m;
+          const nextRetry = (m.retryCount ?? 0) + 1;
+          const maxR = m.maxRetries ?? prev.automationPolicy.maxRetries;
+          const isDead = nextRetry >= maxR;
+          return {
+            ...m,
+            retryCount: nextRetry,
+            maxRetries: maxR,
+            deliveryStatus: isDead ? 'dead_letter' : 'retrying',
+            nextRetryAt: isDead ? undefined : new Date(Date.now() + nextRetry * 5 * 60_000).toISOString(),
+            lastError: isDead ? 'عبور از سقف تلاش مجدد — انتقال به صف خطای دائم (Dead-letter)' : `خطای موقت درگاه (تلاش ${nextRetry} از ${maxR})`,
+          };
+        }),
+      }));
+      pushToast('وضعیت خطا و تلاش مجدد شبیه‌سازی شد.', 'info');
+    },
+    [pushToast],
+  );
+
+  const processNotificationRetries = useCallback(() => {
+    const cur = stateRef.current;
+    let movedToDead = 0;
+    let delivered = 0;
+    const nextOutbox = cur.outbox.map((m) => {
+      if (m.deliveryStatus === 'deferred_quiet' && !isWithinQuietHours(cur.automationPolicy)) {
+        delivered++;
+        return { ...m, deliveryStatus: 'delivered' as const };
+      }
+      if (m.deliveryStatus !== 'retrying') return m;
+      const nextRetry = (m.retryCount ?? 0) + 1;
+      const maxR = m.maxRetries ?? cur.automationPolicy.maxRetries;
+      if (nextRetry >= maxR) {
+        movedToDead++;
+        return {
+          ...m,
+          retryCount: nextRetry,
+          deliveryStatus: 'dead_letter' as const,
+          nextRetryAt: undefined,
+          lastError: 'تلاش‌های مجدد به اتمام رسید (Dead-letter)',
+        };
+      }
+      delivered++;
+      return {
+        ...m,
+        retryCount: nextRetry,
+        deliveryStatus: 'delivered' as const,
+        nextRetryAt: undefined,
+        lastError: undefined,
+      };
+    });
+
+    if (delivered === 0 && movedToDead === 0) {
+      pushToast('موردی در صف تلاش مجدد یا ساعات سکوت یافت نشد.', 'info');
+      return;
+    }
+    setState((prev) => ({ ...prev, outbox: nextOutbox }));
+    pushToast(`پردازش صف انجام شد: ${delivered} تحویل شد، ${movedToDead} به Dead-letter منتقل شد.`);
+  }, [pushToast]);
 
   const runAutomationNow = useCallback(
     (silent = false) => {
@@ -2098,11 +3307,16 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
                 newOutbox.push({
                   id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
                   to: cust.phone,
+                  customerId: cust.id,
                   customerName: cust.name,
                   body: `${cust.name} عزیز، یادآوری نوبت تأییدشده شما در ${cur.settings.businessName} برای ۲۴ ساعت آینده ثبت شده است.`,
                   channel: 'sms',
+                  ruleId: rule.id,
                   ruleName: rule.name,
                   appointmentId: apt.id,
+                  deliveryStatus: 'delivered',
+                  retryCount: 0,
+                  maxRetries: cur.automationPolicy.maxRetries,
                   at: nowIso,
                 });
               }
@@ -2133,12 +3347,17 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
                 newOutbox.push({
                   id: `msg_2h_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
                   to: cust.phone,
+                  customerId: cust.id,
                   customerName: cust.name,
                   body: `${cust.name} عزیز، تا ۲ ساعت دیگر نوبت شما در ${cur.settings.businessName} شروع می‌شود. لطفاً عدد ۱ یا کلمه «تأیید» را ارسال کنید.`,
                   channel: 'sms',
+                  ruleId: rule.id,
                   ruleName: rule.name,
                   appointmentId: apt.id,
                   canSimulateConfirm: apt.status === 'booked',
+                  deliveryStatus: 'delivered',
+                  retryCount: 0,
+                  maxRetries: cur.automationPolicy.maxRetries,
                   at: nowIso,
                 });
               }
@@ -2170,10 +3389,15 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
                 newOutbox.push({
                   id: `msg_b_${Date.now()}_${cust.id}`,
                   to: cust.phone,
+                  customerId: cust.id,
                   customerName: cust.name,
                   body: `${cust.name} عزیز، تولدتان مبارک! هدیه ۲۰٪ (کد VIP20) از طرف ${cur.settings.businessName} تقدیم شما می‌شود.`,
                   channel: 'sms',
+                  ruleId: rule.id,
                   ruleName: rule.name,
+                  deliveryStatus: 'delivered',
+                  retryCount: 0,
+                  maxRetries: cur.automationPolicy.maxRetries,
                   at: nowIso,
                 });
               }
@@ -2186,10 +3410,15 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
                 newOutbox.push({
                   id: `msg_a_${Date.now()}_${cust.id}`,
                   to: cust.phone,
+                  customerId: cust.id,
                   customerName: cust.name,
                   body: `${cust.name} گرامی، سالگرد همراهی شما با ${cur.settings.businessName} را صمیمانه تبریک می‌گوییم!`,
                   channel: 'sms',
+                  ruleId: rule.id,
                   ruleName: rule.name,
+                  deliveryStatus: 'delivered',
+                  retryCount: 0,
+                  maxRetries: cur.automationPolicy.maxRetries,
                   at: nowIso,
                 });
               }
@@ -2261,10 +3490,15 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
                   newOutbox.push({
                     id: `msg_${Date.now()}_u3_${count}`,
                     to: cust.phone,
+                    customerId: cust.id,
                     customerName: cust.name,
                     body: `${cust.name} گرامی، جهت رزرو ویزیت کنترل خود در ${cur.settings.businessName} با ما در ارتباط باشید.`,
                     channel: 'sms',
+                    ruleId: rule.id,
                     ruleName: rule.name,
+                    deliveryStatus: 'delivered',
+                    retryCount: 0,
+                    maxRetries: cur.automationPolicy.maxRetries,
                     at: nowIso,
                   });
                 }
@@ -2296,10 +3530,15 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
                 newOutbox.push({
                   id: `msg_${Date.now()}_u4_${count}`,
                   to: cust.phone,
+                  customerId: cust.id,
                   customerName: cust.name,
                   body: `${cust.name} عزیز، سفارش شما در ${cur.settings.businessName} در انتظار تأیید نهایی است.`,
                   channel: 'sms',
+                  ruleId: rule.id,
                   ruleName: rule.name,
+                  deliveryStatus: 'delivered',
+                  retryCount: 0,
+                  maxRetries: cur.automationPolicy.maxRetries,
                   at: nowIso,
                 });
               }
@@ -2337,10 +3576,15 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
                 newOutbox.push({
                   id: `msg_${Date.now()}_u5_${count}`,
                   to: cust.phone,
+                  customerId: cust.id,
                   customerName: cust.name,
                   body: `${cust.name} گرامی، اعتبار قرارداد پشتیبانی شما در ${cur.settings.businessName} طی روزهای آینده به پایان می‌رسد.`,
                   channel: 'sms',
+                  ruleId: rule.id,
                   ruleName: rule.name,
+                  deliveryStatus: 'delivered',
+                  retryCount: 0,
+                  maxRetries: cur.automationPolicy.maxRetries,
                   at: nowIso,
                 });
               }
@@ -2352,6 +3596,78 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
               ruleId: rule.id,
               ruleName: rule.name,
               summary: `${count} هشدار تمدید قرارداد و پیامک یادآوری ثبت شد.`,
+              at: nowIso,
+            });
+          }
+        }
+
+        // Dynamic Custom Rules Engine (evaluates AND/OR/NOT conditions, {{vars}}, Quiet Hours & Daily Cap!)
+        if (!['u1', 'u2', 'u3', 'u4', 'u5', 'u6', 'u7'].includes(rule.id) && rule.targetEntity) {
+          const candidates = getTargetRecordsForRule(rule, cur);
+          const quiet = (rule.respectQuietHours ?? true) && isWithinQuietHours(cur.automationPolicy);
+          const cap = rule.dailyCapPerCustomer ?? cur.automationPolicy.defaultDailyCap;
+          let count = 0;
+
+          for (const cand of candidates) {
+            if (!evaluateRuleConditions(rule, cand.record, cand.customer)) continue;
+            const key = `${rule.id}_${cand.entityId}`;
+            if (processed.has(key)) continue;
+
+            const actionType = rule.actionType ?? 'send_notification';
+            const ch = rule.actionChannel ?? 'sms';
+            const todayCount = countTodayCustomerNotifications(
+              [...cur.outbox, ...newOutbox],
+              cand.customer?.id,
+              cand.customer?.phone,
+            );
+
+            if ((actionType === 'send_notification' || actionType === 'both') && cand.customer) {
+              if (ch === 'sms' && cand.customer.consentSms === false) continue;
+              if (cap > 0 && todayCount >= cap) continue;
+              processed.add(key);
+              count++;
+              newOutbox.push({
+                id: `msg_dyn_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+                to: ch === 'email' ? cand.customer.email || cand.customer.phone : cand.customer.phone,
+                customerId: cand.customer.id,
+                customerName: cand.customer.name,
+                body: renderRuleTemplate(
+                  rule.messageTemplate || 'سلام {{customer.name}}، پیام خودکار از {{businessName}}.',
+                  { customer: cand.customer, entity: cand.record, businessName: cur.settings.businessName },
+                ),
+                channel: ch,
+                ruleId: rule.id,
+                ruleName: rule.name,
+                deliveryStatus: quiet ? 'deferred_quiet' : 'delivered',
+                retryCount: 0,
+                maxRetries: cur.automationPolicy.maxRetries,
+                at: nowIso,
+              });
+            }
+
+            if (actionType === 'create_task' || actionType === 'both') {
+              processed.add(key);
+              count++;
+              newTasks.push({
+                id: `t_dyn_${Date.now()}_${count}_${Math.random().toString(36).slice(2, 5)}`,
+                title: renderRuleTemplate(
+                  rule.taskTitleTemplate || 'پیگیری خودکار {{customer.name}}',
+                  { customer: cand.customer, entity: cand.record, businessName: cur.settings.businessName },
+                ),
+                customerId: cand.customer?.id,
+                dueAt: new Date(nowMs + 24 * 3600_000).toISOString(),
+                done: false,
+                createdByRuleId: rule.id,
+              });
+            }
+          }
+
+          if (count > 0) {
+            newLogs.push({
+              id: `al_${Date.now()}_${rule.id}`,
+              ruleId: rule.id,
+              ruleName: rule.name,
+              summary: `اجرای قانون پویا: ${count} اقدام با موفقیت ثبت شد.`,
               at: nowIso,
             });
           }
@@ -2368,15 +3684,18 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
           processedRuleKeys: Array.from(processed),
         }));
         if (!silent) {
-          pushToast(`موتور اتوماسیون اجرا شد: ${newOutbox.length} پیامک و ${newTasks.length} وظیفه ثبت شد.`);
+          pushToast(`موتور اتوماسیون اجرا شد: ${newOutbox.length} اعلان و ${newTasks.length} وظیفه ثبت شد.`);
         }
       } else if (!silent) {
         pushToast('قوانین بررسی شدند؛ مورد جدیدی برای اجرا وجود نداشت.', 'info');
       }
 
+      // Also check ticket SLA escalations quietly
+      checkAndEscalateTickets(true);
+
       return totalActions;
     },
-    [pushToast],
+    [checkAndEscalateTickets, pushToast],
   );
 
   useEffect(() => {
@@ -2394,8 +3713,372 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
 
   const clearOutbox = useCallback(() => {
     setState((prev) => ({ ...prev, outbox: [] }));
-    pushToast('صندوق پیامک‌های شبیه‌سازی‌شده پاک شد.', 'info');
+    pushToast('صف اعلان‌های شبیه‌سازی‌شده پاک شد.', 'info');
   }, [pushToast]);
+
+  // --- SAYADI CHEQUES & PAYMENT GATEWAY (FR-FIN-04/05) ---
+  const addSayadiCheque = useCallback(
+    (data: Omit<SayadiCheque, 'id' | 'createdAt' | 'updatedAt'>) => {
+      const nowIso = new Date().toISOString();
+      const chq: SayadiCheque = {
+        ...data,
+        id: `chq_${Date.now()}`,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+      setState((prev) => ({
+        ...prev,
+        sayadiCheques: [chq, ...prev.sayadiCheques],
+        auditLogs: [
+          makeAudit('مالی (چک صیادی)', 'create', `چک صیادی ${chq.chequeNo} به مبلغ ${chq.amount} ثبت شد.`),
+          ...prev.auditLogs,
+        ].slice(0, 100),
+      }));
+      pushToast(`چک صیادی شماره ${chq.chequeNo} ثبت شد.`);
+    },
+    [pushToast],
+  );
+
+  const updateSayadiChequeStatus = useCallback(
+    (id: string, status: SayadiChequeStatus, note?: string) => {
+      const cur = stateRef.current;
+      const target = cur.sayadiCheques.find((c) => c.id === id);
+      if (!target) return;
+      const nowIso = new Date().toISOString();
+      const wasCleared = target.status === 'cleared';
+      const newlyCleared = status === 'cleared' && !wasCleared && Boolean(target.invoiceId);
+      const bouncedTask: Task | null =
+        status === 'bounced'
+          ? {
+              id: `t_chq_${Date.now()}`,
+              title: `پیگیری فوری چک برگشتی ${target.chequeNo} (${target.drawerName})`,
+              customerId: target.customerId,
+              dueAt: new Date(Date.now() + 12 * 3600_000).toISOString(),
+              done: false,
+            }
+          : null;
+
+      setState((prev) => ({
+        ...prev,
+        sayadiCheques: prev.sayadiCheques.map((c) =>
+          c.id === id ? { ...c, status, notes: note ?? c.notes, updatedAt: nowIso } : c,
+        ),
+        invoices: newlyCleared
+          ? prev.invoices.map((inv) => {
+              if (inv.id !== target.invoiceId) return inv;
+              const nextPaid = Math.min(inv.grandTotal, inv.paidAmount + target.amount);
+              return {
+                ...inv,
+                paidAmount: nextPaid,
+                method: 'cheque',
+                status: nextPaid >= inv.grandTotal ? 'paid' : 'partial',
+              };
+            })
+          : prev.invoices,
+        tasks: bouncedTask ? [bouncedTask, ...prev.tasks] : prev.tasks,
+        auditLogs: [
+          makeAudit('مالی (چک صیادی)', 'update', `وضعیت چک ${target.chequeNo} به ${status} تغییر یافت.`),
+          ...prev.auditLogs,
+        ].slice(0, 100),
+      }));
+
+      if (newlyCleared) {
+        pushToast(`چک ${target.chequeNo} وصول شد و مبلغ به فاکتور متصل تخصیص یافت.`);
+      } else if (status === 'bounced') {
+        pushToast(`چک ${target.chequeNo} برگشت خورد و وظیفه پیگیری فوری ایجاد شد.`, 'error');
+      } else {
+        pushToast('وضعیت چک صیادی به‌روزرسانی شد.');
+      }
+    },
+    [pushToast],
+  );
+
+  const processSandboxPayment = useCallback(
+    (data: {
+      invoiceId: string;
+      gateway: PaymentTransaction['gateway'];
+      amount: number;
+      cardMasked: string;
+      outcome: 'succeeded' | 'failed' | 'cancelled';
+    }) => {
+      const inv = stateRef.current.invoices.find((i) => i.id === data.invoiceId);
+      if (!inv) return { ok: false, errorMessage: 'فاکتور یافت نشد.' };
+      const nowIso = new Date().toISOString();
+      const refId =
+        data.outcome === 'succeeded' ? `SHP-${Math.floor(10000000 + Math.random() * 89999999)}` : undefined;
+      const errorMessage =
+        data.outcome === 'failed'
+          ? 'تراکنش توسط شاپرک ناموفق اعلام شد (موجودی ناکافی / خطای رمز پویا)'
+          : data.outcome === 'cancelled'
+            ? 'پرداخت توسط کاربر در صفحه درگاه لغو شد'
+            : undefined;
+
+      const tx: PaymentTransaction = {
+        id: `ptx_${Date.now()}`,
+        invoiceId: inv.id,
+        invoiceNo: inv.invoiceNo,
+        customerId: inv.customerId,
+        gateway: data.gateway,
+        amount: data.amount,
+        cardMasked: data.cardMasked,
+        refId,
+        status: data.outcome,
+        errorCode: data.outcome === 'failed' ? 'ERR_51_FUNDS' : data.outcome === 'cancelled' ? 'ERR_USER_CANCEL' : undefined,
+        errorMessage,
+        at: nowIso,
+      };
+
+      setState((prev) => ({
+        ...prev,
+        paymentTransactions: [tx, ...prev.paymentTransactions],
+        invoices:
+          data.outcome === 'succeeded'
+            ? prev.invoices.map((i) => {
+                if (i.id !== inv.id) return i;
+                const nextPaid = Math.min(i.grandTotal, i.paidAmount + data.amount);
+                return {
+                  ...i,
+                  paidAmount: nextPaid,
+                  method: 'online',
+                  status: nextPaid >= i.grandTotal ? 'paid' : 'partial',
+                };
+              })
+            : prev.invoices,
+        auditLogs: [
+          makeAudit(
+            'درگاه پرداخت',
+            data.outcome === 'succeeded' ? 'approve' : 'system',
+            `تراکنش ${inv.invoiceNo} در درگاه ${data.gateway}: ${data.outcome}${refId ? ` (کد پیگیری ${refId})` : ''}`,
+          ),
+          ...prev.auditLogs,
+        ].slice(0, 100),
+      }));
+
+      if (data.outcome === 'succeeded') {
+        pushToast(`پرداخت آنلاین با موفقیت تأیید شد. کد رهگیری: ${refId}`);
+        return { ok: true, refId };
+      }
+      pushToast(errorMessage ?? 'تراکنش ناموفق بود.', 'error');
+      return { ok: false, errorMessage };
+    },
+    [pushToast],
+  );
+
+  // --- DASHBOARD WIDGETS & SCHEDULED REPORTS (FR-RPT-01/04) ---
+  const updateDashboardWidgets = useCallback((widgets: DashboardWidgetConfig[]) => {
+    setState((prev) => ({
+      ...prev,
+      settings: { ...prev.settings, dashboardWidgets: widgets },
+    }));
+  }, []);
+
+  const resetDashboardWidgets = useCallback(() => {
+    setState((prev) => ({
+      ...prev,
+      settings: { ...prev.settings, dashboardWidgets: defaultDashboardWidgets },
+    }));
+    pushToast('چیدمان ویجت‌های داشبورد به حالت پیش‌فرض بازگشت.', 'info');
+  }, [pushToast]);
+
+  const addScheduledReport = useCallback(
+    (rep: Omit<ScheduledReport, 'id' | 'nextRunAt'>) => {
+      const hours = rep.frequency === 'daily' ? 24 : rep.frequency === 'weekly' ? 168 : 720;
+      const created: ScheduledReport = {
+        ...rep,
+        id: `sr_${Date.now()}`,
+        nextRunAt: new Date(Date.now() + hours * 3600_000).toISOString(),
+      };
+      setState((prev) => ({
+        ...prev,
+        scheduledReports: [created, ...prev.scheduledReports],
+      }));
+      pushToast(`ارسال زمان‌بندی‌شده «${created.title}» ثبت شد.`);
+    },
+    [pushToast],
+  );
+
+  const toggleScheduledReport = useCallback((id: string) => {
+    setState((prev) => ({
+      ...prev,
+      scheduledReports: prev.scheduledReports.map((r) => (r.id === id ? { ...r, active: !r.active } : r)),
+    }));
+  }, []);
+
+  const deleteScheduledReport = useCallback((id: string) => {
+    setState((prev) => ({
+      ...prev,
+      scheduledReports: prev.scheduledReports.filter((r) => r.id !== id),
+    }));
+  }, []);
+
+  const runScheduledReportNow = useCallback(
+    (id: string) => {
+      const rep = stateRef.current.scheduledReports.find((r) => r.id === id);
+      if (!rep) return;
+      const nowIso = new Date().toISOString();
+      const emailMsg: OutboxMessage = {
+        id: `msg_rpt_${Date.now()}`,
+        to: rep.recipients,
+        customerName: 'گیرندگان گزارش زمان‌بندی‌شده',
+        body: `گزارش «${rep.title}» در قالب ${rep.format.toUpperCase()} آماده و به ${rep.recipients} ارسال شد.`,
+        channel: 'email',
+        ruleName: 'ارسال زمان‌بندی‌شده گزارش',
+        deliveryStatus: 'delivered',
+        retryCount: 0,
+        maxRetries: 3,
+        at: nowIso,
+      };
+      setState((prev) => ({
+        ...prev,
+        scheduledReports: prev.scheduledReports.map((r) =>
+          r.id === id ? { ...r, lastSentAt: nowIso } : r,
+        ),
+        outbox: [emailMsg, ...prev.outbox],
+      }));
+      pushToast(`گزارش «${rep.title}» به‌صورت ایمیل ارسال شد و در صف اعلان ثبت گردید.`);
+    },
+    [pushToast],
+  );
+
+  // --- INDUSTRY PACKS & PACK BUILDER (Section 7) ---
+  const applyIndustryPack = useCallback(
+    (packKey: IndustryPack, installDefaults = true) => {
+      const packDef =
+        INDUSTRY_PACKS.find((p) => p.key === packKey) ??
+        stateRef.current.customPacks.find((p) => p.key === packKey);
+
+      if (!installDefaults || !packDef) {
+        setState((prev) => ({
+          ...prev,
+          settings: { ...prev.settings, industryPack: packKey },
+          auditLogs: [makeAudit('پیکربندی', 'update', `بسته صنعتی به ${packKey} تغییر یافت.`), ...prev.auditLogs].slice(0, 100),
+        }));
+        pushToast('بسته صنعتی فعال تغییر کرد.');
+        return;
+      }
+
+      const cur = stateRef.current;
+      const nowMs = Date.now();
+      const existingFieldKeys = new Set(cur.customFieldDefs.map((f) => f.key));
+      const newFields: CustomFieldDef[] = packDef.customFields
+        .filter((f) => !existingFieldKeys.has(f.key))
+        .map((f, i) => ({ ...f, id: `cf_pk_${nowMs}_${i}` }));
+
+      const existingEntKeys = new Set(cur.customEntityDefs.map((e) => e.key));
+      const newEntities: CustomEntityDef[] = packDef.customEntities
+        .filter((e) => !existingEntKeys.has(e.key))
+        .map((e, i) => ({ ...e, id: `ent_pk_${nowMs}_${i}`, createdAt: new Date().toISOString() }));
+
+      const existingSvcNames = new Set(cur.services.map((s) => s.name));
+      const newServices: Service[] = packDef.services
+        .filter((s) => !existingSvcNames.has(s.name))
+        .map((s, i) => ({ ...s, id: `srv_pk_${nowMs}_${i}` }));
+
+      const existingProdNames = new Set(cur.products.map((p) => p.name));
+      const newProducts: Product[] = packDef.products
+        .filter((p) => !existingProdNames.has(p.name))
+        .map((p, i) => ({ ...p, id: `prd_pk_${nowMs}_${i}` }));
+
+      const existingRuleNames = new Set(cur.rules.map((r) => r.name));
+      const newRules: Rule[] = packDef.rules
+        .filter((r) => !existingRuleNames.has(r.name))
+        .map((r, i) => ({ ...r, id: `rul_pk_${nowMs}_${i}` }));
+
+      setState((prev) => ({
+        ...prev,
+        customFieldDefs: [...prev.customFieldDefs, ...newFields],
+        customEntityDefs: [...prev.customEntityDefs, ...newEntities],
+        services: [...prev.services, ...newServices],
+        products: [...prev.products, ...newProducts],
+        rules: [...prev.rules, ...newRules],
+        settings: {
+          ...prev.settings,
+          industryPack: packKey,
+          uiMode: packKey === 'freelancer' ? 'solo' : prev.settings.uiMode,
+        },
+        auditLogs: [
+          makeAudit(
+            'بسته صنعتی',
+            'update',
+            `بسته «${packDef.name}» نصب شد (${newFields.length} فیلد، ${newEntities.length} موجودیت، ${newServices.length} خدمت).`,
+          ),
+          ...prev.auditLogs,
+        ].slice(0, 100),
+      }));
+      pushToast(`بسته «${packDef.name}» نصب و فیلدها/خدمات تخصصی آن به سیستم اضافه شد.`);
+    },
+    [pushToast],
+  );
+
+  const saveCustomPack = useCallback(
+    (meta: { key: string; name: string; nameEn?: string; description: string }) => {
+      const pack = buildPackFromState(stateRef.current, meta);
+      setState((prev) => ({
+        ...prev,
+        customPacks: [pack, ...prev.customPacks],
+        auditLogs: [makeAudit('Pack Builder', 'create', `بسته سفارشی «${pack.name}» از پیکربندی فعلی ساخته شد.`), ...prev.auditLogs].slice(0, 100),
+      }));
+      pushToast(`بسته سفارشی «${pack.name}» ذخیره شد و آماده خروجی JSON است.`);
+      return pack;
+    },
+    [pushToast],
+  );
+
+  const importCustomPack = useCallback(
+    (pack: PackTemplate) => {
+      const normalized: PackTemplate = {
+        ...pack,
+        id: pack.id || `pack_imp_${Date.now()}`,
+        isCustom: true,
+      };
+      setState((prev) => ({
+        ...prev,
+        customPacks: [normalized, ...prev.customPacks.filter((p) => p.key !== normalized.key)],
+      }));
+      pushToast(`بسته «${normalized.name}» به کتابخانه پک‌های شما وارد شد.`);
+    },
+    [pushToast],
+  );
+
+  // --- MULTI-BRANCH (FR-CORE-04) ---
+  const addBranch = useCallback(
+    (branch: Omit<Branch, 'id'>) => {
+      const created: Branch = { ...branch, id: `br_${Date.now()}` };
+      setState((prev) => ({
+        ...prev,
+        branches: [...prev.branches, created],
+        auditLogs: [makeAudit('شعبه‌ها', 'create', `شعبه «${created.name}» اضافه شد.`), ...prev.auditLogs].slice(0, 100),
+      }));
+      pushToast(`شعبه «${created.name}» ایجاد شد.`);
+    },
+    [pushToast],
+  );
+
+  const updateBranch = useCallback((id: string, patch: Partial<Branch>) => {
+    setState((prev) => ({
+      ...prev,
+      branches: prev.branches.map((b) => (b.id === id ? { ...b, ...patch } : b)),
+    }));
+  }, []);
+
+  const deleteBranch = useCallback(
+    (id: string) => {
+      if (stateRef.current.branches.length <= 1) {
+        pushToast('حداقل یک شعبه فعال باید وجود داشته باشد.', 'error');
+        return;
+      }
+      setState((prev) => ({
+        ...prev,
+        branches: prev.branches.filter((b) => b.id !== id),
+        settings:
+          prev.settings.activeBranchId === id
+            ? { ...prev.settings, activeBranchId: 'all' }
+            : prev.settings,
+      }));
+      pushToast('شعبه حذف شد.', 'info');
+    },
+    [pushToast],
+  );
 
   const updateSettings = useCallback(
     (patch: Partial<BusinessSettings>) => {
@@ -2519,23 +4202,66 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         createQuote,
         createQuoteVersion,
         updateQuoteStatus,
+        saveWorkflowDefinition,
+        publishWorkflowDefinition,
+        cloneWorkflowDraft,
+        deleteWorkflowDefinition,
         createWorkflowInstance,
         decideWorkflowStep,
+        claimWorkflowStep,
+        reassignWorkflowStep,
+        delegateWorkflowStep,
+        advanceWorkflowTimer,
         addContentItem,
         updateContentStatus,
+        updateContentItem,
+        addCampaign,
+        launchCampaign,
+        simulateCampaignStats,
+        addMediaAsset,
+        deleteMediaAsset,
+        addLandingForm,
+        submitLandingForm,
         addTask,
         toggleTaskDone,
         addTicket,
         updateTicket,
+        addTicketMessage,
+        mergeTickets,
+        checkAndEscalateTickets,
         addKbArticle,
+        updateKbArticle,
+        restoreKbVersion,
         voteKbHelpful,
         submitNpsSurvey,
         triggerNpsPrompt,
         toggleRule,
         addRule,
+        updateRule,
+        deleteRule,
+        updateAutomationPolicy,
+        dryRunRule,
         sendSimulatedSms,
         runAutomationNow,
+        retryNotification,
+        processNotificationRetries,
+        simulateDeliveryFailure,
         clearOutbox,
+        addSayadiCheque,
+        updateSayadiChequeStatus,
+        processSandboxPayment,
+        updateDashboardWidgets,
+        resetDashboardWidgets,
+        addScheduledReport,
+        toggleScheduledReport,
+        deleteScheduledReport,
+        runScheduledReportNow,
+        applyIndustryPack,
+        saveCustomPack,
+        importCustomPack,
+        addBranch,
+        updateBranch,
+        deleteBranch,
         updateSettings,
         resetDemoData,
         exportStateJson,
