@@ -34,6 +34,7 @@ import type {
   Contract,
   ContractStatus,
   Coupon,
+  CrmUser,
   CsvImportBatch,
   CustomEntityDef,
   CustomEntityRecord,
@@ -45,6 +46,8 @@ import type {
   CustomerSegment,
   DashboardPersonaRole,
   DashboardWidgetConfig,
+  DataAccessLogEntry,
+  DataScope,
   DeploymentCheckItem,
   EntityRelationDef,
   IndustryPack,
@@ -73,6 +76,8 @@ import type {
   PaymentAllocation,
   PaymentMethod,
   PaymentTransaction,
+  PermissionAction,
+  PermissionResource,
   PipelineStage,
   PipelineStageConfig,
   PriceList,
@@ -83,6 +88,7 @@ import type {
   QuoteStatus,
   Resource,
   ResourceTimeOff,
+  RoleDefinition,
   Rule,
   RuleTriggerType,
   SalesLead,
@@ -100,12 +106,15 @@ import type {
   StockMovement,
   SurveyType,
   Task,
+  TeamDefinition,
+  TenantMeta,
   Ticket,
   TicketAttachment,
   TicketChannel,
   TicketMessage,
   TicketSeverity,
   TimeEntry,
+  TrashEntityType,
   UtmTouch,
   WaitlistEntry,
   WarrantyClaim,
@@ -140,12 +149,18 @@ import {
   daysUntilJalaliMonthDay,
   getSegmentMatchingCustomers,
 } from '../utils/crmHelpers';
+import { CURRENT_SCHEMA_VERSION, migrateTenantBackup } from '../utils/backupMigration';
+import { generateScaleDataset } from '../utils/demoGenerator';
 import { formatDocumentNumber } from '../utils/i18n';
 import { formatJalali } from '../utils/jalali';
 import { getDateKeyFromIso, hasConflict, isHolidayOrTimeOff, isValidIranMobile, isValidNationalId } from '../utils/overlap';
+import { DEFAULT_SECURITY_POLICY, getEffectiveUserAndRole } from '../utils/security';
 import { evaluateTicketSla, isTicketClosedStatus } from '../utils/slaEngine';
 
 const STORAGE_KEY = 'clientflow_state_v2';
+const TENANTS_REGISTRY_KEY = 'clientflow_tenants_registry_v1';
+const ACTIVE_TENANT_KEY = 'clientflow_active_tenant_id_v1';
+const getTenantStorageKey = (tenantId: string) => `clientflow_tenant_data_${tenantId}`;
 
 export type ToastMessage = {
   id: string;
@@ -267,6 +282,11 @@ function mergeLoadedState(parsed: Partial<AppState> | null | undefined): AppStat
         ...(parsed.automationPolicy?.channelDailyCaps ?? {}),
       },
     },
+    roles: parsed.roles ?? fallback.roles,
+    teams: parsed.teams ?? fallback.teams,
+    users: parsed.users ?? fallback.users,
+    dataAccessLogs: parsed.dataAccessLogs ?? fallback.dataAccessLogs ?? [],
+    schemaVersion: CURRENT_SCHEMA_VERSION,
     settings: {
       ...fallback.settings,
       ...(parsed.settings ?? {}),
@@ -275,6 +295,22 @@ function mergeLoadedState(parsed: Partial<AppState> | null | undefined): AppStat
         ...fallback.settings.numbering,
         ...(parsed.settings?.numbering ?? {}),
       },
+      profile: {
+        ...(fallback.settings.profile ?? {}),
+        ...(parsed.settings?.profile ?? {}),
+      },
+      notifications: {
+        ...fallback.settings.notifications!,
+        ...(parsed.settings?.notifications ?? {}),
+      },
+      security: {
+        ...DEFAULT_SECURITY_POLICY,
+        ...(fallback.settings.security ?? {}),
+        ...(parsed.settings?.security ?? {}),
+      },
+      taxRatePct: parsed.settings?.taxRatePct ?? fallback.settings.taxRatePct ?? 9,
+      currency: parsed.settings?.currency ?? fallback.settings.currency ?? 'toman',
+      defaultUnit: parsed.settings?.defaultUnit ?? fallback.settings.defaultUnit ?? 'عدد',
       dashboardWidgets: (() => {
         const current = parsed.settings?.dashboardWidgets;
         if (!current || current.length === 0) return fallback.settings.dashboardWidgets;
@@ -286,12 +322,48 @@ function mergeLoadedState(parsed: Partial<AppState> | null | undefined): AppStat
   };
 }
 
-function loadInitialState(): AppState {
+function loadTenantRegistry(defaultState: AppState): { tenants: TenantMeta[]; activeTenantId: string } {
+  const nowIso = new Date().toISOString();
+  const fallbackTenant: TenantMeta = {
+    id: DEFAULT_TENANT_ID,
+    name: defaultState.settings.businessName,
+    industryPack: defaultState.settings.industryPack,
+    customerCount: defaultState.customers.filter((c) => !c.isDeleted).length,
+    createdAt: nowIso,
+    updatedAt: nowIso,
+  };
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return createInitialState();
-    const parsed = JSON.parse(raw) as Partial<AppState>;
-    return mergeLoadedState(parsed);
+    const rawReg = localStorage.getItem(TENANTS_REGISTRY_KEY);
+    const savedActive = localStorage.getItem(ACTIVE_TENANT_KEY);
+    if (!rawReg) {
+      localStorage.setItem(TENANTS_REGISTRY_KEY, JSON.stringify([fallbackTenant]));
+      localStorage.setItem(ACTIVE_TENANT_KEY, DEFAULT_TENANT_ID);
+      return { tenants: [fallbackTenant], activeTenantId: DEFAULT_TENANT_ID };
+    }
+    const parsed = JSON.parse(rawReg) as TenantMeta[];
+    const list = Array.isArray(parsed) && parsed.length > 0 ? parsed : [fallbackTenant];
+    const activeId = list.some((t) => t.id === savedActive) ? (savedActive as string) : list[0].id;
+    return { tenants: list, activeTenantId: activeId };
+  } catch {
+    return { tenants: [fallbackTenant], activeTenantId: DEFAULT_TENANT_ID };
+  }
+}
+
+function loadTenantState(tenantId: string): AppState {
+  try {
+    const tenantRaw = localStorage.getItem(getTenantStorageKey(tenantId));
+    if (tenantRaw) {
+      return mergeLoadedState(JSON.parse(tenantRaw) as Partial<AppState>);
+    }
+    if (tenantId === DEFAULT_TENANT_ID) {
+      const legacyRaw = localStorage.getItem(STORAGE_KEY);
+      if (legacyRaw) {
+        const migrated = mergeLoadedState(JSON.parse(legacyRaw) as Partial<AppState>);
+        localStorage.setItem(getTenantStorageKey(DEFAULT_TENANT_ID), JSON.stringify(migrated));
+        return migrated;
+      }
+    }
+    return createInitialState();
   } catch {
     return createInitialState();
   }
@@ -723,9 +795,44 @@ type ClientFlowContextValue = {
   updateSettings: (patch: Partial<BusinessSettings>) => void;
   resetDemoData: () => void;
   exportStateJson: () => string;
-  importStateJson: (raw: string) => { ok: boolean; error?: string };
+  importStateJson: (raw: string) => {
+    ok: boolean;
+    error?: string;
+    migrationInfo?: { fromVersion: number; toVersion: number; steps: string[] };
+  };
   exportConfigJson: () => string;
   importConfigJson: (raw: string) => { ok: boolean; error?: string };
+
+  // Phase 11 — Administration (RBAC, Multi-Tenant, Security, Demo Scale, Trash)
+  tenants: TenantMeta[];
+  activeTenantId: string;
+  createTenant: (data: { name: string; industryPack: IndustryPack; demoCount?: 10 | 100 | 0 }) => void;
+  switchTenant: (tenantId: string) => void;
+  renameTenant: (tenantId: string, name: string) => void;
+  deleteTenant: (tenantId: string) => void;
+  switchActiveUser: (userId: string) => void;
+  addCrmUser: (user: Omit<CrmUser, 'id' | 'createdAt'>) => void;
+  updateCrmUser: (id: string, patch: Partial<CrmUser>) => void;
+  deleteCrmUser: (id: string) => void;
+  addRoleDefinition: (role: Omit<RoleDefinition, 'id'>) => void;
+  updateRolePermission: (
+    roleId: string,
+    resource: PermissionResource,
+    action: PermissionAction,
+    allowed: boolean,
+  ) => void;
+  updateRoleMeta: (roleId: string, patch: Partial<Pick<RoleDefinition, 'name' | 'description' | 'dataScope' | 'maskPii' | 'baseRole'>>) => void;
+  deleteRoleDefinition: (roleId: string) => void;
+  addTeamDefinition: (team: Omit<TeamDefinition, 'id'>) => void;
+  deleteTeamDefinition: (teamId: string) => void;
+  logDataAccess: (entry: Omit<DataAccessLogEntry, 'id' | 'at' | 'actorUserId' | 'actorName' | 'actorRole'>) => void;
+  clearDataAccessLogs: () => void;
+  softDeleteEntity: (entityType: TrashEntityType, id: string) => void;
+  restoreEntity: (entityType: TrashEntityType, id: string) => void;
+  permanentlyDeleteEntity: (entityType: TrashEntityType, id: string) => void;
+  emptyTrash: () => void;
+  generateScaleDemoData: (count: 10 | 100 | 1000 | 10000, append?: boolean) => void;
+  clearTenantData: (keepConfig?: boolean) => void;
 };
 
 const ClientFlowContext = createContext<ClientFlowContextValue | null>(null);
@@ -740,7 +847,26 @@ const DEFAULT_STAGE_PROB: Record<PipelineStage, number> = {
 };
 
 export function ClientFlowProvider({ children }: { children: React.ReactNode }) {
-  const [state, setState] = useState<AppState>(() => loadInitialState());
+  const initialBootstrapRef = useRef<{
+    state: AppState;
+    tenants: TenantMeta[];
+    activeTenantId: string;
+  } | null>(null);
+  if (!initialBootstrapRef.current) {
+    const savedActive = localStorage.getItem(ACTIVE_TENANT_KEY) || DEFAULT_TENANT_ID;
+    const loadedState = loadTenantState(savedActive);
+    const reg = loadTenantRegistry(loadedState);
+    const resolvedState = reg.activeTenantId === savedActive ? loadedState : loadTenantState(reg.activeTenantId);
+    initialBootstrapRef.current = {
+      state: resolvedState,
+      tenants: reg.tenants,
+      activeTenantId: reg.activeTenantId,
+    };
+  }
+
+  const [state, setState] = useState<AppState>(() => initialBootstrapRef.current!.state);
+  const [tenants, setTenants] = useState<TenantMeta[]>(() => initialBootstrapRef.current!.tenants);
+  const [activeTenantId, setActiveTenantId] = useState<string>(() => initialBootstrapRef.current!.activeTenantId);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [pendingNps, setPendingNps] = useState<PendingNpsPrompt | null>(null);
   const [activeCall, setActiveCall] = useState<ActiveCallSession | null>(null);
@@ -749,11 +875,35 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
 
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      const serialized = JSON.stringify(state);
+      localStorage.setItem(getTenantStorageKey(activeTenantId), serialized);
+      if (activeTenantId === DEFAULT_TENANT_ID) {
+        localStorage.setItem(STORAGE_KEY, serialized);
+      }
     } catch {
-      // ignore quota errors
+      // ignore quota errors gracefully when generating huge 10k datasets
     }
-  }, [state]);
+    setTenants((prev) => {
+      const activeCount = state.customers.filter((c) => !c.isDeleted).length;
+      const next = prev.map((t) =>
+        t.id === activeTenantId
+          ? {
+              ...t,
+              name: state.settings.businessName,
+              industryPack: state.settings.industryPack,
+              customerCount: activeCount,
+              updatedAt: new Date().toISOString(),
+            }
+          : t,
+      );
+      try {
+        localStorage.setItem(TENANTS_REGISTRY_KEY, JSON.stringify(next));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  }, [state, activeTenantId]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -1435,18 +1585,26 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         return { ok: false, error: 'کارشناس مجاز به حذف مشتری نیست.' };
       }
       const target = stateRef.current.customers.find((c) => c.id === id);
+      const { activeUser } = getEffectiveUserAndRole(stateRef.current);
+      const nowIso = new Date().toISOString();
       setState((prev) => ({
         ...prev,
-        customers: prev.customers.filter((c) => c.id !== id),
-        customerRelations: prev.customerRelations.filter(
-          (r) => r.fromCustomerId !== id && r.toCustomerId !== id,
+        customers: prev.customers.map((c) =>
+          c.id === id
+            ? {
+                ...c,
+                isDeleted: true,
+                deletedAt: nowIso,
+                deletedBy: activeUser?.name ?? 'مدیر سیستم',
+              }
+            : c,
         ),
         auditLogs: [
-          makeAudit('مشتری', 'delete', `مشتری «${target?.name ?? id}» حذف شد.`),
+          makeAudit('مشتری', 'delete', `مشتری «${target?.name ?? id}» به سطل زباله منتقل شد (حذف نرم).`),
           ...prev.auditLogs,
         ].slice(0, 100),
       }));
-      pushToast('مشتری حذف شد.', 'info');
+      pushToast('مشتری به سطل زباله منتقل شد و از بخش تنظیمات قابل بازیابی است.', 'info');
       return { ok: true };
     },
     [pushToast],
@@ -7620,37 +7778,573 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
   const resetDemoData = useCallback(() => {
     const fresh = createInitialState();
     setState(fresh);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(fresh));
+    try {
+      localStorage.setItem(getTenantStorageKey(activeTenantId), JSON.stringify(fresh));
+    } catch {
+      // ignore
+    }
     pushToast('داده‌های نمونه به حالت اولیه بازنشانی شدند.', 'info');
-  }, [pushToast]);
+  }, [activeTenantId, pushToast]);
 
   const exportStateJson = useCallback(() => {
+    const activeTenant = tenants.find((t) => t.id === activeTenantId);
     return JSON.stringify(
       {
         exportedAt: new Date().toISOString(),
-        schemaVersion: '3.0',
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+        tenantId: activeTenantId,
+        tenantName: activeTenant?.name ?? stateRef.current.settings.businessName,
         data: stateRef.current,
       },
       null,
       2,
     );
-  }, []);
+  }, [activeTenantId, tenants]);
 
   const importStateJson = useCallback(
     (raw: string) => {
-      try {
-        const parsed = JSON.parse(raw) as { data?: Partial<AppState> } & Partial<AppState>;
-        const payload = parsed.data ?? parsed;
-        if (!payload || !Array.isArray(payload.customers)) {
-          return { ok: false, error: 'ساختار فایل JSON معتبر نیست.' };
-        }
-        const next = mergeLoadedState(payload);
-        setState(next);
-        pushToast('پشتیبان JSON با موفقیت بازیابی شد.');
-        return { ok: true };
-      } catch {
-        return { ok: false, error: 'فایل JSON قابل خواندن نیست.' };
+      const res = migrateTenantBackup(raw);
+      if (!res.ok) {
+        return { ok: false, error: res.error };
       }
+      const next = mergeLoadedState(res.data);
+      setState(next);
+      pushToast(
+        `پشتیبان با موفقیت بازیابی شد (اسکیما v${res.fromVersion} → v${res.toVersion}).`,
+      );
+      return {
+        ok: true,
+        migrationInfo: {
+          fromVersion: res.fromVersion,
+          toVersion: res.toVersion,
+          steps: res.steps,
+        },
+      };
+    },
+    [pushToast],
+  );
+
+  // --- PHASE 11: ADMINISTRATION ACTIONS ---
+  const createTenant = useCallback(
+    (data: { name: string; industryPack: IndustryPack; demoCount?: 10 | 100 | 0 }) => {
+      const id = `tenant_${Date.now().toString(36)}`;
+      const nowIso = new Date().toISOString();
+      const base = createInitialState();
+      const blankPackState: AppState = {
+        ...base,
+        settings: {
+          ...base.settings,
+          businessName: data.name.trim() || 'کسب‌وکار جدید',
+          industryPack: data.industryPack,
+        },
+      };
+      if (data.demoCount === 0) {
+        blankPackState.customers = [];
+        blankPackState.orders = [];
+        blankPackState.invoices = [];
+        blankPackState.appointments = [];
+        blankPackState.leads = [];
+        blankPackState.opportunities = [];
+        blankPackState.tickets = [];
+        blankPackState.interactions = [];
+        blankPackState.tasks = [];
+      } else if (data.demoCount === 10 || data.demoCount === 100) {
+        const gen = generateScaleDataset(
+          data.demoCount,
+          data.industryPack,
+          blankPackState.branches.map((b) => b.id),
+          blankPackState.settings.salesTeam,
+          blankPackState.services.map((s) => s.id),
+          blankPackState.resources.map((r) => r.id),
+          blankPackState.products.map((p) => ({ id: p.id, name: p.name, price: p.price })),
+        );
+        blankPackState.customers = gen.customers;
+        blankPackState.orders = gen.orders;
+        blankPackState.invoices = gen.invoices;
+        blankPackState.appointments = gen.appointments;
+        blankPackState.leads = gen.leads;
+        blankPackState.tickets = gen.tickets;
+        blankPackState.interactions = gen.interactions;
+      }
+      const meta: TenantMeta = {
+        id,
+        name: blankPackState.settings.businessName,
+        industryPack: data.industryPack,
+        customerCount: blankPackState.customers.length,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+      try {
+        localStorage.setItem(getTenantStorageKey(id), JSON.stringify(blankPackState));
+        localStorage.setItem(ACTIVE_TENANT_KEY, id);
+      } catch {
+        // ignore
+      }
+      setTenants((prev) => [meta, ...prev]);
+      setActiveTenantId(id);
+      setState(blankPackState);
+      pushToast(`کسب‌وکار (Tenant) جدید «${meta.name}» ایجاد و فعال شد.`);
+    },
+    [pushToast],
+  );
+
+  const switchTenant = useCallback(
+    (tenantId: string) => {
+      if (tenantId === activeTenantId) return;
+      try {
+        localStorage.setItem(getTenantStorageKey(activeTenantId), JSON.stringify(stateRef.current));
+        localStorage.setItem(ACTIVE_TENANT_KEY, tenantId);
+      } catch {
+        // ignore
+      }
+      const loaded = loadTenantState(tenantId);
+      setActiveTenantId(tenantId);
+      setState(loaded);
+      pushToast(`محیط کاری به «${loaded.settings.businessName}» تغییر یافت.`);
+    },
+    [activeTenantId, pushToast],
+  );
+
+  const renameTenant = useCallback(
+    (tenantId: string, name: string) => {
+      const trimmed = name.trim();
+      if (!trimmed) return;
+      setTenants((prev) => prev.map((t) => (t.id === tenantId ? { ...t, name: trimmed } : t)));
+      if (tenantId === activeTenantId) {
+        setState((prev) => ({
+          ...prev,
+          settings: { ...prev.settings, businessName: trimmed },
+        }));
+      } else {
+        const other = loadTenantState(tenantId);
+        other.settings.businessName = trimmed;
+        try {
+          localStorage.setItem(getTenantStorageKey(tenantId), JSON.stringify(other));
+        } catch {
+          // ignore
+        }
+      }
+      pushToast(`نام Tenant به «${trimmed}» تغییر کرد.`);
+    },
+    [activeTenantId, pushToast],
+  );
+
+  const deleteTenant = useCallback(
+    (tenantId: string) => {
+      if (tenants.length <= 1) {
+        pushToast('حداقل یک Tenant فعال باید باقی بماند.', 'error');
+        return;
+      }
+      try {
+        localStorage.removeItem(getTenantStorageKey(tenantId));
+      } catch {
+        // ignore
+      }
+      const remaining = tenants.filter((t) => t.id !== tenantId);
+      setTenants(remaining);
+      if (activeTenantId === tenantId) {
+        const nextId = remaining[0].id;
+        try {
+          localStorage.setItem(ACTIVE_TENANT_KEY, nextId);
+        } catch {
+          // ignore
+        }
+        setActiveTenantId(nextId);
+        setState(loadTenantState(nextId));
+      }
+      pushToast('Tenant از حافظه مرورگر حذف شد.', 'info');
+    },
+    [activeTenantId, pushToast, tenants],
+  );
+
+  const switchActiveUser = useCallback(
+    (userId: string) => {
+      const targetUser = (stateRef.current.users ?? []).find((u) => u.id === userId);
+      if (!targetUser) return;
+      const role = (stateRef.current.roles ?? []).find((r) => r.id === targetUser.roleId);
+      const nextBaseRole = role?.baseRole ?? 'staff';
+      const nowIso = new Date().toISOString();
+      setState((prev) => ({
+        ...prev,
+        users: (prev.users ?? []).map((u) => (u.id === userId ? { ...u, lastLoginAt: nowIso } : u)),
+        settings: {
+          ...prev.settings,
+          activeUserId: userId,
+          role: nextBaseRole,
+        },
+        auditLogs: [
+          makeAudit('کاربران و دسترسی', 'update', `کاربر فعال به «${targetUser.name}» (${role?.name ?? nextBaseRole}) تغییر یافت.`),
+          ...prev.auditLogs,
+        ].slice(0, 100),
+      }));
+      pushToast(`حساب فعال: ${targetUser.name} (${role?.name ?? nextBaseRole})`);
+    },
+    [pushToast],
+  );
+
+  const addCrmUser = useCallback(
+    (user: Omit<CrmUser, 'id' | 'createdAt'>) => {
+      const created: CrmUser = {
+        ...user,
+        id: `usr_${Date.now()}`,
+        createdAt: new Date().toISOString(),
+      };
+      setState((prev) => ({
+        ...prev,
+        users: [...(prev.users ?? []), created],
+        settings: {
+          ...prev.settings,
+          salesTeam: prev.settings.salesTeam.includes(created.name)
+            ? prev.settings.salesTeam
+            : [...prev.settings.salesTeam, created.name],
+        },
+        auditLogs: [makeAudit('کاربران', 'create', `کاربر «${created.name}» ایجاد شد.`), ...prev.auditLogs].slice(0, 100),
+      }));
+      pushToast(`کاربر «${created.name}» اضافه شد.`);
+    },
+    [pushToast],
+  );
+
+  const updateCrmUser = useCallback((id: string, patch: Partial<CrmUser>) => {
+    setState((prev) => {
+      const nextUsers = (prev.users ?? []).map((u) => (u.id === id ? { ...u, ...patch } : u));
+      let nextRole = prev.settings.role;
+      if (prev.settings.activeUserId === id && patch.roleId) {
+        const roleDef = (prev.roles ?? []).find((r) => r.id === patch.roleId);
+        if (roleDef) nextRole = roleDef.baseRole;
+      }
+      return {
+        ...prev,
+        users: nextUsers,
+        settings: { ...prev.settings, role: nextRole },
+      };
+    });
+  }, []);
+
+  const deleteCrmUser = useCallback(
+    (id: string) => {
+      if ((stateRef.current.users ?? []).length <= 1) {
+        pushToast('حداقل یک کاربر باید در سیستم وجود داشته باشد.', 'error');
+        return;
+      }
+      setState((prev) => {
+        const remaining = (prev.users ?? []).filter((u) => u.id !== id);
+        const nextActive =
+          prev.settings.activeUserId === id ? remaining[0]?.id : prev.settings.activeUserId;
+        return {
+          ...prev,
+          users: remaining,
+          settings: { ...prev.settings, activeUserId: nextActive },
+        };
+      });
+      pushToast('کاربر حذف شد.', 'info');
+    },
+    [pushToast],
+  );
+
+  const addRoleDefinition = useCallback(
+    (role: Omit<RoleDefinition, 'id'>) => {
+      const created: RoleDefinition = { ...role, id: `role_${Date.now()}` };
+      setState((prev) => ({
+        ...prev,
+        roles: [...(prev.roles ?? []), created],
+        auditLogs: [makeAudit('نقش‌ها', 'create', `نقش «${created.name}» ایجاد شد.`), ...prev.auditLogs].slice(0, 100),
+      }));
+      pushToast(`نقش «${created.name}» اضافه شد.`);
+    },
+    [pushToast],
+  );
+
+  const updateRolePermission = useCallback(
+    (roleId: string, resource: PermissionResource, action: PermissionAction, allowed: boolean) => {
+      setState((prev) => ({
+        ...prev,
+        roles: (prev.roles ?? []).map((r) => {
+          if (r.id !== roleId) return r;
+          const current = r.permissions[resource] ?? [];
+          const next = allowed
+            ? Array.from(new Set([...current, action]))
+            : current.filter((a) => a !== action);
+          return {
+            ...r,
+            permissions: {
+              ...r.permissions,
+              [resource]: next,
+            },
+          };
+        }),
+      }));
+    },
+    [],
+  );
+
+  const updateRoleMeta = useCallback(
+    (
+      roleId: string,
+      patch: Partial<Pick<RoleDefinition, 'name' | 'description' | 'dataScope' | 'maskPii' | 'baseRole'>>,
+    ) => {
+      setState((prev) => ({
+        ...prev,
+        roles: (prev.roles ?? []).map((r) => (r.id === roleId ? { ...r, ...patch } : r)),
+      }));
+    },
+    [],
+  );
+
+  const deleteRoleDefinition = useCallback(
+    (roleId: string) => {
+      const target = (stateRef.current.roles ?? []).find((r) => r.id === roleId);
+      if (target?.isSystem) {
+        pushToast('نقش‌های سیستمی پایه قابل حذف نیستند.', 'error');
+        return;
+      }
+      setState((prev) => ({
+        ...prev,
+        roles: (prev.roles ?? []).filter((r) => r.id !== roleId),
+      }));
+      pushToast('نقش حذف شد.', 'info');
+    },
+    [pushToast],
+  );
+
+  const addTeamDefinition = useCallback(
+    (team: Omit<TeamDefinition, 'id'>) => {
+      const created: TeamDefinition = { ...team, id: `team_${Date.now()}` };
+      setState((prev) => ({
+        ...prev,
+        teams: [...(prev.teams ?? []), created],
+      }));
+      pushToast(`تیم «${created.name}» ایجاد شد.`);
+    },
+    [pushToast],
+  );
+
+  const deleteTeamDefinition = useCallback(
+    (teamId: string) => {
+      setState((prev) => ({
+        ...prev,
+        teams: (prev.teams ?? []).filter((t) => t.id !== teamId),
+      }));
+      pushToast('تیم حذف شد.', 'info');
+    },
+    [pushToast],
+  );
+
+  const logDataAccess = useCallback(
+    (entry: Omit<DataAccessLogEntry, 'id' | 'at' | 'actorUserId' | 'actorName' | 'actorRole'>) => {
+      const cur = stateRef.current;
+      if (cur.settings.security?.logCustomerAccess === false) return;
+      const { activeUser, activeRole } = getEffectiveUserAndRole(cur);
+      const actorName = activeUser?.name ?? (cur.settings.role === 'admin' ? 'مدیر سیستم' : 'کارشناس');
+      const actorRole = activeRole?.name ?? cur.settings.role;
+      const nowMs = Date.now();
+      const duplicateRecent = (cur.dataAccessLogs ?? []).some(
+        (l) =>
+          l.entityId === entry.entityId &&
+          l.action === entry.action &&
+          l.actorName === actorName &&
+          nowMs - new Date(l.at).getTime() < 60_000,
+      );
+      if (duplicateRecent) return;
+
+      const logItem: DataAccessLogEntry = {
+        ...entry,
+        id: `dal_${nowMs}_${Math.random().toString(36).slice(2, 6)}`,
+        actorUserId: activeUser?.id,
+        actorName,
+        actorRole,
+        at: new Date(nowMs).toISOString(),
+      };
+      setState((prev) => ({
+        ...prev,
+        dataAccessLogs: [logItem, ...(prev.dataAccessLogs ?? [])].slice(0, 200),
+      }));
+    },
+    [],
+  );
+
+  const clearDataAccessLogs = useCallback(() => {
+    setState((prev) => ({ ...prev, dataAccessLogs: [] }));
+    pushToast('تاریخچه دسترسی به پرونده‌ها پاک‌سازی شد.', 'info');
+  }, [pushToast]);
+
+  const softDeleteEntity = useCallback(
+    (entityType: TrashEntityType, id: string) => {
+      const nowIso = new Date().toISOString();
+      const { activeUser } = getEffectiveUserAndRole(stateRef.current);
+      const actorName = activeUser?.name ?? 'مدیر سیستم';
+      const mark = <T extends { id: string }>(arr: T[]) =>
+        arr.map((item) =>
+          item.id === id
+            ? { ...item, isDeleted: true, deletedAt: nowIso, deletedBy: actorName }
+            : item,
+        );
+
+      setState((prev) => {
+        const next = { ...prev };
+        if (entityType === 'customer') next.customers = mark(prev.customers);
+        else if (entityType === 'lead') next.leads = mark(prev.leads);
+        else if (entityType === 'opportunity') next.opportunities = mark(prev.opportunities);
+        else if (entityType === 'order') next.orders = mark(prev.orders);
+        else if (entityType === 'appointment') next.appointments = mark(prev.appointments);
+        else if (entityType === 'ticket') next.tickets = mark(prev.tickets);
+        else if (entityType === 'task') next.tasks = mark(prev.tasks);
+        else if (entityType === 'product') next.products = mark(prev.products);
+        next.auditLogs = [
+          makeAudit('سطل زباله', 'delete', `رکورد (${entityType}: ${id}) به سطل زباله منتقل شد.`),
+          ...prev.auditLogs,
+        ].slice(0, 100);
+        return next;
+      });
+      pushToast('رکورد به سطل زباله منتقل شد.', 'info');
+    },
+    [pushToast],
+  );
+
+  const restoreEntity = useCallback(
+    (entityType: TrashEntityType, id: string) => {
+      const unmark = <T extends { id: string }>(arr: T[]) =>
+        arr.map((item) =>
+          item.id === id
+            ? { ...item, isDeleted: false, deletedAt: undefined, deletedBy: undefined }
+            : item,
+        );
+
+      setState((prev) => {
+        const next = { ...prev };
+        if (entityType === 'customer') next.customers = unmark(prev.customers);
+        else if (entityType === 'lead') next.leads = unmark(prev.leads);
+        else if (entityType === 'opportunity') next.opportunities = unmark(prev.opportunities);
+        else if (entityType === 'order') next.orders = unmark(prev.orders);
+        else if (entityType === 'appointment') next.appointments = unmark(prev.appointments);
+        else if (entityType === 'ticket') next.tickets = unmark(prev.tickets);
+        else if (entityType === 'task') next.tasks = unmark(prev.tasks);
+        else if (entityType === 'product') next.products = unmark(prev.products);
+        next.auditLogs = [
+          makeAudit('سطل زباله', 'update', `رکورد (${entityType}: ${id}) از سطل زباله بازیابی شد.`),
+          ...prev.auditLogs,
+        ].slice(0, 100);
+        return next;
+      });
+      pushToast('رکورد با موفقیت بازیابی شد.');
+    },
+    [pushToast],
+  );
+
+  const permanentlyDeleteEntity = useCallback(
+    (entityType: TrashEntityType, id: string) => {
+      setState((prev) => {
+        const next = { ...prev };
+        if (entityType === 'customer') next.customers = prev.customers.filter((x) => x.id !== id);
+        else if (entityType === 'lead') next.leads = prev.leads.filter((x) => x.id !== id);
+        else if (entityType === 'opportunity') next.opportunities = prev.opportunities.filter((x) => x.id !== id);
+        else if (entityType === 'order') next.orders = prev.orders.filter((x) => x.id !== id);
+        else if (entityType === 'appointment') next.appointments = prev.appointments.filter((x) => x.id !== id);
+        else if (entityType === 'ticket') next.tickets = prev.tickets.filter((x) => x.id !== id);
+        else if (entityType === 'task') next.tasks = prev.tasks.filter((x) => x.id !== id);
+        else if (entityType === 'product') next.products = prev.products.filter((x) => x.id !== id);
+        return next;
+      });
+      pushToast('رکورد برای همیشه حذف شد.', 'info');
+    },
+    [pushToast],
+  );
+
+  const emptyTrash = useCallback(() => {
+    setState((prev) => ({
+      ...prev,
+      customers: prev.customers.filter((x) => !x.isDeleted),
+      leads: prev.leads.filter((x) => !x.isDeleted),
+      opportunities: prev.opportunities.filter((x) => !x.isDeleted),
+      orders: prev.orders.filter((x) => !x.isDeleted),
+      appointments: prev.appointments.filter((x) => !x.isDeleted),
+      tickets: prev.tickets.filter((x) => !x.isDeleted),
+      tasks: prev.tasks.filter((x) => !x.isDeleted),
+      products: prev.products.filter((x) => !x.isDeleted),
+      auditLogs: [makeAudit('سطل زباله', 'delete', 'سطل زباله سیستم خالی شد.'), ...prev.auditLogs].slice(0, 100),
+    }));
+    pushToast('سطل زباله خالی شد.', 'info');
+  }, [pushToast]);
+
+  const generateScaleDemoData = useCallback(
+    (count: 10 | 100 | 1000 | 10000, append = false) => {
+      const cur = stateRef.current;
+      const gen = generateScaleDataset(
+        count,
+        cur.settings.industryPack,
+        cur.branches.map((b) => b.id),
+        cur.settings.salesTeam,
+        cur.services.map((s) => s.id),
+        cur.resources.map((r) => r.id),
+        cur.products.map((p) => ({ id: p.id, name: p.name, price: p.price })),
+      );
+
+      setState((prev) => ({
+        ...prev,
+        customers: append ? [...gen.customers, ...prev.customers] : gen.customers,
+        orders: append ? [...gen.orders, ...prev.orders] : gen.orders,
+        invoices: append ? [...gen.invoices, ...prev.invoices] : gen.invoices,
+        appointments: append ? [...gen.appointments, ...prev.appointments] : gen.appointments,
+        leads: append ? [...gen.leads, ...prev.leads] : gen.leads,
+        tickets: append ? [...gen.tickets, ...prev.tickets] : gen.tickets,
+        interactions: append ? [...gen.interactions, ...prev.interactions] : gen.interactions,
+        auditLogs: [
+          makeAudit('تولید داده تستی', 'create', `${count.toLocaleString('fa-IR')} مشتری و داده‌های مرتبط تولید شد (${append ? 'افزودن' : 'جایگزینی'}).`),
+          ...prev.auditLogs,
+        ].slice(0, 100),
+      }));
+      pushToast(`تولید ${count.toLocaleString('fa-IR')} رکورد مشتری تستی با موفقیت انجام شد.`);
+    },
+    [pushToast],
+  );
+
+  const clearTenantData = useCallback(
+    (keepConfig = true) => {
+      setState((prev) => {
+        const blankBase = keepConfig ? prev : createInitialState();
+        return {
+          ...blankBase,
+          customers: [],
+          customerRelations: [],
+          customerSegments: [],
+          consentLogs: [],
+          csvImportBatches: [],
+          customEntityRecords: [],
+          interactions: [],
+          waitlist: [],
+          appointments: [],
+          orders: [],
+          orderLogs: [],
+          invoices: [],
+          paymentAllocations: [],
+          sayadiCheques: [],
+          paymentTransactions: [],
+          contracts: [],
+          warranties: [],
+          stockMovements: [],
+          projects: [],
+          timeEntries: [],
+          leads: [],
+          opportunities: [],
+          quotes: [],
+          commissionLedger: [],
+          workflows: [],
+          contentItems: [],
+          campaigns: [],
+          utmTouches: [],
+          loyaltyTransactions: [],
+          tasks: [],
+          tickets: [],
+          ticketMessages: [],
+          outbox: [],
+          automationLogs: [],
+          callLogs: [],
+          npsSurveys: [],
+          dataAccessLogs: [],
+          auditLogs: [makeAudit('مدیریت داده', 'delete', 'تمام داده‌های عملیاتی Tenant پاک‌سازی شد.')],
+        };
+      });
+      pushToast('تمام داده‌های مشتریان و تراکنش‌ها پاک‌سازی شد.', 'info');
     },
     [pushToast],
   );
@@ -7932,6 +8626,30 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         importStateJson,
         exportConfigJson,
         importConfigJson,
+        tenants,
+        activeTenantId,
+        createTenant,
+        switchTenant,
+        renameTenant,
+        deleteTenant,
+        switchActiveUser,
+        addCrmUser,
+        updateCrmUser,
+        deleteCrmUser,
+        addRoleDefinition,
+        updateRolePermission,
+        updateRoleMeta,
+        deleteRoleDefinition,
+        addTeamDefinition,
+        deleteTeamDefinition,
+        logDataAccess,
+        clearDataAccessLogs,
+        softDeleteEntity,
+        restoreEntity,
+        permanentlyDeleteEntity,
+        emptyTrash,
+        generateScaleDemoData,
+        clearTenantData,
       }}
     >
       {children}

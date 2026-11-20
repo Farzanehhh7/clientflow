@@ -321,6 +321,9 @@ export type Appointment = {
   reminderSentAt?: string;
   branchId?: string;
   customFields?: Record<string, string>;
+  isDeleted?: boolean;
+  deletedAt?: string;
+  deletedBy?: string;
 };
 
 export type OrderStatus = 'new' | 'confirmed' | 'shipped' | 'delivered' | 'cancelled';
@@ -366,6 +369,9 @@ export type Order = {
   returns?: OrderReturn[];
   branchId?: string;
   customFields?: Record<string, string>;
+  isDeleted?: boolean;
+  deletedAt?: string;
+  deletedBy?: string;
 };
 
 export type OrderStatusLog = { id: string; orderId: string; from: string; to: string; at: string };
@@ -389,6 +395,9 @@ export type Invoice = {
   reminderCount?: number;
   lastReminderAt?: string;
   branchId?: string;
+  isDeleted?: boolean;
+  deletedAt?: string;
+  deletedBy?: string;
 };
 
 export type PaymentAllocation = {
@@ -494,6 +503,9 @@ export type Product = {
   minStock?: number;
   active: boolean;
   customFields?: Record<string, string>;
+  isDeleted?: boolean;
+  deletedAt?: string;
+  deletedBy?: string;
 };
 
 export type StockMovement = {
@@ -595,6 +607,9 @@ export type SalesLead = {
   branchId?: string;
   createdAt: string;
   updatedAt: string;
+  isDeleted?: boolean;
+  deletedAt?: string;
+  deletedBy?: string;
 };
 
 export type PipelineStage = 'lead' | 'contacted' | 'proposal' | 'negotiation' | 'won' | 'lost';
@@ -641,6 +656,9 @@ export type Opportunity = {
   customFields?: Record<string, string>;
   createdAt: string;
   updatedAt: string;
+  isDeleted?: boolean;
+  deletedAt?: string;
+  deletedBy?: string;
 };
 
 export type QuoteStatus = 'draft' | 'sent' | 'accepted' | 'rejected' | 'expired' | 'approved';
@@ -1012,6 +1030,9 @@ export type Task = {
   subtasks?: TaskSubtask[];
   projectId?: string;
   createdByRuleId?: string;
+  isDeleted?: boolean;
+  deletedAt?: string;
+  deletedBy?: string;
 };
 
 export type TicketChannel = 'portal' | 'phone' | 'whatsapp' | 'email' | 'instagram' | 'visit';
@@ -1066,6 +1087,9 @@ export type Ticket = {
   resolvedAt?: string;
   replyNote?: string;
   customFields?: Record<string, string>;
+  isDeleted?: boolean;
+  deletedAt?: string;
+  deletedBy?: string;
 };
 
 export type SlaPolicy = {
@@ -1530,6 +1554,125 @@ export type NumberingConfig = {
   separator: '-' | '/';
 };
 
+export type DataScope = 'own' | 'team' | 'branch' | 'all';
+
+export type PermissionResource =
+  | 'customers'
+  | 'sales'
+  | 'orders'
+  | 'appointments'
+  | 'invoices'
+  | 'tickets'
+  | 'marketing'
+  | 'reports'
+  | 'automation'
+  | 'integrations'
+  | 'settings'
+  | 'trash';
+
+export type PermissionAction = 'view' | 'create' | 'edit' | 'delete' | 'export' | 'view_pii';
+
+export type RoleDefinition = {
+  id: string;
+  key: string;
+  name: string;
+  description: string;
+  baseRole: UserRole;
+  dataScope: DataScope;
+  maskPii: boolean;
+  isSystem?: boolean;
+  permissions: Record<PermissionResource, PermissionAction[]>;
+};
+
+export type TeamDefinition = {
+  id: string;
+  name: string;
+  branchId?: string;
+  leadUserId?: string;
+  memberIds: string[];
+};
+
+export type CrmUser = {
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
+  roleId: string;
+  teamId?: string;
+  branchId?: string;
+  dataScope?: DataScope;
+  active: boolean;
+  lastLoginAt?: string;
+  createdAt: string;
+};
+
+export type BusinessProfileSettings = {
+  legalName?: string;
+  economicCode?: string;
+  registrationNo?: string;
+  phone?: string;
+  email?: string;
+  city?: string;
+  address?: string;
+  website?: string;
+};
+
+export type CurrencyCode = 'toman' | 'rial' | 'usd';
+
+export type NotificationPreferences = {
+  smsReminders: boolean;
+  emailDigest: boolean;
+  inAppToasts: boolean;
+  slaBreachAlerts: boolean;
+  dailySummaryHour: number;
+  quietHoursStart: number;
+  quietHoursEnd: number;
+};
+
+export type SecurityPolicyConfig = {
+  sessionTimeoutMin: number; // 0 = disabled
+  requireMfaSimulated: boolean;
+  minPasswordLength: number;
+  requireUppercase: boolean;
+  requireNumber: boolean;
+  requireSymbol: boolean;
+  passwordExpiryDays: number;
+  maxFailedAttempts: number;
+  logCustomerAccess: boolean;
+};
+
+export type DataAccessLogEntry = {
+  id: string;
+  actorUserId?: string;
+  actorName: string;
+  actorRole: string;
+  entityType: 'customer' | 'invoice' | 'ticket';
+  entityId: string;
+  entityLabel: string;
+  action: 'view_360' | 'view_pii' | 'export';
+  piiMasked: boolean;
+  at: string;
+};
+
+export type TrashEntityType =
+  | 'customer'
+  | 'lead'
+  | 'opportunity'
+  | 'order'
+  | 'appointment'
+  | 'ticket'
+  | 'task'
+  | 'product';
+
+export type TenantMeta = {
+  id: string;
+  name: string;
+  industryPack: IndustryPack;
+  customerCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type UiMode = 'solo' | 'enterprise';
 export type AppLanguage = 'fa' | 'en';
 
@@ -1539,6 +1682,7 @@ export type BusinessSettings = {
   workEndHour: number;
   workDays: number[]; // JS day index 0=Sun..6=Sat
   role: UserRole;
+  activeUserId?: string;
   industryPack: IndustryPack;
   darkMode: boolean;
   commissionPct: number;
@@ -1547,6 +1691,12 @@ export type BusinessSettings = {
   autoAssignLeads: boolean;
   activeBranchId: string; // 'all' or branch.id
   numbering: NumberingConfig;
+  profile?: BusinessProfileSettings;
+  taxRatePct?: number;
+  currency?: CurrencyCode;
+  defaultUnit?: string;
+  notifications?: NotificationPreferences;
+  security?: SecurityPolicyConfig;
   uiMode: UiMode;
   language: AppLanguage;
   latinDigits?: boolean;
@@ -1559,6 +1709,7 @@ export type BusinessSettings = {
 };
 
 export type AppState = {
+  schemaVersion?: number;
   customers: Customer[];
   customerRelations: CustomerRelation[];
   customerSegments: CustomerSegment[];
@@ -1631,6 +1782,10 @@ export type AppState = {
   scheduledReports: ScheduledReport[];
   savedReports?: SavedReportConfig[];
   branches: Branch[];
+  roles?: RoleDefinition[];
+  teams?: TeamDefinition[];
+  users?: CrmUser[];
+  dataAccessLogs?: DataAccessLogEntry[];
   customPacks: PackTemplate[];
   auditLogs: AuditLogEntry[];
   processedRuleKeys: string[];
