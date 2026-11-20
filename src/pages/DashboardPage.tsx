@@ -31,6 +31,7 @@ import { useClientFlow } from '../store/useClientFlowStore';
 import type { DashboardWidgetConfig, DashboardWidgetId, OrderStatus } from '../types';
 import { displayDigits, getUiText } from '../utils/i18n';
 import { formatJalaliDateTime, formatToman, getJalaliWeekDays, isSameDay } from '../utils/jalali';
+import { evaluateTicketSla, formatRemainingMinutesFa, isTicketClosedStatus } from '../utils/slaEngine';
 
 export type NavPageKey =
   | 'dashboard'
@@ -212,9 +213,50 @@ export function DashboardPage({ onNavigate, onStartTour }: DashboardPageProps) {
   );
 
   const openTickets = useMemo(
-    () => state.tickets.filter((tk) => tk.status !== 'resolved').slice(0, 5),
+    () => state.tickets.filter((tk) => !isTicketClosedStatus(tk.status)).slice(0, 5),
     [state.tickets],
   );
+
+  const slaOverview = useMemo(() => {
+    const active = state.tickets.filter((tk) => !isTicketClosedStatus(tk.status) && !tk.mergedIntoTicketId);
+    const evals = active.map((tk) => ({
+      ticket: tk,
+      evalRes: evaluateTicketSla(tk, state.slaPolicies, state.settings, state.officialHolidays, nowMs),
+    }));
+    const breached = evals.filter((x) => x.evalRes.overallState === 'breached');
+    const warning = evals.filter((x) => x.evalRes.overallState === 'warning');
+    const totalEval = state.tickets.filter((tk) => !tk.mergedIntoTicketId);
+    const totalCompliant = totalEval.filter((tk) => {
+      const ev = evaluateTicketSla(tk, state.slaPolicies, state.settings, state.officialHolidays, nowMs);
+      return ev.overallState !== 'breached';
+    }).length;
+    const compliancePct = totalEval.length > 0 ? Math.round((totalCompliant / totalEval.length) * 100) : 100;
+    const avgFirstRespMin =
+      totalEval.filter((tk) => tk.firstRespondedAt).length > 0
+        ? Math.round(
+            totalEval
+              .filter((tk) => tk.firstRespondedAt)
+              .reduce(
+                (sum, tk) =>
+                  sum +
+                  evaluateTicketSla(tk, state.slaPolicies, state.settings, state.officialHolidays, nowMs)
+                    .firstRespElapsedMin,
+                0,
+              ) / totalEval.filter((tk) => tk.firstRespondedAt).length,
+          )
+        : 0;
+    const urgent = [...evals]
+      .sort((a, b) => a.evalRes.resolutionRemainingMin - b.evalRes.resolutionRemainingMin)
+      .slice(0, 3);
+    return {
+      activeCount: active.length,
+      breachedCount: breached.length,
+      warningCount: warning.length,
+      compliancePct,
+      avgFirstRespMin,
+      urgent,
+    };
+  }, [state.tickets, state.slaPolicies, state.settings, state.officialHolidays, nowMs]);
 
   const sortedWidgets = useMemo(
     () => [...state.settings.dashboardWidgets].sort((a, b) => a.order - b.order),
@@ -590,6 +632,72 @@ export function DashboardPage({ onNavigate, onStartTour }: DashboardPageProps) {
                     </div>
                   );
                 })}
+              </div>
+            )}
+          </div>
+        );
+
+      case 'sla_overview':
+        return (
+          <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-sm font-semibold">
+                {isEn ? 'Support SLA Monitor' : 'پایش SLA و عملکرد پشتیبانی'}
+              </h2>
+              <button
+                type="button"
+                onClick={() => onNavigate('tickets')}
+                className="text-xs font-medium text-indigo-600 hover:underline dark:text-indigo-400"
+              >
+                {t.dash.viewAll}
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
+              <div className="rounded-lg bg-slate-50 p-3 dark:bg-slate-800/50">
+                <div className="text-slate-500 dark:text-slate-400">نرخ انطباق SLA</div>
+                <div className="mt-1 text-lg font-bold tabular-nums text-emerald-600 dark:text-emerald-400">
+                  {fmtNum(slaOverview.compliancePct)}٪
+                </div>
+              </div>
+              <div className="rounded-lg bg-slate-50 p-3 dark:bg-slate-800/50">
+                <div className="text-slate-500 dark:text-slate-400">در آستانه هشدار</div>
+                <div className="mt-1 text-lg font-bold tabular-nums text-amber-600 dark:text-amber-400">
+                  {fmtNum(slaOverview.warningCount)}
+                </div>
+              </div>
+              <div className="rounded-lg bg-slate-50 p-3 dark:bg-slate-800/50">
+                <div className="text-slate-500 dark:text-slate-400">نقض‌شده (Breach)</div>
+                <div className="mt-1 text-lg font-bold tabular-nums text-rose-600 dark:text-rose-400">
+                  {fmtNum(slaOverview.breachedCount)}
+                </div>
+              </div>
+              <div className="rounded-lg bg-slate-50 p-3 dark:bg-slate-800/50">
+                <div className="text-slate-500 dark:text-slate-400">میانگین پاسخ اول</div>
+                <div className="mt-1 text-lg font-bold tabular-nums text-slate-900 dark:text-slate-100">
+                  {fmtNum(slaOverview.avgFirstRespMin)} د
+                </div>
+              </div>
+            </div>
+            {slaOverview.urgent.length > 0 && (
+              <div className="mt-3 divide-y divide-slate-200 dark:divide-slate-800">
+                {slaOverview.urgent.map(({ ticket, evalRes }) => (
+                  <div key={ticket.id} className="flex items-center justify-between gap-2 py-2 text-xs">
+                    <span className="truncate font-medium text-slate-800 dark:text-slate-200">
+                      {ticket.subject}
+                    </span>
+                    <span
+                      className={`shrink-0 font-semibold tabular-nums whitespace-nowrap ${
+                        evalRes.overallState === 'breached'
+                          ? 'text-rose-600 dark:text-rose-400'
+                          : evalRes.overallState === 'warning'
+                            ? 'text-amber-600 dark:text-amber-400'
+                            : 'text-emerald-600 dark:text-emerald-400'
+                      }`}
+                    >
+                      {formatRemainingMinutesFa(evalRes.resolutionRemainingMin)}
+                    </span>
+                  </div>
+                ))}
               </div>
             )}
           </div>

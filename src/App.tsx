@@ -29,6 +29,7 @@ import { NpsSurveyModal } from './components/NpsSurveyModal';
 import { OnboardingTour } from './components/OnboardingTour';
 import { AppointmentsPage } from './pages/AppointmentsPage';
 import { AutomationPage } from './pages/AutomationPage';
+import { CustomerPortalPage } from './pages/CustomerPortalPage';
 import { CustomEntitiesPage } from './pages/CustomEntitiesPage';
 import { CustomersPage } from './pages/CustomersPage';
 import { DashboardPage, type NavPageKey } from './pages/DashboardPage';
@@ -44,7 +45,16 @@ import { WorkflowsPage } from './pages/WorkflowsPage';
 import { ClientFlowProvider, useClientFlow } from './store/useClientFlowStore';
 import { displayDigits, getUiText, PACK_LABELS } from './utils/i18n';
 import { formatJalali } from './utils/jalali';
+import { isTicketClosedStatus } from './utils/slaEngine';
 import { OfflineIndicator, PWAInstallButton } from './utils/usePWA';
+
+function isPortalRouteLocation(): boolean {
+  if (typeof window === 'undefined') return false;
+  return (
+    window.location.pathname.endsWith('/portal') ||
+    window.location.hash === '#/portal'
+  );
+}
 
 type NavItem = {
   key: NavPageKey;
@@ -73,9 +83,38 @@ const NAV_ITEMS: NavItem[] = [
 function AppShell() {
   const { state, toasts, dismissToast, updateSettings } = useClientFlow();
   const [page, setPage] = useState<NavPageKey>('dashboard');
+  const [isPortalRoute, setIsPortalRoute] = useState<boolean>(() => isPortalRouteLocation());
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [tourOpen, setTourOpen] = useState(false);
+
+  const openPortalRoute = () => {
+    try {
+      window.history.pushState({}, '', '/portal');
+    } catch {
+      window.location.hash = '#/portal';
+    }
+    setIsPortalRoute(true);
+  };
+
+  const exitPortalRoute = () => {
+    try {
+      window.history.pushState({}, '', '/');
+    } catch {
+      window.location.hash = '';
+    }
+    setIsPortalRoute(false);
+  };
+
+  useEffect(() => {
+    const onPopState = () => setIsPortalRoute(isPortalRouteLocation());
+    window.addEventListener('popstate', onPopState);
+    window.addEventListener('hashchange', onPopState);
+    return () => {
+      window.removeEventListener('popstate', onPopState);
+      window.removeEventListener('hashchange', onPopState);
+    };
+  }, []);
 
   const lang = state.settings.language ?? 'fa';
   const uiMode = state.settings.uiMode ?? 'enterprise';
@@ -113,8 +152,12 @@ function AppShell() {
 
   const currentNav = visibleNav.find((n) => n.key === page) ?? visibleNav[0];
   const openTasksCount = state.tasks.filter((tk) => !tk.done).length;
-  const openTicketsCount = state.tickets.filter((tk) => tk.status !== 'resolved').length;
+  const openTicketsCount = state.tickets.filter((tk) => !isTicketClosedStatus(tk.status)).length;
   const runningWorkflowsCount = state.workflows.filter((w) => w.status === 'running').length;
+
+  if (isPortalRoute) {
+    return <CustomerPortalPage onExitPortal={exitPortalRoute} />;
+  }
 
   const renderPage = () => {
     switch (page) {
@@ -135,7 +178,7 @@ function AppShell() {
       case 'tasks':
         return <TasksPage />;
       case 'tickets':
-        return <TicketsPage />;
+        return <TicketsPage onOpenPortal={openPortalRoute} />;
       case 'nps':
         return <NpsPage />;
       case 'custom_entities':
@@ -332,6 +375,16 @@ function AppShell() {
             >
               <Compass size={13} className="text-emerald-500" />
               <span>{t.tourBtn}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={openPortalRoute}
+              title={lang === 'en' ? 'Public Customer Portal (/portal)' : 'پورتال عمومی مشتری (/portal)'}
+              className="hidden lg:inline-flex items-center gap-1 rounded-lg border border-indigo-200 bg-indigo-50/70 px-2.5 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100 dark:border-indigo-900/50 dark:bg-indigo-950/30 dark:text-indigo-300"
+            >
+              <LifeBuoy size={13} />
+              <span>{lang === 'en' ? 'Portal' : 'پورتال مشتری'}</span>
             </button>
 
             <PWAInstallButton lang={lang} />

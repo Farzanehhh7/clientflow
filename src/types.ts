@@ -86,6 +86,11 @@ export type Customer = BaseEntityMeta & {
   licenseKey?: string;
   contractExpiresAt?: string;
   branchId?: string;
+  // Loyalty & Referral (Phase 8)
+  loyaltyPoints?: number;
+  lifetimePoints?: number;
+  referralCode?: string;
+  referredByCustomerId?: string;
   // Dynamic custom fields (cfg.FieldDef -> CustomJson)
   customFields?: Record<string, string>;
 };
@@ -710,14 +715,32 @@ export type CommissionLedgerEntry = {
   createdAt: string;
 };
 
-export type WorkflowType = 'discount_approval' | 'order_return' | 'vip_schedule' | 'complaint' | 'custom';
-export type WorkflowNodeType = 'start' | 'task' | 'parallel_gateway' | 'timer' | 'end';
+export type WorkflowType =
+  | 'discount_approval'
+  | 'order_fulfillment'
+  | 'order_return'
+  | 'vip_schedule'
+  | 'complaint'
+  | 'custom';
+
+export type WorkflowNodeType =
+  | 'start'
+  | 'task'
+  | 'approval'
+  | 'decision'
+  | 'wait'
+  | 'parallel_gateway'
+  | 'timer'
+  | 'end';
 
 export type WorkflowNodeDef = {
   id: string;
   type: WorkflowNodeType;
   label: string;
   role: 'staff' | 'admin';
+  assigneeType?: 'role' | 'user';
+  assigneeUser?: string;
+  stepSlaHours?: number;
   x: number;
   y: number;
   timerHours?: number;
@@ -730,6 +753,9 @@ export type WorkflowEdgeDef = {
   fromId: string;
   toId: string;
   label?: string;
+  conditionField?: string;
+  conditionOp?: 'eq' | 'neq' | 'gte' | 'lte' | 'contains';
+  conditionValue?: string;
 };
 
 export type WorkflowDefinition = {
@@ -740,6 +766,7 @@ export type WorkflowDefinition = {
   type: WorkflowType;
   version: number;
   status: 'draft' | 'published';
+  pack?: 'all' | IndustryPack;
   slaHours: number;
   nodes: WorkflowNodeDef[];
   edges: WorkflowEdgeDef[];
@@ -759,6 +786,8 @@ export type WorkflowStep = {
   name: string;
   nodeType?: WorkflowNodeType;
   role: 'staff' | 'admin';
+  assigneeType?: 'role' | 'user';
+  stepSlaHours?: number;
   status: 'pending' | 'approved' | 'rejected';
   assignee?: string;
   claimedBy?: string;
@@ -769,9 +798,19 @@ export type WorkflowStep = {
   startedAt?: string;
   timerHours?: number;
   timerExpiresAt?: string;
+  decisionResult?: string;
   parallelBranches?: WorkflowParallelBranchState[];
   formFields?: CustomFieldDef[];
   stepData?: Record<string, string>;
+};
+
+export type WorkflowHistoryEntry = {
+  id: string;
+  at: string;
+  actor: string;
+  stepName: string;
+  action: 'started' | 'approved' | 'rejected' | 'decision' | 'claimed' | 'reassigned' | 'delegated' | 'timer_expired' | 'completed';
+  detail: string;
 };
 
 export type WorkflowInstance = {
@@ -784,6 +823,7 @@ export type WorkflowInstance = {
   relatedRef?: string;
   currentStepIndex: number;
   steps: WorkflowStep[];
+  history?: WorkflowHistoryEntry[];
   status: 'running' | 'approved' | 'rejected';
   createdAt: string;
   completedAt?: string;
@@ -800,6 +840,7 @@ export type ContentItem = {
   scheduledAt: string;
   assignee: string;
   reach: number;
+  engagement?: number;
   leadsCount: number;
   hasBeforeAfterConsent?: boolean;
   caption?: string;
@@ -810,8 +851,20 @@ export type CampaignVariant = {
   subject: string;
   body: string;
   sent: number;
+  delivered?: number;
   clicks: number;
   conversions: number;
+};
+
+export type CampaignRecipientStatus = 'sent' | 'delivered' | 'clicked' | 'converted';
+export type CampaignRecipient = {
+  id: string;
+  customerId: string;
+  customerName: string;
+  phone: string;
+  variant: 'A' | 'B';
+  status: CampaignRecipientStatus;
+  updatedAt: string;
 };
 
 export type MarketingCampaign = {
@@ -819,14 +872,63 @@ export type MarketingCampaign = {
   name: string;
   segmentId?: string;
   channel: NotificationChannel;
-  status: 'draft' | 'running' | 'completed';
+  status: 'draft' | 'scheduled' | 'running' | 'completed';
   abTestEnabled: boolean;
   variantA: CampaignVariant;
   variantB?: CampaignVariant;
   winner?: 'A' | 'B';
   utmCampaign: string;
+  scheduledAt?: string;
+  cost?: number;
+  revenueGenerated?: number;
+  recipients?: CampaignRecipient[];
   createdAt: string;
   launchedAt?: string;
+};
+
+export type LoyaltyTier = 'bronze' | 'silver' | 'gold' | 'vip';
+export type LoyaltyTxType =
+  | 'earn_purchase'
+  | 'earn_visit'
+  | 'earn_referral'
+  | 'earn_manual'
+  | 'redeem_reward'
+  | 'birthday_bonus';
+
+export type LoyaltyConfig = {
+  enabled: boolean;
+  pointsPer100kToman: number;
+  pointsPerVisit: number;
+  pointsPerReferral: number;
+  referredWelcomePoints: number;
+  birthdayBonusPoints: number;
+  birthdayDiscountPct: number;
+  silverMinPoints: number;
+  goldMinPoints: number;
+  vipMinPoints: number;
+};
+
+export type LoyaltyReward = {
+  id: string;
+  title: string;
+  pointsCost: number;
+  discountPct: number;
+  minOrderAmount?: number;
+  validDays: number;
+  active: boolean;
+  redeemedCount: number;
+};
+
+export type LoyaltyTransaction = {
+  id: string;
+  customerId: string;
+  customerName: string;
+  type: LoyaltyTxType;
+  points: number;
+  description: string;
+  couponCode?: string;
+  refId?: string;
+  at: string;
 };
 
 export type MediaAsset = {
@@ -870,11 +972,14 @@ export type UtmTouch = {
   converted: boolean;
 };
 
+export type KbVisibility = 'public' | 'internal';
+
 export type KbArticleVersion = {
   version: number;
   title: string;
   category: string;
   body: string;
+  visibility?: KbVisibility;
   updatedAt: string;
   editor: string;
   changeNote?: string;
@@ -885,6 +990,7 @@ export type KbArticle = {
   title: string;
   category: string;
   body: string;
+  visibility?: KbVisibility;
   helpfulCount: number;
   updatedAt: string;
   version?: number;
@@ -904,6 +1010,18 @@ export type Task = {
   createdByRuleId?: string;
 };
 
+export type TicketChannel = 'portal' | 'phone' | 'whatsapp' | 'email' | 'instagram' | 'visit';
+export type TicketSeverity = 'minor' | 'major' | 'critical';
+export type TicketStatus = 'open' | 'in_progress' | 'pending' | 'resolved' | 'closed';
+export type ComplaintStatus = 'investigating' | 'resolved' | 'compensated';
+
+export type TicketAttachment = {
+  id: string;
+  name: string;
+  sizeLabel: string;
+  mimeType: string;
+};
+
 export type TicketMessage = {
   id: string;
   ticketId: string;
@@ -911,29 +1029,46 @@ export type TicketMessage = {
   authorType: 'customer' | 'agent';
   visibility: 'public' | 'internal';
   body: string;
+  attachments?: TicketAttachment[];
   createdAt: string;
 };
 
 export type Ticket = {
   id: string;
+  trackingCode?: string;
   customerId: string;
   subject: string;
+  channel?: TicketChannel;
   priority: 'low' | 'normal' | 'high';
-  status: 'open' | 'pending' | 'resolved';
+  severity?: TicketSeverity;
+  status: TicketStatus;
   category?: string;
   team?: string;
   assignee?: string;
   slaHours?: number;
+  firstRespondedAt?: string;
   escalated?: boolean;
   escalatedAt?: string;
   escalatedTo?: string;
+  slaWarningSent?: boolean;
   mergedIntoTicketId?: string;
   mergedFromIds?: string[];
+  attachments?: TicketAttachment[];
+  isComplaint?: boolean;
   rootCause?: string;
+  complaintResolution?: string;
+  complaintStatus?: ComplaintStatus;
   createdAt: string;
   resolvedAt?: string;
   replyNote?: string;
   customFields?: Record<string, string>;
+};
+
+export type SlaPolicy = {
+  priority: Ticket['priority'];
+  firstResponseMin: number;
+  resolutionMin: number;
+  warnPct: number;
 };
 
 export type ClientFlowConfigBundle = {
@@ -952,13 +1087,63 @@ export type ClientFlowConfigBundle = {
   dashboardWidgets: DashboardWidgetConfig[];
 };
 
-export type RuleTriggerType = 'schedule' | 'on_create' | 'on_update' | 'on_stage_change' | 'on_ticket_create';
+export type RuleTriggerType =
+  | 'schedule'
+  | 'on_create'
+  | 'on_update'
+  | 'on_stage_change'
+  | 'on_ticket_create'
+  | 'on_webhook'
+  | 'on_event';
+
+export type RuleScheduleCron = 'every_30s' | 'every_5m' | 'hourly' | 'daily_09';
+
 export type RuleTargetEntity = 'customer' | 'order' | 'appointment' | 'opportunity' | 'ticket';
+
+export type RuleConditionOp =
+  | 'eq'
+  | 'neq'
+  | 'contains'
+  | 'gte'
+  | 'lte'
+  | 'within_next_hours'
+  | 'older_than_hours'
+  | 'before_rel'
+  | 'after_rel';
+
 export type RuleCondition = {
   id: string;
   field: string;
-  op: 'eq' | 'neq' | 'contains' | 'gte' | 'lte';
+  op: RuleConditionOp;
   value: string;
+};
+
+export type RuleActionType =
+  | 'send_sms'
+  | 'send_whatsapp'
+  | 'send_email'
+  | 'create_task'
+  | 'update_field'
+  | 'change_stage'
+  | 'assign_owner'
+  | 'call_webhook'
+  | 'add_tag'
+  | 'create_ticket';
+
+export type RuleAction = {
+  id: string;
+  type: RuleActionType;
+  channel?: NotificationChannel;
+  messageTemplate?: string;
+  taskTitleTemplate?: string;
+  field?: string;
+  value?: string;
+  stage?: string;
+  ownerName?: string;
+  webhookUrl?: string;
+  tag?: string;
+  ticketSubjectTemplate?: string;
+  ticketPriority?: 'low' | 'normal' | 'high';
 };
 
 export type Rule = {
@@ -971,18 +1156,24 @@ export type Rule = {
   pack?: 'all' | IndustryPack;
   // Structured dynamic rule fields (FR-AUT)
   triggerType?: RuleTriggerType;
+  scheduleCron?: RuleScheduleCron;
+  webhookTopic?: string;
+  eventName?: string;
   targetEntity?: RuleTargetEntity;
   conditionLogic?: 'AND' | 'OR' | 'NOT';
   conditions?: RuleCondition[];
   actionType?: 'send_notification' | 'create_task' | 'both';
   actionChannel?: NotificationChannel;
+  actions?: RuleAction[];
   messageTemplate?: string;
   taskTitleTemplate?: string;
   dailyCapPerCustomer?: number;
+  cooldownMinutes?: number;
+  allowRepeat?: boolean;
   respectQuietHours?: boolean;
 };
 
-export type NotificationChannel = 'sms' | 'email' | 'push' | 'in_app';
+export type NotificationChannel = 'sms' | 'whatsapp' | 'email' | 'push' | 'in_app';
 export type NotificationDeliveryStatus =
   | 'queued'
   | 'sent'
@@ -1012,12 +1203,38 @@ export type OutboxMessage = {
   at: string;
 };
 
+export type MessageTemplate = {
+  id: string;
+  name: string;
+  channel: NotificationChannel;
+  category: 'appointment' | 'order' | 'sales' | 'support' | 'retention';
+  body: string;
+  pack?: 'all' | IndustryPack;
+  updatedAt: string;
+};
+
+export type WebhookLogEntry = {
+  id: string;
+  direction: 'outgoing' | 'incoming';
+  urlOrTopic: string;
+  ruleId?: string;
+  ruleName?: string;
+  statusCode: number;
+  latencyMs: number;
+  payloadSummary: string;
+  ok: boolean;
+  at: string;
+};
+
 export type AutomationPolicy = {
   quietHoursEnabled: boolean;
   quietStartHour: number;
   quietEndHour: number;
   defaultDailyCap: number;
   maxRetries: number;
+  backgroundRunnerEnabled?: boolean;
+  runnerIntervalSec?: number;
+  channelDailyCaps?: Partial<Record<NotificationChannel, number>>;
 };
 
 export type AutomationRunLog = {
@@ -1025,15 +1242,25 @@ export type AutomationRunLog = {
   ruleId: string;
   ruleName: string;
   summary: string;
+  status?: 'success' | 'skipped' | 'failed';
+  reason?: string;
+  triggerSource?: 'schedule' | 'event' | 'webhook' | 'manual';
+  matchedCount?: number;
+  executedCount?: number;
+  skippedCount?: number;
   at: string;
 };
 
+export type SurveyType = 'nps' | 'csat' | 'ces';
+
 export type NpsSurvey = {
   id: string;
+  surveyType?: SurveyType;
   customerId: string;
-  refType: 'appointment' | 'order';
+  refType: 'appointment' | 'order' | 'ticket';
   refId: string;
-  score: number; // 0..10
+  score: number; // nps: 0..10 | csat: 1..5 | ces: 1..7
+  maxScale?: number;
   comment?: string;
   createdAt: string;
 };
@@ -1083,6 +1310,11 @@ export type PackOrderConfig = {
   transitions: Record<OrderStatus, OrderStatus[]>;
 };
 
+export type PackMarketingConfig = {
+  showContentCalendar: boolean;
+  contentLabel?: string;
+};
+
 export type PackTemplate = {
   id: string;
   key: string;
@@ -1094,11 +1326,13 @@ export type PackTemplate = {
   customerMeta?: PackCustomerConfig;
   salesMeta?: PackSalesConfig;
   orderMeta?: PackOrderConfig;
+  marketingMeta?: PackMarketingConfig;
   customFields: Omit<CustomFieldDef, 'id'>[];
   customEntities: Omit<CustomEntityDef, 'id' | 'createdAt'>[];
   services: Omit<Service, 'id'>[];
   products: Omit<Product, 'id'>[];
   rules: Omit<Rule, 'id'>[];
+  workflowTemplates?: Omit<WorkflowDefinition, 'id' | 'updatedAt'>[];
   exportedAt?: string;
   isCustom?: boolean;
 };
@@ -1111,7 +1345,8 @@ export type DashboardWidgetId =
   | 'list_tasks'
   | 'list_tickets'
   | 'kpi_pipeline'
-  | 'list_cheques';
+  | 'list_cheques'
+  | 'sla_overview';
 
 export type DashboardWidgetConfig = {
   id: DashboardWidgetId;
@@ -1227,12 +1462,21 @@ export type AppState = {
   mediaAssets: MediaAsset[];
   landingForms: LandingForm[];
   utmTouches: UtmTouch[];
+  loyaltyConfig?: LoyaltyConfig;
+  loyaltyRewards?: LoyaltyReward[];
+  loyaltyTransactions?: LoyaltyTransaction[];
   kbArticles: KbArticle[];
   tasks: Task[];
   tickets: Ticket[];
   ticketMessages: TicketMessage[];
+  slaPolicies: Record<Ticket['priority'], SlaPolicy>;
   rules: Rule[];
   automationPolicy: AutomationPolicy;
+  messageTemplates?: MessageTemplate[];
+  webhookLogs?: WebhookLogEntry[];
+  ruleCooldowns?: Record<string, string>;
+  lastAutomationRunAt?: string;
+  automationTickCount?: number;
   outbox: OutboxMessage[];
   automationLogs: AutomationRunLog[];
   npsSurveys: NpsSurvey[];

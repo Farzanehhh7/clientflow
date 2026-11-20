@@ -7,6 +7,8 @@ import type {
   CustomFieldDef,
   Customer,
   CustomerSegment,
+  LoyaltyConfig,
+  LoyaltyTier,
   Quote,
 } from '../types';
 
@@ -358,4 +360,23 @@ export function formatDurationHoursFa(hours: number): string {
   const rem = Math.round(hours % 24);
   return rem > 0 ? `${toFaNum(days)} روز و ${toFaNum(rem)} ساعت` : `${toFaNum(days)} روز`;
 }
+
+export function computeLoyaltyTier(points: number, cfg?: LoyaltyConfig): LoyaltyTier {
+  const vip = cfg?.vipMinPoints ?? 4000;
+  const gold = cfg?.goldMinPoints ?? 1500;
+  const silver = cfg?.silverMinPoints ?? 500;
+  if (points >= vip) return 'vip';
+  if (points >= gold) return 'gold';
+  if (points >= silver) return 'silver';
+  return 'bronze';
+}
+
+export function getSegmentMatchingCustomers(state: AppState, segmentId?: string): Customer[] {
+  const eligible = state.customers.filter((c) => !c.isDeleted && !c.isAnonymized);
+  if (!segmentId) return eligible;
+  const seg = state.customerSegments.find((s) => s.id === segmentId);
+  if (!seg) return eligible;
+  return eligible.filter((c) => evaluateSegment(c, seg, computeCustomerStats(c, state)));
+}
+
 

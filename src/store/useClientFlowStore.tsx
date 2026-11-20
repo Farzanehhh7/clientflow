@@ -12,6 +12,8 @@ import type {
   AutomationPolicy,
   Branch,
   BusinessSettings,
+  CampaignRecipient,
+  CampaignRecipientStatus,
   ClientFlowConfigBundle,
   CommissionLedgerEntry,
   CommissionLedgerStatus,
@@ -43,8 +45,12 @@ import type {
   Invoice,
   KbArticle,
   LandingForm,
+  LoyaltyConfig,
+  LoyaltyReward,
+  LoyaltyTransaction,
   MarketingCampaign,
   MediaAsset,
+  MessageTemplate,
   NotificationChannel,
   NpsSurvey,
   OfficialHoliday,
@@ -77,17 +83,25 @@ import type {
   SayadiCheque,
   SayadiChequeStatus,
   ScheduledReport,
+  KbVisibility,
   Service,
+  SlaPolicy,
   StockMovement,
+  SurveyType,
   Task,
   Ticket,
+  TicketAttachment,
+  TicketChannel,
   TicketMessage,
+  TicketSeverity,
   TimeEntry,
   UtmTouch,
   WaitlistEntry,
   WarrantyClaim,
   WarrantyRecord,
+  WebhookLogEntry,
   WorkflowDefinition,
+  WorkflowHistoryEntry,
   WorkflowInstance,
   WorkflowStep,
   WorkflowType,
@@ -95,16 +109,29 @@ import type {
 import {
   countTodayCustomerNotifications,
   evaluateRuleConditions,
+  evaluateWorkflowEdgeCondition,
+  getNormalizedRuleActions,
   getTargetRecordsForRule,
+  isChannelCapReached,
+  isRuleInCooldown,
   isWithinQuietHours,
   renderRuleTemplate,
   simulateRuleDryRun,
   type DryRunResult,
+  type RuleCandidate,
 } from '../utils/automationEngine';
 import { configBundleSchema } from '../utils/customFieldValidation';
-import { computeCommissionAmount, computeQuoteFinancials, daysUntilJalaliMonthDay } from '../utils/crmHelpers';
+import {
+  computeCommissionAmount,
+  computeLeadScoreHint,
+  computeQuoteFinancials,
+  daysUntilJalaliMonthDay,
+  getSegmentMatchingCustomers,
+} from '../utils/crmHelpers';
 import { formatDocumentNumber } from '../utils/i18n';
+import { formatJalali } from '../utils/jalali';
 import { getDateKeyFromIso, hasConflict, isHolidayOrTimeOff, isValidIranMobile, isValidNationalId } from '../utils/overlap';
+import { evaluateTicketSla, isTicketClosedStatus } from '../utils/slaEngine';
 
 const STORAGE_KEY = 'clientflow_state_v2';
 
@@ -116,9 +143,10 @@ export type ToastMessage = {
 
 export type PendingNpsPrompt = {
   customerId: string;
-  refType: 'appointment' | 'order';
+  refType: 'appointment' | 'order' | 'ticket';
   refId: string;
   label: string;
+  defaultSurveyType?: SurveyType;
 };
 
 function mergeLoadedState(parsed: Partial<AppState> | null | undefined): AppState {
@@ -129,6 +157,12 @@ function mergeLoadedState(parsed: Partial<AppState> | null | undefined): AppStat
   const mergedRules = [
     ...(parsed.rules ?? fallback.rules),
     ...fallback.rules.filter((r) => !existingRuleIds.has(r.id)),
+  ];
+
+  const existingWfDefIds = new Set((parsed.workflowDefinitions ?? []).map((d) => d.id));
+  const mergedWorkflowDefs = [
+    ...(parsed.workflowDefinitions ?? fallback.workflowDefinitions),
+    ...fallback.workflowDefinitions.filter((d) => !existingWfDefIds.has(d.id)),
   ];
 
   const normalizedFields = (parsed.customFieldDefs ?? fallback.customFieldDefs).map((f, idx) => ({
@@ -170,12 +204,28 @@ function mergeLoadedState(parsed: Partial<AppState> | null | undefined): AppStat
     resourceTimeOffs: parsed.resourceTimeOffs ?? fallback.resourceTimeOffs,
     officialHolidays: parsed.officialHolidays ?? fallback.officialHolidays,
     waitlist: parsed.waitlist ?? fallback.waitlist,
-    workflowDefinitions: parsed.workflowDefinitions ?? fallback.workflowDefinitions,
+    workflowDefinitions: mergedWorkflowDefs,
     campaigns: parsed.campaigns ?? fallback.campaigns,
     mediaAssets: parsed.mediaAssets ?? fallback.mediaAssets,
     landingForms: parsed.landingForms ?? fallback.landingForms,
     utmTouches: parsed.utmTouches ?? fallback.utmTouches,
+    loyaltyConfig: {
+      ...fallback.loyaltyConfig!,
+      ...(parsed.loyaltyConfig ?? {}),
+    },
+    loyaltyRewards: parsed.loyaltyRewards ?? fallback.loyaltyRewards,
+    loyaltyTransactions: parsed.loyaltyTransactions ?? fallback.loyaltyTransactions,
     ticketMessages: parsed.ticketMessages ?? fallback.ticketMessages,
+    tickets: (parsed.tickets ?? fallback.tickets).map((t, idx) => ({
+      ...t,
+      trackingCode: t.trackingCode || `TK-1405-${String(101 + idx).padStart(3, '0')}`,
+      channel: t.channel ?? 'portal',
+      severity: t.severity ?? (t.priority === 'high' ? 'major' : 'minor'),
+    })),
+    slaPolicies: {
+      ...fallback.slaPolicies,
+      ...(parsed.slaPolicies ?? {}),
+    },
     sayadiCheques: parsed.sayadiCheques ?? fallback.sayadiCheques,
     paymentTransactions: parsed.paymentTransactions ?? fallback.paymentTransactions,
     paymentAllocations: parsed.paymentAllocations ?? fallback.paymentAllocations,
@@ -185,9 +235,18 @@ function mergeLoadedState(parsed: Partial<AppState> | null | undefined): AppStat
     scheduledReports: parsed.scheduledReports ?? fallback.scheduledReports,
     branches: parsed.branches ?? fallback.branches,
     customPacks: parsed.customPacks ?? fallback.customPacks,
+    messageTemplates: parsed.messageTemplates ?? fallback.messageTemplates,
+    webhookLogs: parsed.webhookLogs ?? fallback.webhookLogs,
+    ruleCooldowns: parsed.ruleCooldowns ?? {},
+    lastAutomationRunAt: parsed.lastAutomationRunAt ?? fallback.lastAutomationRunAt,
+    automationTickCount: parsed.automationTickCount ?? fallback.automationTickCount ?? 1,
     automationPolicy: {
       ...fallback.automationPolicy,
       ...(parsed.automationPolicy ?? {}),
+      channelDailyCaps: {
+        ...fallback.automationPolicy.channelDailyCaps,
+        ...(parsed.automationPolicy?.channelDailyCaps ?? {}),
+      },
     },
     settings: {
       ...fallback.settings,
@@ -197,10 +256,13 @@ function mergeLoadedState(parsed: Partial<AppState> | null | undefined): AppStat
         ...fallback.settings.numbering,
         ...(parsed.settings?.numbering ?? {}),
       },
-      dashboardWidgets:
-        parsed.settings?.dashboardWidgets && parsed.settings.dashboardWidgets.length > 0
-          ? parsed.settings.dashboardWidgets
-          : fallback.settings.dashboardWidgets,
+      dashboardWidgets: (() => {
+        const current = parsed.settings?.dashboardWidgets;
+        if (!current || current.length === 0) return fallback.settings.dashboardWidgets;
+        const existingIds = new Set(current.map((w) => w.id));
+        const missing = fallback.settings.dashboardWidgets.filter((w) => !existingIds.has(w.id));
+        return missing.length > 0 ? [...current, ...missing] : current;
+      })(),
     },
   };
 }
@@ -410,23 +472,37 @@ type ClientFlowContextValue = {
   delegateWorkflowStep: (id: string, delegateTo: string) => void;
   advanceWorkflowTimer: (id: string) => void;
 
-  // Marketing Content Calendar, Campaigns (A/B), Media Library, Landing Forms & UTM
+  // Marketing Content Calendar, Campaigns (A/B + ROI), Media Library, Landing Forms, UTM & Loyalty Club
   addContentItem: (item: Omit<ContentItem, 'id' | 'reach' | 'leadsCount'>) => void;
   updateContentStatus: (id: string, status: ContentStatus) => void;
   updateContentItem: (
     id: string,
-    patch: Partial<Pick<ContentItem, 'title' | 'caption' | 'reach' | 'leadsCount' | 'hasBeforeAfterConsent' | 'status' | 'mediaAssetId'>>,
+    patch: Partial<
+      Pick<
+        ContentItem,
+        'title' | 'caption' | 'reach' | 'engagement' | 'leadsCount' | 'hasBeforeAfterConsent' | 'status' | 'mediaAssetId' | 'assignee' | 'platform' | 'format' | 'scheduledAt'
+      >
+    >,
   ) => void;
-  addCampaign: (c: Omit<MarketingCampaign, 'id' | 'createdAt' | 'status'>) => void;
+  addCampaign: (c: Omit<MarketingCampaign, 'id' | 'createdAt' | 'status'> & { status?: MarketingCampaign['status'] }) => void;
   launchCampaign: (id: string) => void;
+  updateCampaignRecipientStatus: (campaignId: string, recipientId: string, status: CampaignRecipientStatus) => void;
   simulateCampaignStats: (id: string) => void;
   addMediaAsset: (asset: Omit<MediaAsset, 'id' | 'uploadedAt'>) => void;
+  toggleMediaConsent: (id: string) => void;
   deleteMediaAsset: (id: string) => void;
   addLandingForm: (form: Omit<LandingForm, 'id' | 'submissionsCount' | 'createdAt'>) => void;
   submitLandingForm: (
     formId: string,
     data: { name: string; phone: string; email?: string; companyName?: string; notes?: string },
   ) => { ok: boolean; error?: string };
+  updateLoyaltyConfig: (patch: Partial<LoyaltyConfig>) => void;
+  addLoyaltyReward: (reward: Omit<LoyaltyReward, 'id' | 'redeemedCount'>) => void;
+  toggleLoyaltyReward: (id: string) => void;
+  adjustCustomerPoints: (customerId: string, pointsDelta: number, description: string) => void;
+  redeemLoyaltyReward: (customerId: string, rewardId: string) => { ok: boolean; error?: string; couponCode?: string };
+  sendOccasionReward: (customerId: string, occasionType: 'birthday' | 'anniversary') => { ok: boolean; couponCode?: string };
+  registerReferral: (referralCode: string, newCustomerName: string, newCustomerPhone: string) => { ok: boolean; error?: string };
 
   // Tasks, Tickets, TicketMessages, SLA Escalation, Merge & Knowledge Base Versioning
   addTask: (data: {
@@ -445,32 +521,78 @@ type ClientFlowContextValue = {
     customerId: string;
     subject: string;
     priority: Ticket['priority'];
+    severity?: TicketSeverity;
+    channel?: TicketChannel;
     category?: string;
     team?: string;
     assignee?: string;
+    isComplaint?: boolean;
     rootCause?: string;
+    complaintResolution?: string;
+    complaintStatus?: Ticket['complaintStatus'];
+    attachments?: TicketAttachment[];
     initialBody?: string;
     customFields?: Record<string, string>;
-  }) => void;
+  }) => Ticket | null;
   updateTicket: (
     id: string,
-    patch: Partial<Pick<Ticket, 'status' | 'priority' | 'replyNote' | 'assignee' | 'team' | 'category' | 'rootCause'>>,
+    patch: Partial<
+      Pick<
+        Ticket,
+        | 'status'
+        | 'priority'
+        | 'severity'
+        | 'channel'
+        | 'replyNote'
+        | 'assignee'
+        | 'team'
+        | 'category'
+        | 'isComplaint'
+        | 'rootCause'
+        | 'complaintResolution'
+        | 'complaintStatus'
+      >
+    >,
   ) => void;
   addTicketMessage: (
     ticketId: string,
-    msg: { authorName: string; authorType: 'customer' | 'agent'; visibility: 'public' | 'internal'; body: string },
+    msg: {
+      authorName: string;
+      authorType: 'customer' | 'agent';
+      visibility: 'public' | 'internal';
+      body: string;
+      attachments?: TicketAttachment[];
+    },
   ) => void;
   mergeTickets: (primaryId: string, duplicateId: string) => { ok: boolean; error?: string };
   checkAndEscalateTickets: (silent?: boolean) => number;
+  escalateTicket: (ticketId: string, escalatedTo?: string) => void;
+  updateSlaPolicy: (priority: Ticket['priority'], patch: Partial<Omit<SlaPolicy, 'priority'>>) => void;
+  requestPortalOtp: (phone: string) => {
+    ok: boolean;
+    error?: string;
+    code?: string;
+    customerId?: string;
+    customerName?: string;
+  };
+  submitPortalTicketByPhone: (data: {
+    phone: string;
+    name?: string;
+    subject: string;
+    category: string;
+    priority?: Ticket['priority'];
+    body: string;
+    attachments?: TicketAttachment[];
+  }) => { ok: boolean; error?: string; ticket?: Ticket };
   addKbArticle: (article: Omit<KbArticle, 'id' | 'helpfulCount' | 'updatedAt'>) => void;
   updateKbArticle: (
     id: string,
-    patch: { title: string; category: string; body: string; changeNote?: string },
+    patch: { title: string; category: string; body: string; visibility?: KbVisibility; changeNote?: string },
   ) => void;
   restoreKbVersion: (id: string, version: number) => void;
   voteKbHelpful: (id: string) => void;
 
-  // NPS
+  // NPS / CSAT / CES Surveys
   submitNpsSurvey: (data: Omit<NpsSurvey, 'id' | 'createdAt'>) => void;
   triggerNpsPrompt: (prompt: PendingNpsPrompt) => void;
 
@@ -480,9 +602,15 @@ type ClientFlowContextValue = {
   updateRule: (id: string, patch: Partial<Rule>) => void;
   deleteRule: (id: string) => void;
   updateAutomationPolicy: (patch: Partial<AutomationPolicy>) => void;
+  addMessageTemplate: (tpl: Omit<MessageTemplate, 'id' | 'updatedAt'>) => void;
+  updateMessageTemplate: (id: string, patch: Partial<MessageTemplate>) => void;
+  deleteMessageTemplate: (id: string) => void;
   dryRunRule: (rule: Rule, hourOverride?: number) => DryRunResult;
   sendSimulatedSms: (customerId: string, body: string, channel?: NotificationChannel) => { ok: boolean; error?: string };
   runAutomationNow: (silent?: boolean) => number;
+  fireWebhookTrigger: (topic: string, customerId?: string, payloadSummary?: string) => number;
+  fireCustomEventTrigger: (eventName: string, targetEntity: NonNullable<Rule['targetEntity']>, entityId?: string) => number;
+  retryAutomationLog: (logId: string) => void;
   retryNotification: (id: string) => void;
   processNotificationRetries: () => void;
   simulateDeliveryFailure: (id: string) => void;
@@ -591,6 +719,315 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
   const dismissPendingNps = useCallback(() => setPendingNps(null), []);
   const triggerNpsPrompt = useCallback((prompt: PendingNpsPrompt) => setPendingNps(prompt), []);
 
+  const isTickRunningRef = useRef(false);
+
+  // --- UNIFIED MULTI-ACTION RULE EXECUTOR (FR-AUT) ---
+  const executeRuleBatch = useCallback(
+    (
+      rulesToEval: Rule[],
+      triggerSource: 'schedule' | 'event' | 'webhook' | 'manual',
+      resolveCandidates: (rule: Rule, cur: AppState) => RuleCandidate[],
+      extraIncomingWebhook?: WebhookLogEntry,
+    ) => {
+      const cur = stateRef.current;
+      const nowMs = Date.now();
+      const nowIso = new Date().toISOString();
+      const processed = new Set(cur.processedRuleKeys);
+      const nextCooldowns: Record<string, string> = { ...(cur.ruleCooldowns ?? {}) };
+      const newOutbox: OutboxMessage[] = [];
+      const newTasks: Task[] = [];
+      const newTickets: Ticket[] = [];
+      const newWebhooks: WebhookLogEntry[] = extraIncomingWebhook ? [extraIncomingWebhook] : [];
+      const newLogs: AppState['automationLogs'] = [];
+
+      let nextCustomers = [...cur.customers];
+      let nextOrders = [...cur.orders];
+      let nextOpportunities = [...cur.opportunities];
+      let nextTickets = [...cur.tickets];
+      let nextAppointments = [...cur.appointments];
+      let rrIdx = cur.settings.roundRobinIndex ?? 0;
+
+      const patchEntityRecord = (
+        entityType: NonNullable<Rule['targetEntity']>,
+        entityId: string,
+        patch: Record<string, unknown>,
+      ) => {
+        if (entityType === 'customer') {
+          nextCustomers = nextCustomers.map((c) => (c.id === entityId ? { ...c, ...patch } : c));
+        } else if (entityType === 'order') {
+          nextOrders = nextOrders.map((o) => (o.id === entityId ? { ...o, ...patch, updatedAt: nowIso } : o));
+        } else if (entityType === 'opportunity') {
+          nextOpportunities = nextOpportunities.map((op) => (op.id === entityId ? { ...op, ...patch } : op));
+        } else if (entityType === 'ticket') {
+          nextTickets = nextTickets.map((t) => (t.id === entityId ? { ...t, ...patch } : t));
+        } else if (entityType === 'appointment') {
+          nextAppointments = nextAppointments.map((a) => (a.id === entityId ? { ...a, ...patch } : a));
+        }
+      };
+
+      let totalActions = 0;
+
+      for (const rule of rulesToEval) {
+        const candidates = resolveCandidates(rule, cur);
+        const quiet = (rule.respectQuietHours ?? true) && isWithinQuietHours(cur.automationPolicy);
+        const cap = rule.dailyCapPerCustomer ?? cur.automationPolicy.defaultDailyCap;
+        const actions = getNormalizedRuleActions(rule);
+
+        let matchedCount = 0;
+        let executedCount = 0;
+        let skippedCount = 0;
+        const skipReasons: string[] = [];
+
+        for (const cand of candidates) {
+          if (!evaluateRuleConditions(rule, cand.record, cand.customer, nowMs)) continue;
+          matchedCount++;
+
+          const entityKey =
+            triggerSource === 'event'
+              ? `${rule.id}_${cand.entityId}_${rule.triggerType ?? 'event'}`
+              : `${rule.id}_${cand.entityId}`;
+
+          if (!rule.allowRepeat && processed.has(entityKey)) {
+            skippedCount++;
+            if (skipReasons.length < 2) skipReasons.push('تکراری (Dedup)');
+            continue;
+          }
+          if (isRuleInCooldown(nextCooldowns, rule, cand.entityId, nowMs)) {
+            skippedCount++;
+            if (skipReasons.length < 2) skipReasons.push(`در بازه Cooldown (${rule.cooldownMinutes} دقیقه)`);
+            continue;
+          }
+
+          let candDidAct = false;
+          const targetEntity = rule.targetEntity ?? 'customer';
+
+          for (const act of actions) {
+            if (act.type === 'send_sms' || act.type === 'send_whatsapp' || act.type === 'send_email') {
+              if (!cand.customer) continue;
+              const ch: NotificationChannel =
+                act.channel ??
+                (act.type === 'send_whatsapp'
+                  ? 'whatsapp'
+                  : act.type === 'send_email'
+                    ? 'email'
+                    : 'sms');
+
+              if ((ch === 'sms' || ch === 'whatsapp') && cand.customer.consentSms === false) {
+                skippedCount++;
+                if (skipReasons.length < 2) skipReasons.push('عدم رضایت پیامکی/واتساپ (Opt-out)');
+                continue;
+              }
+              if (ch === 'email' && cand.customer.consentEmail === false) {
+                skippedCount++;
+                if (skipReasons.length < 2) skipReasons.push('عدم رضایت ایمیل (Opt-out)');
+                continue;
+              }
+              const todayCustCount = countTodayCustomerNotifications(
+                [...cur.outbox, ...newOutbox],
+                cand.customer.id,
+                cand.customer.phone,
+              );
+              if (cap > 0 && todayCustCount >= cap) {
+                skippedCount++;
+                if (skipReasons.length < 2) skipReasons.push(`سقف روزانه مشتری (${cap})`);
+                continue;
+              }
+              if (isChannelCapReached([...cur.outbox, ...newOutbox], ch, cur.automationPolicy)) {
+                skippedCount++;
+                if (skipReasons.length < 2) skipReasons.push(`سقف روزانه کانال ${ch}`);
+                continue;
+              }
+
+              const body = renderRuleTemplate(
+                act.messageTemplate || rule.messageTemplate || 'سلام {{customer.name}} عزیز، پیام خودکار از {{businessName}}.',
+                { customer: cand.customer, entity: cand.record, businessName: cur.settings.businessName },
+              );
+              newOutbox.push({
+                id: `msg_r_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+                to: ch === 'email' ? cand.customer.email || cand.customer.phone : cand.customer.phone,
+                customerId: cand.customer.id,
+                customerName: cand.customer.name,
+                body,
+                channel: ch,
+                ruleId: rule.id,
+                ruleName: rule.name,
+                deliveryStatus: quiet ? 'deferred_quiet' : 'delivered',
+                retryCount: 0,
+                maxRetries: cur.automationPolicy.maxRetries,
+                at: nowIso,
+              });
+              candDidAct = true;
+              executedCount++;
+            } else if (act.type === 'create_task') {
+              newTasks.push({
+                id: `t_r_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+                title: renderRuleTemplate(
+                  act.taskTitleTemplate || rule.taskTitleTemplate || 'پیگیری خودکار {{customer.name}}',
+                  { customer: cand.customer, entity: cand.record, businessName: cur.settings.businessName },
+                ),
+                customerId: cand.customer?.id,
+                dueAt: new Date(nowMs + 24 * 3600_000).toISOString(),
+                done: false,
+                createdByRuleId: rule.id,
+              });
+              candDidAct = true;
+              executedCount++;
+            } else if (act.type === 'update_field' && act.field) {
+              if (act.field.startsWith('customFields.')) {
+                const cfKey = act.field.slice('customFields.'.length);
+                const curCf = (cand.record.customFields as Record<string, string> | undefined) ?? {};
+                patchEntityRecord(targetEntity, cand.entityId, {
+                  customFields: { ...curCf, [cfKey]: act.value ?? '' },
+                });
+              } else {
+                patchEntityRecord(targetEntity, cand.entityId, { [act.field]: act.value ?? '' });
+              }
+              candDidAct = true;
+              executedCount++;
+            } else if (act.type === 'change_stage' && act.stage) {
+              if (targetEntity === 'opportunity') {
+                patchEntityRecord('opportunity', cand.entityId, { stage: act.stage });
+              } else {
+                patchEntityRecord(targetEntity, cand.entityId, { status: act.stage });
+              }
+              candDidAct = true;
+              executedCount++;
+            } else if (act.type === 'assign_owner') {
+              const team = cur.settings.salesTeam.length > 0 ? cur.settings.salesTeam : ['مدیر فروش'];
+              const chosenOwner =
+                !act.ownerName || act.ownerName === 'round_robin'
+                  ? team[rrIdx % team.length]
+                  : act.ownerName;
+              if (!act.ownerName || act.ownerName === 'round_robin') rrIdx++;
+              if (targetEntity === 'opportunity') {
+                patchEntityRecord('opportunity', cand.entityId, { ownerName: chosenOwner });
+              } else if (targetEntity === 'ticket') {
+                patchEntityRecord('ticket', cand.entityId, { assignee: chosenOwner });
+              } else if (targetEntity === 'customer') {
+                patchEntityRecord('customer', cand.entityId, { owner: chosenOwner });
+              }
+              candDidAct = true;
+              executedCount++;
+            } else if (act.type === 'add_tag' && cand.customer && act.tag) {
+              const targetCust = nextCustomers.find((c) => c.id === cand.customer!.id) ?? cand.customer;
+              if (!targetCust.tags.includes(act.tag)) {
+                nextCustomers = nextCustomers.map((c) =>
+                  c.id === targetCust.id ? { ...c, tags: [...c.tags, act.tag!] } : c,
+                );
+              }
+              candDidAct = true;
+              executedCount++;
+            } else if (act.type === 'create_ticket' && cand.customer) {
+              const nextNum = cur.tickets.length + newTickets.length + 101;
+              newTickets.push({
+                id: `tk_auto_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+                trackingCode: `TK-1405-${String(nextNum).padStart(3, '0')}`,
+                customerId: cand.customer.id,
+                subject: renderRuleTemplate(
+                  act.ticketSubjectTemplate || `پیگیری خودکار ${rule.name} — {{customer.name}}`,
+                  { customer: cand.customer, entity: cand.record, businessName: cur.settings.businessName },
+                ),
+                channel: 'portal',
+                priority: act.ticketPriority ?? 'normal',
+                status: 'open',
+                category: 'اتوماسیون',
+                createdAt: nowIso,
+              });
+              candDidAct = true;
+              executedCount++;
+            } else if (act.type === 'call_webhook') {
+              const url = act.webhookUrl || 'https://hooks.clientflow.ir/event';
+              newWebhooks.push({
+                id: `whl_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+                direction: 'outgoing',
+                urlOrTopic: url,
+                ruleId: rule.id,
+                ruleName: rule.name,
+                statusCode: 200,
+                latencyMs: 95 + Math.floor(Math.random() * 110),
+                payloadSummary: JSON.stringify({
+                  rule: rule.name,
+                  entity: targetEntity,
+                  entityId: cand.entityId,
+                  customer: cand.customer?.name ?? '-',
+                }),
+                ok: true,
+                at: nowIso,
+              });
+              candDidAct = true;
+              executedCount++;
+            }
+          }
+
+          if (candDidAct) {
+            processed.add(entityKey);
+            nextCooldowns[`${rule.id}_${cand.entityId}`] = nowIso;
+            totalActions++;
+          }
+        }
+
+        if (matchedCount > 0) {
+          const status: 'success' | 'skipped' | 'failed' = executedCount > 0 ? 'success' : 'skipped';
+          newLogs.push({
+            id: `al_${triggerSource}_${Date.now()}_${rule.id}_${Math.random().toString(36).slice(2, 4)}`,
+            ruleId: rule.id,
+            ruleName: rule.name,
+            summary:
+              executedCount > 0
+                ? `${executedCount} اقدام برای ${matchedCount} رکورد منطبق اجرا شد.`
+                : `قانون برای ${matchedCount} رکورد تطبیق یافت ولی به دلیل محافظ‌های سیستم رد (Skip) شد.`,
+            status,
+            reason:
+              executedCount > 0
+                ? skipReasons.length > 0
+                  ? `اجرا با ${skippedCount} مورد معوق (${skipReasons.join('، ')})`
+                  : 'تمام شروط و سیاست‌های ارسال رعایت شد'
+                : skipReasons.join('، ') || 'تطبیق پیش‌تر پردازش شده یا در بازه Cooldown است',
+            triggerSource,
+            matchedCount,
+            executedCount,
+            skippedCount,
+            at: nowIso,
+          });
+        }
+      }
+
+      if (
+        newOutbox.length > 0 ||
+        newTasks.length > 0 ||
+        newTickets.length > 0 ||
+        newWebhooks.length > 0 ||
+        newLogs.length > 0 ||
+        totalActions > 0
+      ) {
+        setState((prev) => ({
+          ...prev,
+          customers: nextCustomers,
+          orders: nextOrders,
+          opportunities: nextOpportunities,
+          tickets: [...newTickets, ...nextTickets],
+          appointments: nextAppointments,
+          outbox: [...newOutbox, ...prev.outbox],
+          tasks: [...newTasks, ...prev.tasks],
+          webhookLogs: [...newWebhooks, ...(prev.webhookLogs ?? [])].slice(0, 80),
+          automationLogs: [...newLogs, ...prev.automationLogs].slice(0, 150),
+          processedRuleKeys: Array.from(processed),
+          ruleCooldowns: nextCooldowns,
+          settings: { ...prev.settings, roundRobinIndex: rrIdx },
+        }));
+      }
+
+      return {
+        totalActions,
+        outboxCount: newOutbox.length,
+        taskCount: newTasks.length,
+        ticketCount: newTickets.length,
+        webhookCount: newWebhooks.length,
+      };
+    },
+    [],
+  );
+
   // --- EVENT-DRIVEN AUTOMATION ENGINE (FR-AUT) ---
   const fireAutomationEvent = useCallback(
     (
@@ -602,98 +1039,110 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
       const matchingRules = cur.rules.filter(
         (r) =>
           r.active &&
-          r.triggerType === triggerType &&
+          (r.triggerType === triggerType || (triggerType === 'on_event' && r.triggerType === 'on_event')) &&
           (r.targetEntity ?? 'customer') === targetEntity &&
           (!r.pack || r.pack === 'all' || r.pack === cur.settings.industryPack),
       );
       if (matchingRules.length === 0) return;
 
+      executeRuleBatch(matchingRules, 'event', (rule, s) =>
+        getTargetRecordsForRule(rule, s, { entity: targetEntity, record }),
+      );
+    },
+    [executeRuleBatch],
+  );
+
+  const fireWebhookTrigger = useCallback(
+    (topic: string, customerId?: string, payloadSummary?: string) => {
+      const cur = stateRef.current;
       const nowIso = new Date().toISOString();
-      const newOutbox: OutboxMessage[] = [];
-      const newTasks: Task[] = [];
-      const newLogs: AppState['automationLogs'] = [];
-      const newProcessed: string[] = [];
+      const normalizedTopic = topic.trim().toLowerCase();
+      const matchingRules = cur.rules.filter(
+        (r) =>
+          r.active &&
+          r.triggerType === 'on_webhook' &&
+          (!r.webhookTopic || r.webhookTopic.trim().toLowerCase() === normalizedTopic) &&
+          (!r.pack || r.pack === 'all' || r.pack === cur.settings.industryPack),
+      );
 
-      for (const rule of matchingRules) {
-        const candidates = getTargetRecordsForRule(rule, cur, { entity: targetEntity, record });
-        let ruleActions = 0;
-        for (const cand of candidates) {
-          if (!evaluateRuleConditions(rule, cand.record, cand.customer)) continue;
-          const key = `${rule.id}_${cand.entityId}_${triggerType}`;
-          if (cur.processedRuleKeys.includes(key)) continue;
-          newProcessed.push(key);
+      const incomingEntry: WebhookLogEntry = {
+        id: `whl_in_${Date.now()}`,
+        direction: 'incoming',
+        urlOrTopic: `webhook/${topic || 'generic'}`,
+        statusCode: 200,
+        latencyMs: 32,
+        payloadSummary: payloadSummary || `{"topic":"${topic}","customerId":"${customerId || 'all'}"}`,
+        ok: true,
+        at: nowIso,
+      };
 
-          const actionType = rule.actionType ?? 'send_notification';
-          const ch = rule.actionChannel ?? 'sms';
-          const quiet = (rule.respectQuietHours ?? true) && isWithinQuietHours(cur.automationPolicy);
-          const cap = rule.dailyCapPerCustomer ?? cur.automationPolicy.defaultDailyCap;
-          const todayCount = countTodayCustomerNotifications(
-            [...cur.outbox, ...newOutbox],
-            cand.customer?.id,
-            cand.customer?.phone,
-          );
-
-          if ((actionType === 'send_notification' || actionType === 'both') && cand.customer) {
-            const consentOk = ch !== 'sms' || cand.customer.consentSms !== false;
-            if (consentOk && (cap <= 0 || todayCount < cap)) {
-              ruleActions++;
-              newOutbox.push({
-                id: `msg_evt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-                to: cand.customer.phone,
-                customerId: cand.customer.id,
-                customerName: cand.customer.name,
-                body: renderRuleTemplate(
-                  rule.messageTemplate || 'سلام {{customer.name}}، رویداد جدید در {{businessName}} ثبت شد.',
-                  { customer: cand.customer, entity: cand.record, businessName: cur.settings.businessName },
-                ),
-                channel: ch,
-                ruleId: rule.id,
-                ruleName: rule.name,
-                deliveryStatus: quiet ? 'deferred_quiet' : 'delivered',
-                retryCount: 0,
-                maxRetries: cur.automationPolicy.maxRetries,
-                at: nowIso,
-              });
-            }
-          }
-
-          if (actionType === 'create_task' || actionType === 'both') {
-            ruleActions++;
-            newTasks.push({
-              id: `t_evt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-              title: renderRuleTemplate(
-                rule.taskTitleTemplate || 'پیگیری خودکار {{customer.name}}',
-                { customer: cand.customer, entity: cand.record, businessName: cur.settings.businessName },
-              ),
-              customerId: cand.customer?.id,
-              dueAt: new Date(Date.now() + 24 * 3600_000).toISOString(),
-              done: false,
-              createdByRuleId: rule.id,
-            });
-          }
-        }
-        if (ruleActions > 0) {
-          newLogs.push({
-            id: `al_evt_${Date.now()}_${rule.id}`,
-            ruleId: rule.id,
-            ruleName: rule.name,
-            summary: `اجرای رویدادمحور (${triggerType}): ${ruleActions} اقدام انجام شد.`,
-            at: nowIso,
-          });
-        }
-      }
-
-      if (newOutbox.length > 0 || newTasks.length > 0) {
+      if (matchingRules.length === 0) {
         setState((prev) => ({
           ...prev,
-          outbox: [...newOutbox, ...prev.outbox],
-          tasks: [...newTasks, ...prev.tasks],
-          automationLogs: [...newLogs, ...prev.automationLogs],
-          processedRuleKeys: [...prev.processedRuleKeys, ...newProcessed],
+          webhookLogs: [incomingEntry, ...(prev.webhookLogs ?? [])].slice(0, 80),
+          automationLogs: [
+            {
+              id: `al_wh_skip_${Date.now()}`,
+              ruleId: 'webhook',
+              ruleName: `وب‌هوک ورودی (${topic})`,
+              summary: 'هیچ قانون فعال منطبق با این موضوع وب‌هوک یافت نشد.',
+              status: 'skipped' as const,
+              reason: 'قانون فعال با محرک on_webhook و موضوع مطابق وجود ندارد',
+              triggerSource: 'webhook' as const,
+              matchedCount: 0,
+              executedCount: 0,
+              skippedCount: 0,
+              at: nowIso,
+            },
+            ...prev.automationLogs,
+          ].slice(0, 150),
         }));
+        pushToast(`وب‌هوک «${topic}» دریافت شد اما قانون فعالی برای آن وجود نداشت.`, 'info');
+        return 0;
       }
+
+      const targetCustomer = customerId ? cur.customers.find((c) => c.id === customerId) : undefined;
+      const res = executeRuleBatch(
+        matchingRules,
+        'webhook',
+        (rule, s) =>
+          targetCustomer
+            ? getTargetRecordsForRule(rule, s, {
+                entity: rule.targetEntity ?? 'customer',
+                record: targetCustomer as unknown as Record<string, unknown>,
+              })
+            : getTargetRecordsForRule(rule, s),
+        incomingEntry,
+      );
+      pushToast(`وب‌هوک «${topic}» اجرا شد: ${res.totalActions} اقدام ثبت گردید.`);
+      return res.totalActions;
     },
-    [],
+    [executeRuleBatch, pushToast],
+  );
+
+  const fireCustomEventTrigger = useCallback(
+    (eventName: string, targetEntity: NonNullable<Rule['targetEntity']>, entityId?: string) => {
+      const cur = stateRef.current;
+      const matchingRules = cur.rules.filter(
+        (r) =>
+          r.active &&
+          r.triggerType === 'on_event' &&
+          (!r.eventName || r.eventName.trim().toLowerCase() === eventName.trim().toLowerCase()) &&
+          (r.targetEntity ?? 'customer') === targetEntity &&
+          (!r.pack || r.pack === 'all' || r.pack === cur.settings.industryPack),
+      );
+      if (matchingRules.length === 0) {
+        pushToast(`رویداد «${eventName}» ثبت شد؛ قانون فعالی منطبق نبود.`, 'info');
+        return 0;
+      }
+      const res = executeRuleBatch(matchingRules, 'event', (rule, s) => {
+        const all = getTargetRecordsForRule(rule, s);
+        return entityId ? all.filter((c) => c.entityId === entityId) : all;
+      });
+      pushToast(`رویداد «${eventName}» اجرا شد (${res.totalActions} اقدام).`);
+      return res.totalActions;
+    },
+    [executeRuleBatch, pushToast],
   );
 
   // --- CRM & CUSTOMERS ---
@@ -722,6 +1171,9 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
           ...data,
           branchId: data.branchId ?? activeBranch,
           consentUpdatedAt: nowIso,
+          loyaltyPoints: data.loyaltyPoints ?? 0,
+          lifetimePoints: data.lifetimePoints ?? 0,
+          referralCode: data.referralCode ?? `REF-${Math.floor(1000 + Math.random() * 8999)}`,
           id: `c_${Date.now()}`,
           createdAt: nowIso,
         },
@@ -1737,6 +2189,33 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
       }
 
       if (status === 'done' && customer) {
+        const lCfg = cur.loyaltyConfig;
+        if (lCfg?.enabled && (lCfg.pointsPerVisit ?? 0) > 0) {
+          const pts = lCfg.pointsPerVisit;
+          const ltx: LoyaltyTransaction = {
+            id: `ltx_vis_${Date.now()}`,
+            customerId: customer.id,
+            customerName: customer.name,
+            type: 'earn_visit',
+            points: pts,
+            description: `کسب امتیاز بابت تکمیل نوبت (${id})`,
+            refId: id,
+            at: nowIso,
+          };
+          setState((prev) => ({
+            ...prev,
+            customers: prev.customers.map((c) =>
+              c.id === customer.id
+                ? {
+                    ...c,
+                    loyaltyPoints: (c.loyaltyPoints ?? 0) + pts,
+                    lifetimePoints: (c.lifetimePoints ?? 0) + pts,
+                  }
+                : c,
+            ),
+            loyaltyTransactions: [ltx, ...(prev.loyaltyTransactions ?? [])].slice(0, 200),
+          }));
+        }
         const alreadyRated = cur.npsSurveys.some(
           (n) => n.refType === 'appointment' && n.refId === id,
         );
@@ -1746,6 +2225,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
             refType: 'appointment',
             refId: id,
             label: `نوبت انجام‌شده برای ${customer.name}`,
+            defaultSurveyType: 'nps',
           });
         }
       }
@@ -2144,6 +2624,39 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
       }
 
       if (nextStatus === 'delivered' && customer) {
+        const lCfg = cur.loyaltyConfig;
+        if (lCfg?.enabled && (lCfg.pointsPer100kToman ?? 0) > 0) {
+          const orderTotal = Math.max(
+            0,
+            target.items.reduce((s, it) => s + it.qty * it.price, 0) - (target.discountAmount ?? 0),
+          );
+          const pts = Math.floor(orderTotal / 100_000) * lCfg.pointsPer100kToman;
+          if (pts > 0) {
+            const ltx: LoyaltyTransaction = {
+              id: `ltx_ord_${Date.now()}`,
+              customerId: customer.id,
+              customerName: customer.name,
+              type: 'earn_purchase',
+              points: pts,
+              description: `کسب امتیاز بابت تکمیل سفارش ${id}`,
+              refId: id,
+              at: nowIso,
+            };
+            setState((prev) => ({
+              ...prev,
+              customers: prev.customers.map((c) =>
+                c.id === customer.id
+                  ? {
+                      ...c,
+                      loyaltyPoints: (c.loyaltyPoints ?? 0) + pts,
+                      lifetimePoints: (c.lifetimePoints ?? 0) + pts,
+                    }
+                  : c,
+              ),
+              loyaltyTransactions: [ltx, ...(prev.loyaltyTransactions ?? [])].slice(0, 200),
+            }));
+          }
+        }
         const alreadyRated = cur.npsSurveys.some(
           (n) => n.refType === 'order' && n.refId === id,
         );
@@ -2153,6 +2666,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
             refType: 'order',
             refId: id,
             label: `سفارش تحویل‌شده به ${customer.name}`,
+            defaultSurveyType: 'csat',
           });
         }
       }
@@ -3708,6 +4222,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         cur.workflowDefinitions.find((d) => d.type === data.type && d.status === 'published') ||
         cur.workflowDefinitions.find((d) => d.type === data.type);
 
+      const actorName = cur.settings.role === 'admin' ? 'مدیر سیستم' : 'کارشناس';
       let steps: WorkflowStep[] = [];
       let slaHours = 24;
       if (matchedDef) {
@@ -3718,11 +4233,14 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
           name: n.label,
           nodeType: n.type,
           role: n.role,
+          assigneeType: n.assigneeType ?? 'role',
+          assignee: n.assigneeType === 'user' && n.assigneeUser ? n.assigneeUser : undefined,
+          stepSlaHours: n.stepSlaHours ?? (n.type === 'wait' || n.type === 'timer' ? n.timerHours ?? 4 : 8),
           status: 'pending',
           startedAt: idx === 0 ? nowIso : undefined,
           timerHours: n.timerHours,
           timerExpiresAt:
-            idx === 0 && n.type === 'timer' && n.timerHours
+            idx === 0 && (n.type === 'timer' || n.type === 'wait') && n.timerHours
               ? new Date(Date.now() + n.timerHours * 3600_000).toISOString()
               : undefined,
           formFields: n.formFields,
@@ -3742,8 +4260,8 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
 
       if (steps.length === 0) {
         steps = [
-          { name: 'بررسی درخواست و ثبت مستندات', nodeType: 'task', role: 'staff', status: 'pending', startedAt: nowIso },
-          { name: 'تأیید نهایی مدیر سیستم', nodeType: 'task', role: 'admin', status: 'pending' },
+          { name: 'بررسی درخواست و ثبت مستندات', nodeType: 'task', role: 'staff', stepSlaHours: 8, status: 'pending', startedAt: nowIso },
+          { name: 'تأیید نهایی مدیر سیستم', nodeType: 'approval', role: 'admin', stepSlaHours: 12, status: 'pending' },
         ];
       }
 
@@ -3757,6 +4275,16 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         relatedRef: data.relatedRef || undefined,
         currentStepIndex: 0,
         steps,
+        history: [
+          {
+            id: `wfh_${Date.now()}`,
+            at: nowIso,
+            actor: actorName,
+            stepName: 'شروع فرآیند',
+            action: 'started',
+            detail: `الگوی «${matchedDef?.name ?? data.type}» برای این درخواست آغاز شد.`,
+          },
+        ],
         status: 'running',
         createdAt: nowIso,
         slaHours,
@@ -3779,12 +4307,13 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
       stepData?: Record<string, string>,
       branchIndex?: number,
     ) => {
-      const wf = stateRef.current.workflows.find((w) => w.id === id);
+      const cur = stateRef.current;
+      const wf = cur.workflows.find((w) => w.id === id);
       if (!wf || wf.status !== 'running') return { ok: false, error: 'فرایند فعال نیست.' };
       const step = wf.steps[wf.currentStepIndex];
       if (!step) return { ok: false, error: 'مرحله معتبر نیست.' };
 
-      const curRole = stateRef.current.settings.role;
+      const curRole = cur.settings.role;
       const actorName = curRole === 'admin' ? 'مدیر سیستم' : 'کارشناس';
       const nowIso = new Date().toISOString();
 
@@ -3826,6 +4355,14 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
             ? 'approved'
             : 'running';
         const nextIndex = allApproved && !isLast ? wf.currentStepIndex + 1 : wf.currentStepIndex;
+        const histEntry: WorkflowHistoryEntry = {
+          id: `wfh_${Date.now()}`,
+          at: nowIso,
+          actor: actorName,
+          stepName: `${step.name} ← ${targetBranch.branchName}`,
+          action: decision === 'approved' ? 'approved' : 'rejected',
+          detail: comment?.trim() || `رای شاخه موازی: ${decision === 'approved' ? 'تأیید' : 'رد'}`,
+        };
 
         setState((prev) => ({
           ...prev,
@@ -3834,6 +4371,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
               ? {
                   ...w,
                   steps: updatedSteps,
+                  history: [...(w.history ?? []), histEntry],
                   status: nextStatus,
                   currentStepIndex: nextIndex,
                   completedAt: nextStatus !== 'running' ? nowIso : w.completedAt,
@@ -3854,10 +4392,73 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         return { ok: false, error: 'این مرحله نیازمند تأیید مدیر سیستم (Admin) است.' };
       }
 
-      const isLast = wf.currentStepIndex >= wf.steps.length - 1;
+      // Collect combined stepData across all steps to evaluate conditional transition / decision nodes
+      const mergedContext: Record<string, unknown> = {};
+      wf.steps.forEach((s) => {
+        if (s.stepData) Object.assign(mergedContext, s.stepData);
+      });
+      if (stepData) Object.assign(mergedContext, stepData);
+
+      let targetNextIndex = wf.currentStepIndex + 1;
+      let decisionSummary: string | undefined;
+      const newHist: WorkflowHistoryEntry[] = [
+        {
+          id: `wfh_${Date.now()}_a`,
+          at: nowIso,
+          actor: step.delegatedTo ? `${actorName} (تفویض: ${step.delegatedTo})` : actorName,
+          stepName: step.name,
+          action: decision === 'approved' ? 'approved' : 'rejected',
+          detail: comment?.trim() || (decision === 'approved' ? 'مرحله تأیید و ثبت شد.' : 'درخواست در این مرحله رد شد.'),
+        },
+      ];
+
+      // Evaluate conditional transition edges if this step belongs to a WorkflowDefinition
+      const def = wf.definitionId ? cur.workflowDefinitions.find((d) => d.id === wf.definitionId) : undefined;
+      if (decision === 'approved' && def && step.id) {
+        const outEdges = def.edges.filter((e) => e.fromId === step.id);
+        const condEdge =
+          outEdges.find((e) => e.conditionField && evaluateWorkflowEdgeCondition(e, mergedContext)) ??
+          outEdges[0];
+        if (condEdge) {
+          const destNode = def.nodes.find((n) => n.id === condEdge.toId);
+          if (destNode?.type === 'end') {
+            targetNextIndex = wf.steps.length; // Jump straight to end
+            decisionSummary = condEdge.label || 'مسیر مستقیم پایان';
+          } else if (destNode) {
+            const matchedStepIdx = wf.steps.findIndex((s) => s.id === destNode.id);
+            if (matchedStepIdx > wf.currentStepIndex) {
+              targetNextIndex = matchedStepIdx;
+              decisionSummary = condEdge.label || destNode.label;
+            }
+          }
+          if (step.nodeType === 'decision' || condEdge.conditionField) {
+            newHist.push({
+              id: `wfh_${Date.now()}_d`,
+              at: nowIso,
+              actor: 'موتور تصمیم',
+              stepName: step.name,
+              action: 'decision',
+              detail: `مسیر انتخاب‌شده: ${decisionSummary ?? condEdge.toId}`,
+            });
+          }
+        }
+      }
+
+      const willComplete = decision === 'approved' && targetNextIndex >= wf.steps.length;
       const nextStatus: WorkflowInstance['status'] =
-        decision === 'rejected' ? 'rejected' : isLast ? 'approved' : 'running';
-      const nextIndex = decision === 'approved' && !isLast ? wf.currentStepIndex + 1 : wf.currentStepIndex;
+        decision === 'rejected' ? 'rejected' : willComplete ? 'approved' : 'running';
+      const nextIndex = decision === 'approved' && !willComplete ? targetNextIndex : wf.currentStepIndex;
+
+      if (willComplete) {
+        newHist.push({
+          id: `wfh_${Date.now()}_end`,
+          at: nowIso,
+          actor: 'سیستم گردش کار',
+          stepName: 'پایان فرآیند',
+          action: 'completed',
+          detail: 'تمامی مراحل لازم با موفقیت تکمیل و فرآیند بسته شد.',
+        });
+      }
 
       const updatedSteps = wf.steps.map((s, idx) => {
         if (idx === wf.currentStepIndex) {
@@ -3866,16 +4467,26 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
             status: decision,
             actor: step.delegatedTo ? `${actorName} (تفویض به ${step.delegatedTo})` : actorName,
             comment: comment?.trim() || undefined,
+            decisionResult: decisionSummary ?? s.decisionResult,
             stepData: stepData ?? s.stepData,
             at: nowIso,
           };
         }
-        if (decision === 'approved' && !isLast && idx === wf.currentStepIndex + 1) {
+        // Mark skipped intermediate steps cleanly when decision jumps ahead
+        if (decision === 'approved' && idx > wf.currentStepIndex && idx < targetNextIndex) {
+          return {
+            ...s,
+            status: 'approved' as const,
+            actor: 'عبور شرطی موتور',
+            at: nowIso,
+          };
+        }
+        if (decision === 'approved' && !willComplete && idx === targetNextIndex) {
           return {
             ...s,
             startedAt: nowIso,
             timerExpiresAt:
-              s.nodeType === 'timer' && s.timerHours
+              (s.nodeType === 'timer' || s.nodeType === 'wait') && s.timerHours
                 ? new Date(Date.now() + s.timerHours * 3600_000).toISOString()
                 : s.timerExpiresAt,
           };
@@ -3890,6 +4501,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
             ? {
                 ...w,
                 steps: updatedSteps,
+                history: [...(w.history ?? []), ...newHist],
                 status: nextStatus,
                 currentStepIndex: nextIndex,
                 completedAt: nextStatus !== 'running' ? nowIso : w.completedAt,
@@ -3917,6 +4529,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
   const claimWorkflowStep = useCallback(
     (id: string) => {
       const roleName = stateRef.current.settings.role === 'admin' ? 'مدیر سیستم' : 'کارشناس';
+      const nowIso = new Date().toISOString();
       setState((prev) => ({
         ...prev,
         workflows: prev.workflows.map((w) =>
@@ -3926,6 +4539,17 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
                 steps: w.steps.map((s, idx) =>
                   idx === w.currentStepIndex ? { ...s, claimedBy: roleName, assignee: roleName } : s,
                 ),
+                history: [
+                  ...(w.history ?? []),
+                  {
+                    id: `wfh_${Date.now()}`,
+                    at: nowIso,
+                    actor: roleName,
+                    stepName: w.steps[w.currentStepIndex]?.name ?? 'گام جاری',
+                    action: 'claimed',
+                    detail: `گام توسط «${roleName}» در دست گرفته شد.`,
+                  },
+                ],
               }
             : w,
         ),
@@ -3938,6 +4562,8 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
 
   const reassignWorkflowStep = useCallback(
     (id: string, assignee: string) => {
+      const nowIso = new Date().toISOString();
+      const actor = stateRef.current.settings.role === 'admin' ? 'مدیر سیستم' : 'کارشناس';
       setState((prev) => ({
         ...prev,
         workflows: prev.workflows.map((w) =>
@@ -3947,6 +4573,17 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
                 steps: w.steps.map((s, idx) =>
                   idx === w.currentStepIndex ? { ...s, assignee, claimedBy: undefined } : s,
                 ),
+                history: [
+                  ...(w.history ?? []),
+                  {
+                    id: `wfh_${Date.now()}`,
+                    at: nowIso,
+                    actor,
+                    stepName: w.steps[w.currentStepIndex]?.name ?? 'گام جاری',
+                    action: 'reassigned',
+                    detail: `مسئول گام به «${assignee}» تغییر یافت.`,
+                  },
+                ],
               }
             : w,
         ),
@@ -3959,6 +4596,8 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
 
   const delegateWorkflowStep = useCallback(
     (id: string, delegateTo: string) => {
+      const nowIso = new Date().toISOString();
+      const actor = stateRef.current.settings.role === 'admin' ? 'مدیر سیستم' : 'کارشناس';
       setState((prev) => ({
         ...prev,
         workflows: prev.workflows.map((w) =>
@@ -3968,6 +4607,17 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
                 steps: w.steps.map((s, idx) =>
                   idx === w.currentStepIndex ? { ...s, delegatedTo: delegateTo } : s,
                 ),
+                history: [
+                  ...(w.history ?? []),
+                  {
+                    id: `wfh_${Date.now()}`,
+                    at: nowIso,
+                    actor,
+                    stepName: w.steps[w.currentStepIndex]?.name ?? 'گام جاری',
+                    action: 'delegated',
+                    detail: `اختیار تأیید به «${delegateTo}» تفویض شد.`,
+                  },
+                ],
               }
             : w,
         ),
@@ -4016,7 +4666,12 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
   const updateContentItem = useCallback(
     (
       id: string,
-      patch: Partial<Pick<ContentItem, 'title' | 'caption' | 'reach' | 'leadsCount' | 'hasBeforeAfterConsent' | 'status' | 'mediaAssetId'>>,
+      patch: Partial<
+        Pick<
+          ContentItem,
+          'title' | 'caption' | 'reach' | 'engagement' | 'leadsCount' | 'hasBeforeAfterConsent' | 'status' | 'mediaAssetId' | 'assignee' | 'platform' | 'format' | 'scheduledAt'
+        >
+      >,
     ) => {
       setState((prev) => ({
         ...prev,
@@ -4028,11 +4683,13 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
   );
 
   const addCampaign = useCallback(
-    (c: Omit<MarketingCampaign, 'id' | 'createdAt' | 'status'>) => {
+    (c: Omit<MarketingCampaign, 'id' | 'createdAt' | 'status'> & { status?: MarketingCampaign['status'] }) => {
+      const isFutureSchedule =
+        c.scheduledAt && !Number.isNaN(Date.parse(c.scheduledAt)) && Date.parse(c.scheduledAt) > Date.now();
       const created: MarketingCampaign = {
         ...c,
         id: `cmp_${Date.now()}`,
-        status: 'draft',
+        status: c.status ?? (isFutureSchedule ? 'scheduled' : 'draft'),
         createdAt: new Date().toISOString(),
       };
       setState((prev) => ({
@@ -4040,7 +4697,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         campaigns: [created, ...prev.campaigns],
         auditLogs: [makeAudit('بازاریابی', 'create', `کمپین «${created.name}» ایجاد شد.`), ...prev.auditLogs].slice(0, 100),
       }));
-      pushToast(`کمپین «${created.name}» ایجاد شد.`);
+      pushToast(`کمپین «${created.name}» ${created.status === 'scheduled' ? 'زمان‌بندی' : 'ایجاد'} شد.`);
     },
     [pushToast],
   );
@@ -4051,11 +4708,27 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
       const cmp = cur.campaigns.find((c) => c.id === id);
       if (!cmp) return;
       const nowIso = new Date().toISOString();
-      const targets = cur.customers.filter((cust) => {
-        if (cmp.channel === 'sms' && cust.consentSms === false) return false;
-        return !cust.isAnonymized;
+      const segCustomers = getSegmentMatchingCustomers(cur, cmp.segmentId);
+      const targets = segCustomers.filter((cust) => {
+        if ((cmp.channel === 'sms' || cmp.channel === 'whatsapp') && cust.consentSms === false) return false;
+        if (cmp.channel === 'email' && cust.consentEmail === false) return false;
+        return true;
       });
-      const sampleTargets = targets.slice(0, 8);
+
+      const recipients: CampaignRecipient[] = targets.map((cust, idx) => {
+        const useB = cmp.abTestEnabled && cmp.variantB && idx % 2 === 1;
+        return {
+          id: `rcp_${Date.now()}_${idx}`,
+          customerId: cust.id,
+          customerName: cust.name,
+          phone: cust.phone,
+          variant: useB ? 'B' : 'A',
+          status: idx % 5 === 0 ? 'sent' : 'delivered',
+          updatedAt: nowIso,
+        };
+      });
+
+      const sampleTargets = targets.slice(0, 10);
       const messages: OutboxMessage[] = sampleTargets.map((cust, idx) => {
         const useB = cmp.abTestEnabled && cmp.variantB && idx % 2 === 1;
         const tpl = useB ? cmp.variantB!.body : cmp.variantA.body;
@@ -4077,8 +4750,10 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         };
       });
 
-      const sentA = cmp.abTestEnabled ? Math.ceil(targets.length / 2) : targets.length;
-      const sentB = cmp.abTestEnabled ? Math.floor(targets.length / 2) : 0;
+      const sentA = recipients.filter((r) => r.variant === 'A').length;
+      const delivA = recipients.filter((r) => r.variant === 'A' && r.status !== 'sent').length;
+      const sentB = recipients.filter((r) => r.variant === 'B').length;
+      const delivB = recipients.filter((r) => r.variant === 'B' && r.status !== 'sent').length;
 
       setState((prev) => ({
         ...prev,
@@ -4089,8 +4764,9 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
                 ...c,
                 status: 'running',
                 launchedAt: nowIso,
-                variantA: { ...c.variantA, sent: sentA },
-                variantB: c.variantB ? { ...c.variantB, sent: sentB } : undefined,
+                recipients,
+                variantA: { ...c.variantA, sent: sentA, delivered: delivA },
+                variantB: c.variantB ? { ...c.variantB, sent: sentB, delivered: delivB } : undefined,
               }
             : c,
         ),
@@ -4101,34 +4777,111 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
     [pushToast],
   );
 
-  const simulateCampaignStats = useCallback(
-    (id: string) => {
+  const updateCampaignRecipientStatus = useCallback(
+    (campaignId: string, recipientId: string, status: CampaignRecipientStatus) => {
+      const nowIso = new Date().toISOString();
       setState((prev) => ({
         ...prev,
         campaigns: prev.campaigns.map((c) => {
-          if (c.id !== id) return c;
-          const sentA = Math.max(c.variantA.sent, 20);
-          const clicksA = Math.max(c.variantA.clicks, Math.round(sentA * 0.28));
-          const convA = Math.max(c.variantA.conversions, Math.round(sentA * 0.09));
-          let variantB = c.variantB;
-          let winner: 'A' | 'B' | undefined = 'A';
-          if (c.abTestEnabled && variantB) {
-            const sentB = Math.max(variantB.sent, 20);
-            const clicksB = Math.max(variantB.clicks, Math.round(sentB * 0.42));
-            const convB = Math.max(variantB.conversions, Math.round(sentB * 0.16));
-            variantB = { ...variantB, sent: sentB, clicks: clicksB, conversions: convB };
-            winner = convB / sentB >= convA / sentA ? 'B' : 'A';
-          }
+          if (c.id !== campaignId) return c;
+          const nextRecipients = (c.recipients ?? []).map((r) =>
+            r.id === recipientId ? { ...r, status, updatedAt: nowIso } : r,
+          );
+          const countFor = (v: 'A' | 'B') => {
+            const list = nextRecipients.filter((r) => r.variant === v);
+            const sent = Math.max(c[v === 'A' ? 'variantA' : 'variantB']?.sent ?? 0, list.length);
+            const delivered = list.filter((r) => r.status !== 'sent').length;
+            const clicks = list.filter((r) => r.status === 'clicked' || r.status === 'converted').length;
+            const conversions = list.filter((r) => r.status === 'converted').length;
+            return { sent, delivered, clicks, conversions };
+          };
+          const a = countFor('A');
+          const b = c.variantB ? countFor('B') : undefined;
+          const totalConverted = nextRecipients.filter((r) => r.status === 'converted').length;
+          const winner: 'A' | 'B' | undefined =
+            c.abTestEnabled && b
+              ? b.conversions / Math.max(1, b.sent) > a.conversions / Math.max(1, a.sent)
+                ? 'B'
+                : 'A'
+              : c.winner;
           return {
             ...c,
-            status: 'completed',
-            variantA: { ...c.variantA, sent: sentA, clicks: clicksA, conversions: convA },
-            variantB,
+            recipients: nextRecipients,
+            variantA: { ...c.variantA, ...a },
+            variantB: c.variantB && b ? { ...c.variantB, ...b } : undefined,
+            revenueGenerated: Math.max(c.revenueGenerated ?? 0, totalConverted * 1_650_000),
             winner,
           };
         }),
       }));
-      pushToast('نتایج بازخورد و تست A/B کمپین شبیه‌سازی و برنده مشخص شد.');
+      pushToast('وضعیت گیرنده کمپین به‌روزرسانی شد.');
+    },
+    [pushToast],
+  );
+
+  const simulateCampaignStats = useCallback(
+    (id: string) => {
+      const nowIso = new Date().toISOString();
+      setState((prev) => ({
+        ...prev,
+        campaigns: prev.campaigns.map((c) => {
+          if (c.id !== id) return c;
+          const baseRecipients =
+            c.recipients && c.recipients.length > 0
+              ? c.recipients
+              : getSegmentMatchingCustomers(prev, c.segmentId)
+                  .slice(0, 10)
+                  .map((cust, idx) => ({
+                    id: `rcp_sim_${Date.now()}_${idx}`,
+                    customerId: cust.id,
+                    customerName: cust.name,
+                    phone: cust.phone,
+                    variant: (c.abTestEnabled && c.variantB && idx % 2 === 1 ? 'B' : 'A') as 'A' | 'B',
+                    status: 'delivered' as CampaignRecipientStatus,
+                    updatedAt: nowIso,
+                  }));
+
+          const updatedRecipients: CampaignRecipient[] = baseRecipients.map((r, idx) => {
+            const nextStatus: CampaignRecipientStatus =
+              idx % 5 === 0
+                ? 'converted'
+                : idx % 3 === 0
+                  ? 'clicked'
+                  : idx % 4 === 0 && r.variant === 'B'
+                    ? 'converted'
+                    : 'delivered';
+            return { ...r, status: nextStatus, updatedAt: nowIso };
+          });
+
+          const sentA = Math.max(c.variantA.sent, 24);
+          const delivA = Math.max(c.variantA.delivered ?? 0, Math.round(sentA * 0.94));
+          const clicksA = Math.max(c.variantA.clicks, Math.round(sentA * 0.28));
+          const convA = Math.max(c.variantA.conversions, Math.round(sentA * 0.09));
+          let variantB = c.variantB;
+          let winner: 'A' | 'B' | undefined = 'A';
+          let totalConv = convA;
+          if (c.abTestEnabled && variantB) {
+            const sentB = Math.max(variantB.sent, 24);
+            const delivB = Math.max(variantB.delivered ?? 0, Math.round(sentB * 0.96));
+            const clicksB = Math.max(variantB.clicks, Math.round(sentB * 0.42));
+            const convB = Math.max(variantB.conversions, Math.round(sentB * 0.16));
+            variantB = { ...variantB, sent: sentB, delivered: delivB, clicks: clicksB, conversions: convB };
+            winner = convB / sentB >= convA / sentA ? 'B' : 'A';
+            totalConv += convB;
+          }
+          const estimatedRev = Math.max(c.revenueGenerated ?? 0, totalConv * 1_650_000);
+          return {
+            ...c,
+            status: 'completed',
+            recipients: updatedRecipients,
+            variantA: { ...c.variantA, sent: sentA, delivered: delivA, clicks: clicksA, conversions: convA },
+            variantB,
+            revenueGenerated: estimatedRev,
+            winner,
+          };
+        }),
+      }));
+      pushToast('نتایج تحویل، کلیک، ROI و برنده تست A/B محاسبه شد.');
     },
     [pushToast],
   );
@@ -4145,6 +4898,19 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         mediaAssets: [created, ...prev.mediaAssets],
       }));
       pushToast(`فایل «${created.name}» به کتابخانه رسانه اضافه شد.`);
+    },
+    [pushToast],
+  );
+
+  const toggleMediaConsent = useCallback(
+    (id: string) => {
+      setState((prev) => ({
+        ...prev,
+        mediaAssets: prev.mediaAssets.map((m) =>
+          m.id === id ? { ...m, hasModelConsent: !m.hasModelConsent } : m,
+        ),
+      }));
+      pushToast('وضعیت رضایت‌نامه انتشار فایل تغییر کرد.');
     },
     [pushToast],
   );
@@ -4191,6 +4957,11 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
       const nowIso = new Date().toISOString();
       const existing = cur.customers.find((c) => c.phone === data.phone.trim());
       const customerId = existing ? existing.id : `c_lf_${Date.now()}`;
+      const team = cur.settings.salesTeam;
+      const rrIdx = cur.settings.roundRobinIndex ?? 0;
+      const assignedOwner =
+        team.length > 0 && cur.settings.autoAssignLeads ? team[rrIdx % team.length] : team[0] ?? 'مدیر سیستم';
+
       const newCustomer: Customer | null = existing
         ? null
         : {
@@ -4203,10 +4974,36 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
             lifecycle: form.defaultLifecycle,
             tags: ['فرم فرود', form.utmCampaign],
             source: form.sourceTag,
+            ownerName: assignedOwner,
             notes: data.notes?.trim() || `ثبت‌شده از فرم ${form.title}`,
             consentSms: true,
+            loyaltyPoints: 0,
+            lifetimePoints: 0,
+            referralCode: `REF-${Math.floor(1000 + Math.random() * 8999)}`,
             createdAt: nowIso,
           };
+
+      const newLead: SalesLead = {
+        id: `ld_lf_${Date.now()}`,
+        name: data.name.trim(),
+        phone: data.phone.trim(),
+        email: data.email?.trim() || undefined,
+        companyName: data.companyName?.trim() || undefined,
+        source: form.sourceTag,
+        score: computeLeadScoreHint({
+          source: form.sourceTag,
+          hasEmail: Boolean(data.email?.trim()),
+          hasCompany: Boolean(data.companyName?.trim()),
+        }),
+        estimatedAmount: 5_000_000,
+        ownerName: assignedOwner,
+        assignedByRule: cur.settings.autoAssignLeads ? 'round_robin' : 'manual',
+        status: 'new',
+        convertedCustomerId: customerId,
+        notes: data.notes?.trim() || `ارسال‌شده از فرم فرود «${form.title}» (${form.utmCampaign})`,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
 
       const touch: UtmTouch = {
         id: `utm_${Date.now()}`,
@@ -4223,10 +5020,14 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
       setState((prev) => ({
         ...prev,
         customers: newCustomer ? [newCustomer, ...prev.customers] : prev.customers,
+        leads: [newLead, ...prev.leads],
         utmTouches: [touch, ...prev.utmTouches],
         landingForms: prev.landingForms.map((f) =>
           f.id === formId ? { ...f, submissionsCount: f.submissionsCount + 1 } : f,
         ),
+        settings: cur.settings.autoAssignLeads
+          ? { ...prev.settings, roundRobinIndex: (prev.settings.roundRobinIndex ?? 0) + 1 }
+          : prev.settings,
         auditLogs: [
           makeAudit('بازاریابی', 'create', `ثبت سرنخ «${data.name}» از فرم فرود (${form.utmCampaign}).`),
           ...prev.auditLogs,
@@ -4235,10 +5036,334 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
       if (newCustomer) {
         setTimeout(() => fireAutomationEvent('on_create', 'customer', newCustomer as unknown as Record<string, unknown>), 50);
       }
-      pushToast(`اطلاعات «${data.name}» از فرم فرود ثبت و در ردیابی UTM ذخیره شد.`);
+      pushToast(`سرنخ «${data.name}» در فروش و ردیابی UTM ثبت شد.`);
       return { ok: true };
     },
     [fireAutomationEvent, pushToast],
+  );
+
+  // --- LOYALTY CLUB & REFERRAL PROGRAM ---
+  const updateLoyaltyConfig = useCallback(
+    (patch: Partial<LoyaltyConfig>) => {
+      setState((prev) => ({
+        ...prev,
+        loyaltyConfig: { ...(prev.loyaltyConfig ?? createInitialState().loyaltyConfig!), ...patch },
+      }));
+      pushToast('قوانین باشگاه مشتریان ذخیره شد.');
+    },
+    [pushToast],
+  );
+
+  const addLoyaltyReward = useCallback(
+    (reward: Omit<LoyaltyReward, 'id' | 'redeemedCount'>) => {
+      const created: LoyaltyReward = {
+        ...reward,
+        id: `rew_${Date.now()}`,
+        redeemedCount: 0,
+      };
+      setState((prev) => ({
+        ...prev,
+        loyaltyRewards: [created, ...(prev.loyaltyRewards ?? [])],
+      }));
+      pushToast(`پاداش «${created.title}» به باشگاه اضافه شد.`);
+    },
+    [pushToast],
+  );
+
+  const toggleLoyaltyReward = useCallback((id: string) => {
+    setState((prev) => ({
+      ...prev,
+      loyaltyRewards: (prev.loyaltyRewards ?? []).map((r) =>
+        r.id === id ? { ...r, active: !r.active } : r,
+      ),
+    }));
+  }, []);
+
+  const adjustCustomerPoints = useCallback(
+    (customerId: string, pointsDelta: number, description: string) => {
+      const cust = stateRef.current.customers.find((c) => c.id === customerId);
+      if (!cust || pointsDelta === 0) return;
+      const nowIso = new Date().toISOString();
+      const ltx: LoyaltyTransaction = {
+        id: `ltx_man_${Date.now()}`,
+        customerId,
+        customerName: cust.name,
+        type: 'earn_manual',
+        points: pointsDelta,
+        description: description.trim() || (pointsDelta > 0 ? 'افزایش دستی امتیاز باشگاه' : 'کسر دستی امتیاز'),
+        at: nowIso,
+      };
+      setState((prev) => ({
+        ...prev,
+        customers: prev.customers.map((c) =>
+          c.id === customerId
+            ? {
+                ...c,
+                loyaltyPoints: Math.max(0, (c.loyaltyPoints ?? 0) + pointsDelta),
+                lifetimePoints:
+                  pointsDelta > 0 ? (c.lifetimePoints ?? 0) + pointsDelta : c.lifetimePoints ?? 0,
+              }
+            : c,
+        ),
+        loyaltyTransactions: [ltx, ...(prev.loyaltyTransactions ?? [])].slice(0, 200),
+      }));
+      pushToast(`تغییر امتیاز برای «${cust.name}» ثبت شد.`);
+    },
+    [pushToast],
+  );
+
+  const redeemLoyaltyReward = useCallback(
+    (customerId: string, rewardId: string) => {
+      const cur = stateRef.current;
+      const cust = cur.customers.find((c) => c.id === customerId);
+      const reward = (cur.loyaltyRewards ?? []).find((r) => r.id === rewardId);
+      if (!cust || !reward) return { ok: false, error: 'مشتری یا پاداش یافت نشد.' };
+      const bal = cust.loyaltyPoints ?? 0;
+      if (bal < reward.pointsCost) {
+        return { ok: false, error: `امتیاز مشتری (${bal}) کمتر از امتیاز لازم (${reward.pointsCost}) است.` };
+      }
+
+      const nowIso = new Date().toISOString();
+      const code = `LOY-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
+      const newCoupon: Coupon = {
+        id: `cp_loy_${Date.now()}`,
+        code,
+        discountPct: reward.discountPct,
+        maxUses: 1,
+        usedCount: 0,
+        active: true,
+        validFrom: nowIso,
+        validTo: new Date(Date.now() + reward.validDays * 86400_000).toISOString(),
+        minOrderAmount: reward.minOrderAmount,
+      };
+      const ltx: LoyaltyTransaction = {
+        id: `ltx_red_${Date.now()}`,
+        customerId: cust.id,
+        customerName: cust.name,
+        type: 'redeem_reward',
+        points: -reward.pointsCost,
+        description: `دریافت جایزه «${reward.title}»`,
+        couponCode: code,
+        at: nowIso,
+      };
+      const outboxMsg: OutboxMessage | null =
+        cust.consentSms !== false
+          ? {
+              id: `msg_loy_${Date.now()}`,
+              to: cust.phone,
+              customerId: cust.id,
+              customerName: cust.name,
+              body: `${cust.name} عزیز، جایزه «${reward.title}» با کد تخفیف ${code} برای شما در ${cur.settings.businessName} صادر شد.`,
+              channel: 'sms',
+              ruleName: 'باشگاه مشتریان (Redeem)',
+              deliveryStatus: 'delivered',
+              retryCount: 0,
+              maxRetries: cur.automationPolicy.maxRetries,
+              at: nowIso,
+            }
+          : null;
+
+      setState((prev) => ({
+        ...prev,
+        customers: prev.customers.map((c) =>
+          c.id === cust.id
+            ? { ...c, loyaltyPoints: Math.max(0, (c.loyaltyPoints ?? 0) - reward.pointsCost) }
+            : c,
+        ),
+        loyaltyRewards: (prev.loyaltyRewards ?? []).map((r) =>
+          r.id === reward.id ? { ...r, redeemedCount: r.redeemedCount + 1 } : r,
+        ),
+        coupons: [newCoupon, ...prev.coupons],
+        loyaltyTransactions: [ltx, ...(prev.loyaltyTransactions ?? [])].slice(0, 200),
+        outbox: outboxMsg ? [outboxMsg, ...prev.outbox] : prev.outbox,
+        auditLogs: [
+          makeAudit('باشگاه مشتریان', 'create', `تبدیل ${reward.pointsCost} امتیاز «${cust.name}» به کد ${code}.`),
+          ...prev.auditLogs,
+        ].slice(0, 100),
+      }));
+      pushToast(`کد تخفیف ${code} صادر و در صف ارسال ثبت شد.`);
+      return { ok: true, couponCode: code };
+    },
+    [pushToast],
+  );
+
+  const sendOccasionReward = useCallback(
+    (customerId: string, occasionType: 'birthday' | 'anniversary') => {
+      const cur = stateRef.current;
+      const cust = cur.customers.find((c) => c.id === customerId);
+      if (!cust) return { ok: false };
+      const cfg = cur.loyaltyConfig ?? createInitialState().loyaltyConfig!;
+      const nowIso = new Date().toISOString();
+      const prefix = occasionType === 'birthday' ? 'BDAY' : 'ANNIV';
+      const code = `${prefix}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+      const bonusPts = cfg.birthdayBonusPoints ?? 300;
+      const discPct = cfg.birthdayDiscountPct ?? 15;
+      const labelFa = occasionType === 'birthday' ? 'تولد' : 'سالگرد عضویت';
+
+      const newCoupon: Coupon = {
+        id: `cp_occ_${Date.now()}`,
+        code,
+        discountPct: discPct,
+        maxUses: 1,
+        usedCount: 0,
+        active: true,
+        validFrom: nowIso,
+        validTo: new Date(Date.now() + 14 * 86400_000).toISOString(),
+      };
+      const ltx: LoyaltyTransaction = {
+        id: `ltx_occ_${Date.now()}`,
+        customerId: cust.id,
+        customerName: cust.name,
+        type: 'birthday_bonus',
+        points: bonusPts,
+        description: `هدیه مناسبت ${labelFa} + کد تخفیف ${discPct}٪`,
+        couponCode: code,
+        at: nowIso,
+      };
+      const outboxMsg: OutboxMessage | null =
+        cust.consentSms !== false
+          ? {
+              id: `msg_occ_${Date.now()}`,
+              to: cust.phone,
+              customerId: cust.id,
+              customerName: cust.name,
+              body: `${cust.name} عزیز، ${labelFa}تان مبارک! از طرف ${cur.settings.businessName}، ${bonusPts} امتیاز هدیه و کد تخفیف ${discPct}٪ (${code}) تقدیم شما شد.`,
+              channel: 'whatsapp',
+              ruleName: `هدیه ${labelFa} باشگاه`,
+              deliveryStatus: 'delivered',
+              retryCount: 0,
+              maxRetries: cur.automationPolicy.maxRetries,
+              at: nowIso,
+            }
+          : null;
+
+      setState((prev) => ({
+        ...prev,
+        customers: prev.customers.map((c) =>
+          c.id === cust.id
+            ? {
+                ...c,
+                loyaltyPoints: (c.loyaltyPoints ?? 0) + bonusPts,
+                lifetimePoints: (c.lifetimePoints ?? 0) + bonusPts,
+              }
+            : c,
+        ),
+        coupons: [newCoupon, ...prev.coupons],
+        loyaltyTransactions: [ltx, ...(prev.loyaltyTransactions ?? [])].slice(0, 200),
+        outbox: outboxMsg ? [outboxMsg, ...prev.outbox] : prev.outbox,
+      }));
+      pushToast(`هدیه ${labelFa} برای «${cust.name}» با کد ${code} ارسال شد.`);
+      return { ok: true, couponCode: code };
+    },
+    [pushToast],
+  );
+
+  const registerReferral = useCallback(
+    (referralCode: string, newCustomerName: string, newCustomerPhone: string) => {
+      const cur = stateRef.current;
+      const cleanCode = referralCode.trim().toUpperCase();
+      const referrer = cur.customers.find(
+        (c) => (c.referralCode ?? '').toUpperCase() === cleanCode,
+      );
+      if (!referrer) return { ok: false, error: 'کد معرف یافت نشد.' };
+      if (!newCustomerName.trim() || !isValidIranMobile(newCustomerPhone)) {
+        return { ok: false, error: 'نام و شماره موبایل معتبر برای فرد معرفی‌شده الزامی است.' };
+      }
+      if (cur.customers.some((c) => c.phone === newCustomerPhone.trim())) {
+        return { ok: false, error: 'این شماره موبایل قبلاً در سیستم ثبت شده است.' };
+      }
+
+      const cfg = cur.loyaltyConfig ?? createInitialState().loyaltyConfig!;
+      const nowIso = new Date().toISOString();
+      const newCustId = `c_ref_${Date.now()}`;
+      const refPts = cfg.pointsPerReferral ?? 250;
+      const welcomePts = cfg.referredWelcomePoints ?? 100;
+      const couponCode = `REFW-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+
+      const newCust: Customer = {
+        id: newCustId,
+        name: newCustomerName.trim(),
+        phone: newCustomerPhone.trim(),
+        personType: 'individual',
+        lifecycle: 'active',
+        tags: ['معرفی‌شده'],
+        source: 'معرفی',
+        ownerName: referrer.ownerName ?? cur.settings.salesTeam[0],
+        consentSms: true,
+        loyaltyPoints: welcomePts,
+        lifetimePoints: welcomePts,
+        referralCode: `REF-${Math.floor(1000 + Math.random() * 8999)}`,
+        referredByCustomerId: referrer.id,
+        createdAt: nowIso,
+      };
+
+      const rel: CustomerRelation = {
+        id: `rel_${Date.now()}`,
+        fromCustomerId: referrer.id,
+        toCustomerId: newCustId,
+        relationType: 'referrer',
+        note: `ثبت معرفی با کد ${cleanCode}`,
+        createdAt: nowIso,
+      };
+
+      const txReferrer: LoyaltyTransaction = {
+        id: `ltx_ref1_${Date.now()}`,
+        customerId: referrer.id,
+        customerName: referrer.name,
+        type: 'earn_referral',
+        points: refPts,
+        description: `پاداش معرفی «${newCust.name}» با کد ${cleanCode}`,
+        at: nowIso,
+      };
+
+      const txWelcome: LoyaltyTransaction = {
+        id: `ltx_ref2_${Date.now()}`,
+        customerId: newCustId,
+        customerName: newCust.name,
+        type: 'earn_referral',
+        points: welcomePts,
+        description: `امتیاز خوش‌آمدگویی معرفی‌شده توسط ${referrer.name}`,
+        couponCode,
+        at: nowIso,
+      };
+
+      const welcomeCoupon: Coupon = {
+        id: `cp_ref_${Date.now()}`,
+        code: couponCode,
+        discountPct: 10,
+        maxUses: 1,
+        usedCount: 0,
+        active: true,
+        validFrom: nowIso,
+        validTo: new Date(Date.now() + 30 * 86400_000).toISOString(),
+      };
+
+      setState((prev) => ({
+        ...prev,
+        customers: [
+          newCust,
+          ...prev.customers.map((c) =>
+            c.id === referrer.id
+              ? {
+                  ...c,
+                  loyaltyPoints: (c.loyaltyPoints ?? 0) + refPts,
+                  lifetimePoints: (c.lifetimePoints ?? 0) + refPts,
+                }
+              : c,
+          ),
+        ],
+        customerRelations: [rel, ...prev.customerRelations],
+        coupons: [welcomeCoupon, ...prev.coupons],
+        loyaltyTransactions: [txReferrer, txWelcome, ...(prev.loyaltyTransactions ?? [])].slice(0, 200),
+        auditLogs: [
+          makeAudit('باشگاه مشتریان', 'create', `معرفی «${newCust.name}» توسط «${referrer.name}» با کد ${cleanCode}.`),
+          ...prev.auditLogs,
+        ].slice(0, 100),
+      }));
+      pushToast(`معرفی ثبت شد! ${refPts} امتیاز به «${referrer.name}» و ${welcomePts} امتیاز به «${newCust.name}» تعلق گرفت.`);
+      return { ok: true };
+    },
+    [pushToast],
   );
 
   const addTask = useCallback(
@@ -4310,28 +5435,47 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
       customerId: string;
       subject: string;
       priority: Ticket['priority'];
+      severity?: TicketSeverity;
+      channel?: TicketChannel;
       category?: string;
       team?: string;
       assignee?: string;
+      isComplaint?: boolean;
       rootCause?: string;
+      complaintResolution?: string;
+      complaintStatus?: Ticket['complaintStatus'];
+      attachments?: TicketAttachment[];
       initialBody?: string;
       customFields?: Record<string, string>;
-    }) => {
-      if (!data.subject.trim()) return;
+    }): Ticket | null => {
+      if (!data.subject.trim()) return null;
       const nowIso = new Date().toISOString();
-      const slaHours = data.priority === 'high' ? 4 : data.priority === 'normal' ? 24 : 48;
-      const cust = stateRef.current.customers.find((c) => c.id === data.customerId);
+      const cur = stateRef.current;
+      const policy = cur.slaPolicies[data.priority];
+      const slaHours = policy ? Math.max(1, Math.round(policy.resolutionMin / 60)) : data.priority === 'high' ? 4 : data.priority === 'normal' ? 24 : 48;
+      const jYear = formatJalali(nowIso, 'YYYY');
+      const seqNum = 101 + cur.tickets.length;
+      const trackingCode = `TK-${jYear}-${String(seqNum).padStart(3, '0')}`;
+      const cust = cur.customers.find((c) => c.id === data.customerId);
+      const isComplaint = Boolean(data.isComplaint || data.category === 'شکایت و کیفیت');
       const ticket: Ticket = {
         id: `k_${Date.now()}`,
+        trackingCode,
         customerId: data.customerId,
         subject: data.subject.trim(),
+        channel: data.channel || 'portal',
         priority: data.priority,
+        severity: data.severity || (data.priority === 'high' ? 'major' : 'minor'),
         status: 'open',
         category: data.category || 'پشتیبانی عمومی',
         team: data.team || 'پذیرش',
-        assignee: data.assignee || stateRef.current.settings.salesTeam[0],
+        assignee: data.assignee || cur.settings.salesTeam[0],
         slaHours,
+        attachments: data.attachments,
+        isComplaint,
         rootCause: data.rootCause,
+        complaintResolution: data.complaintResolution,
+        complaintStatus: isComplaint ? data.complaintStatus || 'investigating' : undefined,
         createdAt: nowIso,
         customFields: data.customFields,
       };
@@ -4343,6 +5487,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
             authorType: 'customer',
             visibility: 'public',
             body: data.initialBody.trim(),
+            attachments: data.attachments,
             createdAt: nowIso,
           }
         : null;
@@ -4351,10 +5496,11 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         ...prev,
         tickets: [ticket, ...prev.tickets],
         ticketMessages: initMsg ? [...prev.ticketMessages, initMsg] : prev.ticketMessages,
-        auditLogs: [makeAudit('پشتیبانی', 'create', `تیکت «${ticket.subject}» ثبت شد.`), ...prev.auditLogs].slice(0, 100),
+        auditLogs: [makeAudit('پشتیبانی', 'create', `تیکت ${trackingCode} «${ticket.subject}» ثبت شد.`), ...prev.auditLogs].slice(0, 100),
       }));
       setTimeout(() => fireAutomationEvent('on_ticket_create', 'ticket', ticket as unknown as Record<string, unknown>), 50);
-      pushToast('تیکت جدید ثبت شد.');
+      pushToast(`تیکت جدید با کد رهگیری ${trackingCode} ثبت شد.`);
+      return ticket;
     },
     [fireAutomationEvent, pushToast],
   );
@@ -4362,9 +5508,29 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
   const updateTicket = useCallback(
     (
       id: string,
-      patch: Partial<Pick<Ticket, 'status' | 'priority' | 'replyNote' | 'assignee' | 'team' | 'category' | 'rootCause'>>,
+      patch: Partial<
+        Pick<
+          Ticket,
+          | 'status'
+          | 'priority'
+          | 'severity'
+          | 'channel'
+          | 'replyNote'
+          | 'assignee'
+          | 'team'
+          | 'category'
+          | 'isComplaint'
+          | 'rootCause'
+          | 'complaintResolution'
+          | 'complaintStatus'
+        >
+      >,
     ) => {
       const nowIso = new Date().toISOString();
+      const cur = stateRef.current;
+      const existing = cur.tickets.find((t) => t.id === id);
+      const closingNow = patch.status && isTicketClosedStatus(patch.status) && existing && !isTicketClosedStatus(existing.status);
+
       setState((prev) => ({
         ...prev,
         tickets: prev.tickets.map((t) =>
@@ -4372,12 +5538,31 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
             ? {
                 ...t,
                 ...patch,
-                resolvedAt: patch.status === 'resolved' && !t.resolvedAt ? nowIso : t.resolvedAt,
+                resolvedAt:
+                  patch.status && isTicketClosedStatus(patch.status) && !t.resolvedAt
+                    ? nowIso
+                    : patch.status && !isTicketClosedStatus(patch.status)
+                      ? undefined
+                      : t.resolvedAt,
               }
             : t,
         ),
       }));
       pushToast('تیکت به‌روزرسانی شد.');
+
+      if (closingNow && existing) {
+        const cust = cur.customers.find((c) => c.id === existing.customerId);
+        const alreadyRated = cur.npsSurveys.some((n) => n.refType === 'ticket' && n.refId === id);
+        if (cust && !alreadyRated) {
+          setPendingNps({
+            customerId: cust.id,
+            refType: 'ticket',
+            refId: id,
+            label: `تیکت مختومه‌شده «${existing.subject}» (${cust.name})`,
+            defaultSurveyType: 'csat',
+          });
+        }
+      }
     },
     [pushToast],
   );
@@ -4385,9 +5570,15 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
   const addTicketMessage = useCallback(
     (
       ticketId: string,
-      msg: { authorName: string; authorType: 'customer' | 'agent'; visibility: 'public' | 'internal'; body: string },
+      msg: {
+        authorName: string;
+        authorType: 'customer' | 'agent';
+        visibility: 'public' | 'internal';
+        body: string;
+        attachments?: TicketAttachment[];
+      },
     ) => {
-      if (!msg.body.trim()) return;
+      if (!msg.body.trim() && (!msg.attachments || msg.attachments.length === 0)) return;
       const nowIso = new Date().toISOString();
       const created: TicketMessage = {
         id: `tm_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
@@ -4395,21 +5586,23 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         authorName: msg.authorName,
         authorType: msg.authorType,
         visibility: msg.visibility,
-        body: msg.body.trim(),
+        body: msg.body.trim() || 'فایل پیوست ارسال شد.',
+        attachments: msg.attachments,
         createdAt: nowIso,
       };
       setState((prev) => ({
         ...prev,
         ticketMessages: [...prev.ticketMessages, created],
-        tickets: prev.tickets.map((t) =>
-          t.id === ticketId
-            ? {
-                ...t,
-                replyNote: msg.visibility === 'public' && msg.authorType === 'agent' ? msg.body.trim() : t.replyNote,
-                status: msg.authorType === 'customer' && t.status === 'resolved' ? 'open' : t.status,
-              }
-            : t,
-        ),
+        tickets: prev.tickets.map((t) => {
+          if (t.id !== ticketId) return t;
+          const isAgentPublicReply = msg.visibility === 'public' && msg.authorType === 'agent';
+          return {
+            ...t,
+            firstRespondedAt: isAgentPublicReply && !t.firstRespondedAt ? nowIso : t.firstRespondedAt,
+            replyNote: isAgentPublicReply ? created.body : t.replyNote,
+            status: msg.authorType === 'customer' && isTicketClosedStatus(t.status) ? 'open' : t.status,
+          };
+        }),
       }));
       pushToast(msg.visibility === 'internal' ? 'یادداشت داخلی کارشناس ثبت شد.' : 'پیام در رشته تیکت ثبت شد.');
     },
@@ -4430,7 +5623,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         authorName: 'سیستم پشتیبانی',
         authorType: 'agent',
         visibility: 'internal',
-        body: `تیکت تکراری «${dup.subject}» (${dup.id}) با این تیکت ادغام شد.`,
+        body: `تیکت تکراری «${dup.subject}» (${dup.trackingCode ?? dup.id}) با این تیکت ادغام شد.`,
         createdAt: nowIso,
       };
       setState((prev) => ({
@@ -4446,10 +5639,10 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
           if (t.id === duplicateId) {
             return {
               ...t,
-              status: 'resolved',
+              status: 'closed',
               resolvedAt: nowIso,
               mergedIntoTicketId: primaryId,
-              replyNote: `ادغام‌شده در تیکت ${primaryId}`,
+              replyNote: `ادغام‌شده در تیکت ${primary.trackingCode ?? primaryId}`,
             };
           }
           return t;
@@ -4468,10 +5661,9 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
       const nowMs = Date.now();
       const nowIso = new Date().toISOString();
       const toEscalate = cur.tickets.filter((t) => {
-        if (t.status === 'resolved' || t.escalated) return false;
-        const limitH = t.slaHours ?? (t.priority === 'high' ? 4 : t.priority === 'normal' ? 24 : 48);
-        const ageH = (nowMs - new Date(t.createdAt).getTime()) / 3600_000;
-        return ageH >= limitH;
+        if (isTicketClosedStatus(t.status) || t.escalated) return false;
+        const evalRes = evaluateTicketSla(t, cur.slaPolicies, cur.settings, cur.officialHolidays, nowMs);
+        return evalRes.overallState === 'breached';
       });
 
       if (toEscalate.length === 0) {
@@ -4486,7 +5678,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         authorName: 'سیستم SLA',
         authorType: 'agent',
         visibility: 'internal',
-        body: `تصعید خودکار: تیکت به دلیل عبور از مهلت پاسخگویی (${t.slaHours ?? 24} ساعت) به مدیر پشتیبانی ارجاع شد.`,
+        body: `تصعید خودکار: تیکت به دلیل عبور از مهلت SLA ساعات کاری به مدیر پشتیبانی ارجاع شد.`,
         createdAt: nowIso,
       }));
 
@@ -4517,15 +5709,151 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
     [pushToast],
   );
 
+  const escalateTicket = useCallback(
+    (ticketId: string, escalatedTo = 'مدیر پشتیبانی') => {
+      const nowIso = new Date().toISOString();
+      const t = stateRef.current.tickets.find((x) => x.id === ticketId);
+      if (!t) return;
+      const escMsg: TicketMessage = {
+        id: `tm_esc_manual_${Date.now()}`,
+        ticketId,
+        authorName: 'سیستم SLA',
+        authorType: 'agent',
+        visibility: 'internal',
+        body: `تصعید فوری به «${escalatedTo}» ثبت و اولویت تیکت به فوری تغییر یافت.`,
+        createdAt: nowIso,
+      };
+      setState((prev) => ({
+        ...prev,
+        tickets: prev.tickets.map((x) =>
+          x.id === ticketId
+            ? { ...x, escalated: true, escalatedAt: nowIso, escalatedTo, priority: 'high' }
+            : x,
+        ),
+        ticketMessages: [...prev.ticketMessages, escMsg],
+        auditLogs: [
+          makeAudit('پشتیبانی', 'update', `تیکت ${t.trackingCode ?? t.id} به ${escalatedTo} تصعید شد.`),
+          ...prev.auditLogs,
+        ].slice(0, 100),
+      }));
+      pushToast(`تیکت «${t.subject}» به ${escalatedTo} تصعید شد.`);
+    },
+    [pushToast],
+  );
+
+  const updateSlaPolicy = useCallback(
+    (priority: Ticket['priority'], patch: Partial<Omit<SlaPolicy, 'priority'>>) => {
+      setState((prev) => ({
+        ...prev,
+        slaPolicies: {
+          ...prev.slaPolicies,
+          [priority]: {
+            ...prev.slaPolicies[priority],
+            ...patch,
+          },
+        },
+      }));
+      pushToast('سیاست SLA به‌روزرسانی شد.');
+    },
+    [pushToast],
+  );
+
+  const requestPortalOtp = useCallback(
+    (phone: string) => {
+      const normalized = phone.trim();
+      if (!isValidIranMobile(normalized)) {
+        return { ok: false, error: 'لطفاً شماره موبایل معتبر ایرانی (مثلاً 09121110001) وارد کنید.' };
+      }
+      const cur = stateRef.current;
+      const cust = cur.customers.find((c) => c.phone === normalized && !c.isDeleted);
+      const code = String(Math.floor(1000 + Math.random() * 9000));
+      const nowIso = new Date().toISOString();
+      const otpMsg: OutboxMessage = {
+        id: `otp_${Date.now()}`,
+        to: normalized,
+        customerId: cust?.id,
+        customerName: cust?.name ?? 'کاربر پورتال',
+        body: `کد تایید ورود به پورتال مشتریان ${cur.settings.businessName}: ${code}`,
+        channel: 'sms',
+        ruleName: 'احراز هویت پورتال مشتری (OTP)',
+        deliveryStatus: 'delivered',
+        at: nowIso,
+      };
+      setState((prev) => ({
+        ...prev,
+        outbox: [otpMsg, ...prev.outbox],
+      }));
+      pushToast(`کد یک‌بارمصرف شبیه‌سازی‌شده به ${normalized} ارسال شد.`, 'info');
+      return {
+        ok: true,
+        code,
+        customerId: cust?.id,
+        customerName: cust?.name,
+      };
+    },
+    [pushToast],
+  );
+
+  const submitPortalTicketByPhone = useCallback(
+    (data: {
+      phone: string;
+      name?: string;
+      subject: string;
+      category: string;
+      priority?: Ticket['priority'];
+      body: string;
+      attachments?: TicketAttachment[];
+    }) => {
+      const normalizedPhone = data.phone.trim();
+      if (!isValidIranMobile(normalizedPhone)) {
+        return { ok: false, error: 'شماره موبایل معتبر نیست (با 09 شروع شود).' };
+      }
+      if (!data.subject.trim()) {
+        return { ok: false, error: 'عنوان تیکت الزامی است.' };
+      }
+      const cur = stateRef.current;
+      let cust = cur.customers.find((c) => c.phone === normalizedPhone && !c.isDeleted);
+      if (!cust) {
+        const res = addCustomer({
+          name: data.name?.trim() || `مشتری پورتال (${normalizedPhone})`,
+          phone: normalizedPhone,
+          lifecycle: 'lead',
+          source: 'پورتال عمومی',
+          tags: ['پورتال'],
+        });
+        if (!res.ok || !res.customer) {
+          return { ok: false, error: res.error || 'خطا در ثبت پروفایل مشتری.' };
+        }
+        cust = res.customer;
+      }
+      const created = addTicket({
+        customerId: cust.id,
+        subject: data.subject.trim(),
+        priority: data.priority ?? 'normal',
+        channel: 'portal',
+        category: data.category,
+        team: 'پذیرش',
+        isComplaint: data.category === 'شکایت و کیفیت',
+        attachments: data.attachments,
+        initialBody: data.body.trim(),
+      });
+      if (!created) return { ok: false, error: 'خطا در ثبت تیکت.' };
+      return { ok: true, ticket: created };
+    },
+    [addCustomer, addTicket],
+  );
+
   const addKbArticle = useCallback(
     (article: Omit<KbArticle, 'id' | 'helpfulCount' | 'updatedAt'>) => {
       const nowIso = new Date().toISOString();
       const editor = stateRef.current.settings.role === 'admin' ? 'مدیر سیستم' : 'کارشناس';
+      const vis: KbVisibility = article.visibility ?? 'public';
       setState((prev) => ({
         ...prev,
         kbArticles: [
           {
             ...article,
+            visibility: vis,
             id: `kb_${Date.now()}`,
             helpfulCount: 0,
             updatedAt: nowIso,
@@ -4536,6 +5864,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
                 title: article.title,
                 category: article.category,
                 body: article.body,
+                visibility: vis,
                 updatedAt: nowIso,
                 editor,
                 changeNote: 'ایجاد مقاله',
@@ -4551,7 +5880,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
   );
 
   const updateKbArticle = useCallback(
-    (id: string, patch: { title: string; category: string; body: string; changeNote?: string }) => {
+    (id: string, patch: { title: string; category: string; body: string; visibility?: KbVisibility; changeNote?: string }) => {
       const nowIso = new Date().toISOString();
       const editor = stateRef.current.settings.role === 'admin' ? 'مدیر سیستم' : 'کارشناس';
       setState((prev) => ({
@@ -4564,17 +5893,20 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
               title: art.title,
               category: art.category,
               body: art.body,
+              visibility: art.visibility ?? 'public',
               updatedAt: art.updatedAt,
               editor: 'مدیر سیستم',
               changeNote: 'نسخه قبلی',
             },
           ];
           const nextVer = (art.version ?? 1) + 1;
+          const nextVis: KbVisibility = patch.visibility ?? art.visibility ?? 'public';
           return {
             ...art,
             title: patch.title.trim(),
             category: patch.category.trim(),
             body: patch.body.trim(),
+            visibility: nextVis,
             updatedAt: nowIso,
             version: nextVer,
             versions: [
@@ -4584,6 +5916,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
                 title: patch.title.trim(),
                 category: patch.category.trim(),
                 body: patch.body.trim(),
+                visibility: nextVis,
                 updatedAt: nowIso,
                 editor,
                 changeNote: patch.changeNote?.trim() || 'ویرایش محتوا',
@@ -4708,9 +6041,56 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
     (patch: Partial<AutomationPolicy>) => {
       setState((prev) => ({
         ...prev,
-        automationPolicy: { ...prev.automationPolicy, ...patch },
+        automationPolicy: {
+          ...prev.automationPolicy,
+          ...patch,
+          channelDailyCaps: {
+            ...prev.automationPolicy.channelDailyCaps,
+            ...(patch.channelDailyCaps ?? {}),
+          },
+        },
       }));
-      pushToast('تنظیمات ساعات سکوت و سقف ارسال ذخیره شد.');
+      pushToast('تنظیمات ساعات سکوت، سقف کانال و زمان‌بند ذخیره شد.');
+    },
+    [pushToast],
+  );
+
+  const addMessageTemplate = useCallback(
+    (tpl: Omit<MessageTemplate, 'id' | 'updatedAt'>) => {
+      const created: MessageTemplate = {
+        ...tpl,
+        id: `tpl_${Date.now()}`,
+        updatedAt: new Date().toISOString(),
+      };
+      setState((prev) => ({
+        ...prev,
+        messageTemplates: [created, ...(prev.messageTemplates ?? [])],
+      }));
+      pushToast(`قالب پیام «${created.name}» ذخیره شد.`);
+    },
+    [pushToast],
+  );
+
+  const updateMessageTemplate = useCallback(
+    (id: string, patch: Partial<MessageTemplate>) => {
+      setState((prev) => ({
+        ...prev,
+        messageTemplates: (prev.messageTemplates ?? []).map((t) =>
+          t.id === id ? { ...t, ...patch, updatedAt: new Date().toISOString() } : t,
+        ),
+      }));
+      pushToast('قالب پیام به‌روزرسانی شد.');
+    },
+    [pushToast],
+  );
+
+  const deleteMessageTemplate = useCallback(
+    (id: string) => {
+      setState((prev) => ({
+        ...prev,
+        messageTemplates: (prev.messageTemplates ?? []).filter((t) => t.id !== id),
+      }));
+      pushToast('قالب پیام حذف شد.', 'info');
     },
     [pushToast],
   );
@@ -4855,6 +6235,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
       const newOutbox: AppState['outbox'] = [];
       const newTasks: Task[] = [];
       const newLogs: AppState['automationLogs'] = [];
+      const dynamicRulesToRun: Rule[] = [];
       const nowIso = new Date().toISOString();
 
       const activeRules = cur.rules.filter(
@@ -5172,93 +6553,52 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
           }
         }
 
-        // Dynamic Custom Rules Engine (evaluates AND/OR/NOT conditions, {{vars}}, Quiet Hours & Daily Cap!)
+        // Dynamic Custom Rules Engine (evaluates AND/OR/NOT, relative-time now+24h, multi-action pipeline, cooldown, channel caps)
         if (!['u1', 'u2', 'u3', 'u4', 'u5', 'u6', 'u7'].includes(rule.id) && rule.targetEntity) {
-          const candidates = getTargetRecordsForRule(rule, cur);
-          const quiet = (rule.respectQuietHours ?? true) && isWithinQuietHours(cur.automationPolicy);
-          const cap = rule.dailyCapPerCustomer ?? cur.automationPolicy.defaultDailyCap;
-          let count = 0;
-
-          for (const cand of candidates) {
-            if (!evaluateRuleConditions(rule, cand.record, cand.customer)) continue;
-            const key = `${rule.id}_${cand.entityId}`;
-            if (processed.has(key)) continue;
-
-            const actionType = rule.actionType ?? 'send_notification';
-            const ch = rule.actionChannel ?? 'sms';
-            const todayCount = countTodayCustomerNotifications(
-              [...cur.outbox, ...newOutbox],
-              cand.customer?.id,
-              cand.customer?.phone,
-            );
-
-            if ((actionType === 'send_notification' || actionType === 'both') && cand.customer) {
-              if (ch === 'sms' && cand.customer.consentSms === false) continue;
-              if (cap > 0 && todayCount >= cap) continue;
-              processed.add(key);
-              count++;
-              newOutbox.push({
-                id: `msg_dyn_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-                to: ch === 'email' ? cand.customer.email || cand.customer.phone : cand.customer.phone,
-                customerId: cand.customer.id,
-                customerName: cand.customer.name,
-                body: renderRuleTemplate(
-                  rule.messageTemplate || 'سلام {{customer.name}}، پیام خودکار از {{businessName}}.',
-                  { customer: cand.customer, entity: cand.record, businessName: cur.settings.businessName },
-                ),
-                channel: ch,
-                ruleId: rule.id,
-                ruleName: rule.name,
-                deliveryStatus: quiet ? 'deferred_quiet' : 'delivered',
-                retryCount: 0,
-                maxRetries: cur.automationPolicy.maxRetries,
-                at: nowIso,
-              });
-            }
-
-            if (actionType === 'create_task' || actionType === 'both') {
-              processed.add(key);
-              count++;
-              newTasks.push({
-                id: `t_dyn_${Date.now()}_${count}_${Math.random().toString(36).slice(2, 5)}`,
-                title: renderRuleTemplate(
-                  rule.taskTitleTemplate || 'پیگیری خودکار {{customer.name}}',
-                  { customer: cand.customer, entity: cand.record, businessName: cur.settings.businessName },
-                ),
-                customerId: cand.customer?.id,
-                dueAt: new Date(nowMs + 24 * 3600_000).toISOString(),
-                done: false,
-                createdByRuleId: rule.id,
-              });
-            }
-          }
-
-          if (count > 0) {
-            newLogs.push({
-              id: `al_${Date.now()}_${rule.id}`,
-              ruleId: rule.id,
-              ruleName: rule.name,
-              summary: `اجرای قانون پویا: ${count} اقدام با موفقیت ثبت شد.`,
-              at: nowIso,
-            });
+          // Wait for scheduled cadence or manual execution; webhook/event triggers run on their own triggers
+          const trig = rule.triggerType ?? 'schedule';
+          if (trig === 'on_webhook') continue;
+          if (!silent || trig === 'schedule') {
+            dynamicRulesToRun.push(rule);
           }
         }
       }
 
-      const totalActions = newOutbox.length + newTasks.length;
-      if (totalActions > 0) {
+      const legacyTotal = newOutbox.length + newTasks.length;
+      let dynTotal = 0;
+
+      if (legacyTotal > 0) {
         setState((prev) => ({
           ...prev,
           outbox: [...newOutbox, ...prev.outbox],
           tasks: [...newTasks, ...prev.tasks],
-          automationLogs: [...newLogs, ...prev.automationLogs],
+          automationLogs: [...newLogs, ...prev.automationLogs].slice(0, 150),
           processedRuleKeys: Array.from(processed),
         }));
-        if (!silent) {
-          pushToast(`موتور اتوماسیون اجرا شد: ${newOutbox.length} اعلان و ${newTasks.length} وظیفه ثبت شد.`);
+      }
+
+      if (dynamicRulesToRun.length > 0) {
+        const dynRes = executeRuleBatch(
+          dynamicRulesToRun,
+          silent ? 'schedule' : 'manual',
+          (r, s) => getTargetRecordsForRule(r, s),
+        );
+        dynTotal = dynRes.totalActions;
+      }
+
+      const totalActions = legacyTotal + dynTotal;
+      setState((prev) => ({
+        ...prev,
+        lastAutomationRunAt: new Date().toISOString(),
+        automationTickCount: (prev.automationTickCount ?? 0) + 1,
+      }));
+
+      if (!silent) {
+        if (totalActions > 0) {
+          pushToast(`موتور اتوماسیون اجرا شد (${totalActions} اقدام جدید ثبت شد).`);
+        } else {
+          pushToast('قوانین بررسی شدند؛ مورد جدیدی برای اجرا وجود نداشت.', 'info');
         }
-      } else if (!silent) {
-        pushToast('قوانین بررسی شدند؛ مورد جدیدی برای اجرا وجود نداشت.', 'info');
       }
 
       // Also check ticket SLA escalations quietly
@@ -5266,21 +6606,62 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
 
       return totalActions;
     },
-    [checkAndEscalateTickets, pushToast],
+    [checkAndEscalateTickets, executeRuleBatch, pushToast],
   );
 
+  const retryAutomationLog = useCallback(
+    (logId: string) => {
+      const cur = stateRef.current;
+      const log = cur.automationLogs.find((l) => l.id === logId);
+      if (!log) return;
+      const rule = cur.rules.find((r) => r.id === log.ruleId);
+      if (!rule) {
+        pushToast('قانون مرتبط با این گزارش یافت نشد.', 'error');
+        return;
+      }
+      // Clear cooldowns for this rule so retry can attempt execution cleanly
+      const cleanedCooldowns: Record<string, string> = {};
+      Object.entries(cur.ruleCooldowns ?? {}).forEach(([k, v]) => {
+        if (!k.startsWith(`${rule.id}_`)) cleanedCooldowns[k] = v;
+      });
+      setState((prev) => ({ ...prev, ruleCooldowns: cleanedCooldowns }));
+      if (rule.targetEntity) {
+        const res = executeRuleBatch([rule], 'manual', (r, s) => getTargetRecordsForRule(r, s));
+        pushToast(`تلاش مجدد قانون «${rule.name}» انجام شد (${res.totalActions} اقدام).`, res.totalActions > 0 ? 'success' : 'info');
+      } else {
+        runAutomationNow(false);
+      }
+    },
+    [executeRuleBatch, pushToast, runAutomationNow],
+  );
+
+  const runnerEnabled = state.automationPolicy.backgroundRunnerEnabled !== false;
+  const runnerIntervalSec = Math.max(10, state.automationPolicy.runnerIntervalSec ?? 30);
+
   useEffect(() => {
-    const initialTimer = setTimeout(() => {
-      runAutomationNow(true);
-    }, 3500);
-    const interval = setInterval(() => {
-      runAutomationNow(true);
-    }, 30_000);
+    if (!runnerEnabled) return;
+    const runSafeTick = () => {
+      if (isTickRunningRef.current) return;
+      isTickRunningRef.current = true;
+      try {
+        runAutomationNow(true);
+        const nowMs = Date.now();
+        const dueCampaigns = stateRef.current.campaigns.filter(
+          (c) => c.status === 'scheduled' && c.scheduledAt && Date.parse(c.scheduledAt) <= nowMs,
+        );
+        dueCampaigns.forEach((c) => launchCampaign(c.id));
+      } finally {
+        isTickRunningRef.current = false;
+      }
+    };
+
+    const initialTimer = setTimeout(runSafeTick, 3500);
+    const interval = setInterval(runSafeTick, runnerIntervalSec * 1000);
     return () => {
       clearTimeout(initialTimer);
       clearInterval(interval);
     };
-  }, [runAutomationNow]);
+  }, [launchCampaign, runAutomationNow, runnerEnabled, runnerIntervalSec]);
 
   const clearOutbox = useCallback(() => {
     setState((prev) => ({ ...prev, outbox: [] }));
@@ -5551,9 +6932,20 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         .map((p, i) => ({ ...p, id: `prd_pk_${nowMs}_${i}` }));
 
       const existingRuleNames = new Set(cur.rules.map((r) => r.name));
+      // Pack rules pre-created DISABLED by default so the user explicitly enables them
       const newRules: Rule[] = packDef.rules
         .filter((r) => !existingRuleNames.has(r.name))
-        .map((r, i) => ({ ...r, id: `rul_pk_${nowMs}_${i}` }));
+        .map((r, i) => ({ ...r, active: false, id: `rul_pk_${nowMs}_${i}` }));
+
+      const existingWfKeys = new Set(cur.workflowDefinitions.map((w) => w.key));
+      const newWorkflows: WorkflowDefinition[] = (packDef.workflowTemplates ?? [])
+        .filter((w) => !existingWfKeys.has(w.key))
+        .map((w, i) => ({
+          ...w,
+          status: 'draft' as const,
+          id: `wfd_pk_${nowMs}_${i}`,
+          updatedAt: new Date().toISOString(),
+        }));
 
       const packSales = getPackSalesConfig(packKey, cur.customPacks);
 
@@ -5564,6 +6956,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         services: [...prev.services, ...newServices],
         products: [...prev.products, ...newProducts],
         rules: [...prev.rules, ...newRules],
+        workflowDefinitions: [...prev.workflowDefinitions, ...newWorkflows],
         pipelineStages: packSales.defaultStages,
         pipelines: prev.pipelines.map((pl) =>
           pl.isDefault ? { ...pl, name: packSales.pipelineName, stages: packSales.defaultStages } : pl,
@@ -5577,12 +6970,12 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
           makeAudit(
             'بسته صنعتی',
             'update',
-            `بسته «${packDef.name}» نصب شد (${newFields.length} فیلد، ${newEntities.length} موجودیت، ${newServices.length} خدمت).`,
+            `بسته «${packDef.name}» نصب شد (${newFields.length} فیلد، ${newRules.length} قانون آماده غیرفعال، ${newWorkflows.length} الگوی گردش‌کار پیش‌نویس).`,
           ),
           ...prev.auditLogs,
         ].slice(0, 100),
       }));
-      pushToast(`بسته «${packDef.name}» نصب و فیلدها/خدمات تخصصی آن به سیستم اضافه شد.`);
+      pushToast(`بسته «${packDef.name}» نصب شد؛ قوانین و گردش‌کارهای آماده (در حالت پیش‌نویس/متوقف) قابل فعال‌سازی هستند.`);
     },
     [pushToast],
   );
@@ -5893,11 +7286,20 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         updateContentItem,
         addCampaign,
         launchCampaign,
+        updateCampaignRecipientStatus,
         simulateCampaignStats,
         addMediaAsset,
+        toggleMediaConsent,
         deleteMediaAsset,
         addLandingForm,
         submitLandingForm,
+        updateLoyaltyConfig,
+        addLoyaltyReward,
+        toggleLoyaltyReward,
+        adjustCustomerPoints,
+        redeemLoyaltyReward,
+        sendOccasionReward,
+        registerReferral,
         addTask,
         toggleTaskDone,
         addTaskSubtask,
@@ -5907,6 +7309,10 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         addTicketMessage,
         mergeTickets,
         checkAndEscalateTickets,
+        escalateTicket,
+        updateSlaPolicy,
+        requestPortalOtp,
+        submitPortalTicketByPhone,
         addKbArticle,
         updateKbArticle,
         restoreKbVersion,
@@ -5918,9 +7324,15 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         updateRule,
         deleteRule,
         updateAutomationPolicy,
+        addMessageTemplate,
+        updateMessageTemplate,
+        deleteMessageTemplate,
         dryRunRule,
         sendSimulatedSms,
         runAutomationNow,
+        fireWebhookTrigger,
+        fireCustomEventTrigger,
+        retryAutomationLog,
         retryNotification,
         processNotificationRetries,
         simulateDeliveryFailure,

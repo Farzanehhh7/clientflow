@@ -1,14 +1,16 @@
 import { LifeBuoy, Receipt } from 'lucide-react';
 import { useClientFlow } from '../../../store/useClientFlowStore';
-import type { Customer, SayadiChequeStatus } from '../../../types';
+import type { Customer, SayadiChequeStatus, TicketStatus } from '../../../types';
 import { formatJalali, formatJalaliDateTime, formatToman, toFa } from '../../../utils/jalali';
 import { Badge, EmptyState, Table } from '../../ui';
 import type { BadgeTone } from '../../ui/Badge';
 
-const TICKET_STATUS: Record<'open' | 'pending' | 'resolved', { label: string; tone: BadgeTone }> = {
+const TICKET_STATUS: Record<TicketStatus, { label: string; tone: BadgeTone }> = {
   open: { label: 'باز', tone: 'rose' },
-  pending: { label: 'در انتظار بررسی', tone: 'amber' },
-  resolved: { label: 'بسته / حل‌شده', tone: 'emerald' },
+  in_progress: { label: 'در دست بررسی', tone: 'indigo' },
+  pending: { label: 'در انتظار مشتری', tone: 'amber' },
+  resolved: { label: 'حل‌شده', tone: 'emerald' },
+  closed: { label: 'بسته', tone: 'neutral' },
 };
 
 const INVOICE_STATUS: Record<'issued' | 'partial' | 'paid', { label: string; tone: BadgeTone }> = {
