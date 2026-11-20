@@ -266,7 +266,7 @@ export type Service = {
   bufferAfterMin?: number;
 };
 
-export type Resource = { id: string; name: string; type: 'staff' | 'room' };
+export type Resource = { id: string; name: string; type: 'staff' | 'room' | 'device' };
 
 export type ResourceTimeOff = {
   id: string;
@@ -313,11 +313,13 @@ export type Appointment = {
   status: AppointmentStatus;
   cancelReason?: string;
   reminder2hSent?: boolean;
+  reminderSentAt?: string;
   branchId?: string;
   customFields?: Record<string, string>;
 };
 
 export type OrderStatus = 'new' | 'confirmed' | 'shipped' | 'delivered' | 'cancelled';
+export type OrderChannel = 'phone' | 'website' | 'instagram' | 'whatsapp' | 'store';
 export type ShippingCarrier = 'post' | 'tipax' | 'snappbox' | 'chapar' | 'pickup';
 
 export type OrderShipment = {
@@ -329,10 +331,24 @@ export type OrderShipment = {
   note?: string;
 };
 
+export type OrderReturn = {
+  id: string;
+  orderId: string;
+  customerId: string;
+  items: { name: string; qty: number; price: number }[];
+  refundAmount: number;
+  refundMethod: PaymentMethod;
+  reason: string;
+  restock: boolean;
+  createdAt: string;
+};
+
 export type Order = {
   id: string;
   customerId: string;
-  items: { name: string; qty: number; price: number }[];
+  channel?: OrderChannel;
+  idempotencyKey?: string;
+  items: { productId?: string; name: string; qty: number; price: number; unitPriceSnapshot?: number }[];
   status: OrderStatus;
   createdAt: string;
   updatedAt?: string;
@@ -342,6 +358,7 @@ export type Order = {
   trackingCode?: string;
   carrier?: ShippingCarrier;
   shipments?: OrderShipment[];
+  returns?: OrderReturn[];
   branchId?: string;
   customFields?: Record<string, string>;
 };
@@ -353,6 +370,7 @@ export type Invoice = {
   id: string;
   invoiceNo: string;
   orderId: string;
+  contractId?: string;
   customerId: string;
   subtotal: number;
   discount: number;
@@ -363,7 +381,62 @@ export type Invoice = {
   status: 'issued' | 'partial' | 'paid';
   issuedAt: string;
   dueAt: string;
+  reminderCount?: number;
+  lastReminderAt?: string;
   branchId?: string;
+};
+
+export type PaymentAllocation = {
+  id: string;
+  customerId: string;
+  totalAmount: number;
+  method: PaymentMethod;
+  reference?: string;
+  note?: string;
+  allocations: { invoiceId: string; invoiceNo: string; amount: number }[];
+  createdAt: string;
+};
+
+export type ContractStatus = 'draft' | 'active' | 'expiring_soon' | 'renewed' | 'expired';
+export type Contract = {
+  id: string;
+  contractNo: string;
+  customerId: string;
+  title: string;
+  startDate: string; // ISO
+  endDate: string; // ISO
+  amount: number;
+  renewalReminderDays: number;
+  autoRenew: boolean;
+  status: ContractStatus;
+  lastReminderAt?: string;
+  notes?: string;
+  branchId?: string;
+  createdAt: string;
+};
+
+export type WarrantyClaim = {
+  id: string;
+  date: string; // ISO
+  issue: string;
+  resolution: string;
+  costCoveredBy: 'warranty' | 'customer';
+  status: 'open' | 'in_repair' | 'resolved';
+};
+
+export type WarrantyRecord = {
+  id: string;
+  customerId: string;
+  productId?: string;
+  productName: string;
+  serialNumber: string;
+  orderId?: string;
+  startDate: string; // ISO
+  endDate: string; // ISO
+  status: 'active' | 'expired' | 'void';
+  claims: WarrantyClaim[];
+  notes?: string;
+  createdAt: string;
 };
 
 export type SayadiChequeStatus = 'received' | 'deposited' | 'cleared' | 'bounced';
@@ -451,12 +524,20 @@ export type Coupon = {
   minOrderAmount?: number;
 };
 
+export type TaskSubtask = {
+  id: string;
+  title: string;
+  done: boolean;
+};
+
 export type ProjectStatus = 'planning' | 'in_progress' | 'testing' | 'deployed' | 'completed';
 export type ProjectTask = {
   id: string;
   title: string;
   assignee: string;
   estimatedHours: number;
+  dueAt?: string;
+  subtasks?: TaskSubtask[];
   done: boolean;
 };
 export type TimeEntry = {
@@ -816,6 +897,10 @@ export type Task = {
   customerId?: string;
   dueAt: string;
   done: boolean;
+  assignee?: string;
+  priority?: 'low' | 'medium' | 'high';
+  subtasks?: TaskSubtask[];
+  projectId?: string;
   createdByRuleId?: string;
 };
 
@@ -992,6 +1077,12 @@ export type PackSalesConfig = {
   defaultStages: PipelineStageConfig[];
 };
 
+export type PackOrderConfig = {
+  channelDefault?: OrderChannel;
+  statusLabels: Record<OrderStatus, string>;
+  transitions: Record<OrderStatus, OrderStatus[]>;
+};
+
 export type PackTemplate = {
   id: string;
   key: string;
@@ -1002,6 +1093,7 @@ export type PackTemplate = {
   descriptionEn: string;
   customerMeta?: PackCustomerConfig;
   salesMeta?: PackSalesConfig;
+  orderMeta?: PackOrderConfig;
   customFields: Omit<CustomFieldDef, 'id'>[];
   customEntities: Omit<CustomEntityDef, 'id' | 'createdAt'>[];
   services: Omit<Service, 'id'>[];
@@ -1108,8 +1200,11 @@ export type AppState = {
   orders: Order[];
   orderLogs: OrderStatusLog[];
   invoices: Invoice[];
+  paymentAllocations: PaymentAllocation[];
   sayadiCheques: SayadiCheque[];
   paymentTransactions: PaymentTransaction[];
+  contracts: Contract[];
+  warranties: WarrantyRecord[];
   products: Product[];
   stockMovements: StockMovement[];
   coupons: Coupon[];
@@ -1146,5 +1241,6 @@ export type AppState = {
   customPacks: PackTemplate[];
   auditLogs: AuditLogEntry[];
   processedRuleKeys: string[];
+  recentIdempotencyKeys?: string[];
   settings: BusinessSettings;
 };

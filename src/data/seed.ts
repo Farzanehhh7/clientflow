@@ -15,6 +15,7 @@ import type {
   ConfigSnapshot,
   ConsentLog,
   ContentItem,
+  Contract,
   Coupon,
   CustomEntityDef,
   CustomEntityRecord,
@@ -35,9 +36,11 @@ import type {
   OfficialHoliday,
   Opportunity,
   Order,
+  OrderChannel,
   OrderStatus,
   OrderStatusLog,
   OutboxMessage,
+  PaymentAllocation,
   PaymentTransaction,
   PipelineStageConfig,
   PriceList,
@@ -60,6 +63,7 @@ import type {
   TimeEntry,
   UtmTouch,
   WaitlistEntry,
+  WarrantyRecord,
   WorkflowDefinition,
   WorkflowInstance,
 } from '../types';
@@ -533,6 +537,7 @@ export const resources: Resource[] = [
   { id: 'r1', name: 'دکتر کشاورز', type: 'staff' },
   { id: 'r2', name: 'دکتر راد', type: 'staff' },
   { id: 'r3', name: 'اتاق ۱ (پروسیجر)', type: 'room' },
+  { id: 'r4', name: 'دستگاه لیزر الکساندرایت', type: 'device' },
 ];
 
 export const resourceTimeOffs: ResourceTimeOff[] = [
@@ -713,6 +718,8 @@ const ORDER_STATUSES: OrderStatus[] = [
   'cancelled',
 ];
 
+const ORDER_CHANNELS: OrderChannel[] = ['website', 'instagram', 'whatsapp', 'phone', 'store'];
+
 export const orders: Order[] = Array.from({ length: 25 }, (_, i) => {
   const status = ORDER_STATUSES[i % ORDER_STATUSES.length];
   const pA = products[i % products.length];
@@ -724,12 +731,14 @@ export const orders: Order[] = Array.from({ length: 25 }, (_, i) => {
   return {
     id: `o${i + 1}`,
     customerId: customers[(i * 2) % customers.length].id,
+    channel: ORDER_CHANNELS[i % ORDER_CHANNELS.length],
+    idempotencyKey: `seed_ord_${i + 1}`,
     items:
       i % 2 === 0
-        ? [{ name: pA.name, qty: 1 + (i % 2), price: pA.price }]
+        ? [{ productId: pA.id, name: pA.name, qty: 1 + (i % 2), price: pA.price, unitPriceSnapshot: pA.price }]
         : [
-            { name: pA.name, qty: 1, price: pA.price },
-            { name: pB.name, qty: 1, price: pB.price },
+            { productId: pA.id, name: pA.name, qty: 1, price: pA.price, unitPriceSnapshot: pA.price },
+            { productId: pB.id, name: pB.name, qty: 1, price: pB.price, unitPriceSnapshot: pB.price },
           ],
     status,
     createdAt: iso(createdOffset),
@@ -792,6 +801,8 @@ export const orderLogs: OrderStatusLog[] = orders.flatMap((o, idx) => {
   return logs;
 });
 
+const DUE_OFFSETS_HOURS = [-240, -960, -1680, 48, 24, -2300, -480, -1200, 72, -120];
+
 export const invoices: Invoice[] = orders.slice(0, 10).map((o, idx) => {
   const subtotal = o.items.reduce((s, it) => s + it.qty * it.price, 0);
   const discount = o.discountAmount ?? 0;
@@ -812,10 +823,125 @@ export const invoices: Invoice[] = orders.slice(0, 10).map((o, idx) => {
     method: (['online', 'card', 'transfer', 'cash'] as const)[idx % 4],
     status: paidAmount >= grandTotal ? 'paid' : paidAmount > 0 ? 'partial' : 'issued',
     issuedAt: o.createdAt,
-    dueAt: o.promisedAt ?? iso(48),
+    dueAt: iso(DUE_OFFSETS_HOURS[idx % DUE_OFFSETS_HOURS.length]),
     branchId: o.branchId,
   };
 });
+
+export const paymentAllocations: PaymentAllocation[] = [
+  {
+    id: 'pa1',
+    customerId: customers[0].id,
+    totalAmount: Math.round(invoices[0].grandTotal * 0.5),
+    method: 'transfer',
+    reference: 'SHB-88120419',
+    note: 'علی‌الحساب واریزی پایا از مشتری',
+    allocations: [
+      {
+        invoiceId: invoices[0].id,
+        invoiceNo: invoices[0].invoiceNo,
+        amount: Math.round(invoices[0].grandTotal * 0.5),
+      },
+    ],
+    createdAt: iso(-40),
+  },
+];
+
+export const contracts: Contract[] = [
+  {
+    id: 'ctr1',
+    contractNo: 'CTR-1405-101',
+    customerId: 'c4',
+    title: 'قرارداد پشتیبانی سالانه و سرویس تجهیزات کلینیک مهر',
+    startDate: iso(-24 * 350),
+    endDate: iso(24 * 5),
+    amount: 36_000_000,
+    renewalReminderDays: 14,
+    autoRenew: true,
+    status: 'expiring_soon',
+    notes: 'شامل ۲ سرویس دوره‌ای در سال و پشتیبانی ۲۴ ساعته',
+    branchId: 'br_tehran',
+    createdAt: iso(-24 * 350),
+  },
+  {
+    id: 'ctr2',
+    contractNo: 'CTR-1405-102',
+    customerId: 'c24',
+    title: 'قرارداد اشتراک سازمانی لایسنس CRM (۳۰ کاربر)',
+    startDate: iso(-24 * 120),
+    endDate: iso(24 * 245),
+    amount: 48_000_000,
+    renewalReminderDays: 30,
+    autoRenew: true,
+    status: 'active',
+    notes: 'پرداخت فصلی طبق پیش‌فاکتور رسمی',
+    branchId: 'br_tehran',
+    createdAt: iso(-24 * 120),
+  },
+  {
+    id: 'ctr3',
+    contractNo: 'CTR-1405-103',
+    customerId: 'c1',
+    title: 'پکیج نگهداری و ویزیت‌های دوره‌ای VIP',
+    startDate: iso(-24 * 380),
+    endDate: iso(-24 * 15),
+    amount: 14_500_000,
+    renewalReminderDays: 10,
+    autoRenew: false,
+    status: 'expired',
+    notes: 'در انتظار تماس تمدید دوره جدید',
+    branchId: 'br_isfahan',
+    createdAt: iso(-24 * 380),
+  },
+];
+
+export const warranties: WarrantyRecord[] = [
+  {
+    id: 'war1',
+    customerId: 'c4',
+    productId: 'p6',
+    productName: 'کیت مراقبت و دستگاه نوردرمانی خانگی',
+    serialNumber: 'SN-AV-904182',
+    orderId: 'o4',
+    startDate: iso(-24 * 60),
+    endDate: iso(24 * 305),
+    status: 'active',
+    claims: [
+      {
+        id: 'wc1',
+        date: iso(-24 * 12),
+        issue: 'کاهش شارژدهی باتری دستگاه پس از ۴۵ روز',
+        resolution: 'تعویض باتری اصلی بدون دریافت هزینه تحت گارانتی',
+        costCoveredBy: 'warranty',
+        status: 'resolved',
+      },
+    ],
+    notes: 'گارانتی طلایی ۱۲ ماهه تعویض قطعات',
+    createdAt: iso(-24 * 60),
+  },
+  {
+    id: 'war2',
+    customerId: 'c24',
+    productId: 'p3',
+    productName: 'سرم و دستگاه میکرونیدلینگ کلینیکی',
+    serialNumber: 'SN-PR-441029',
+    orderId: 'o2',
+    startDate: iso(-24 * 400),
+    endDate: iso(-24 * 35),
+    status: 'expired',
+    claims: [
+      {
+        id: 'wc2',
+        date: iso(-24 * 5),
+        issue: 'تنظیم مجدد کالیبراسیون هد دستگاه',
+        resolution: 'در دست بررسی تکنسین خدمات پس از فروش (خارج از دوره گارانتی)',
+        costCoveredBy: 'customer',
+        status: 'in_repair',
+      },
+    ],
+    createdAt: iso(-24 * 400),
+  },
+];
 
 export const sayadiCheques: SayadiCheque[] = [
   {
@@ -957,9 +1083,38 @@ export const projects: Project[] = [
     dueAt: iso(120),
     createdAt: iso(-240),
     tasks: [
-      { id: 'pt1', title: 'نصب پایگاه داده و تنظیم پشتیبان‌گیری', assignee: 'علی (استقرار)', estimatedHours: 6, done: true },
-      { id: 'pt2', title: 'پیکربندی درگاه پیامک و نوبت‌دهی آنلاین', assignee: 'سارا (پذیرش)', estimatedHours: 8, done: true },
-      { id: 'pt3', title: 'تست بار و آموزش کاربران نهایی', assignee: 'علی (استقرار)', estimatedHours: 5, done: false },
+      {
+        id: 'pt1',
+        title: 'نصب پایگاه داده و تنظیم پشتیبان‌گیری',
+        assignee: 'علی (استقرار)',
+        estimatedHours: 6,
+        dueAt: iso(-48),
+        done: true,
+        subtasks: [
+          { id: 'pts1', title: 'پیکربندی اسکریپت بکاپ روزانه', done: true },
+          { id: 'pts2', title: 'تست بازیابی نسخه پشتیبان', done: true },
+        ],
+      },
+      {
+        id: 'pt2',
+        title: 'پیکربندی درگاه پیامک و نوبت‌دهی آنلاین',
+        assignee: 'سارا (پذیرش)',
+        estimatedHours: 8,
+        dueAt: iso(24),
+        done: true,
+      },
+      {
+        id: 'pt3',
+        title: 'تست بار و آموزش کاربران نهایی',
+        assignee: 'علی (استقرار)',
+        estimatedHours: 5,
+        dueAt: iso(72),
+        done: false,
+        subtasks: [
+          { id: 'pts3', title: 'تهیه راهنمای کاربری PDF', done: true },
+          { id: 'pts4', title: 'برگزاری وبینار آموزش پذیرش', done: false },
+        ],
+      },
     ],
     deploymentChecklist: [
       { id: 'dc1', title: 'گواهی SSL و دامنه فعال شد', category: 'infra', done: true, checkedAt: iso(-96) },
@@ -976,7 +1131,18 @@ export const projects: Project[] = [
     dueAt: iso(240),
     createdAt: iso(-72),
     tasks: [
-      { id: 'pt4', title: 'انتقال مشتریان و تیکت‌های قبلی از اکسل', assignee: 'علی (استقرار)', estimatedHours: 10, done: false },
+      {
+        id: 'pt4',
+        title: 'انتقال مشتریان و تیکت‌های قبلی از اکسل',
+        assignee: 'علی (استقرار)',
+        estimatedHours: 10,
+        dueAt: iso(96),
+        done: false,
+        subtasks: [
+          { id: 'pts5', title: 'استانداردسازی شماره موبایل و کد ملی', done: true },
+          { id: 'pts6', title: 'ورود دسته‌ای به CRM و بررسی مغایرت', done: false },
+        ],
+      },
     ],
     deploymentChecklist: [
       { id: 'dc5', title: 'تحویل کلید لایسنس سازمانی', category: 'infra', done: true, checkedAt: iso(-24) },
@@ -1871,18 +2037,41 @@ export const kbArticles: KbArticle[] = [
 ];
 
 export const tasks: Task[] = [
-  { id: 't1', title: 'تماس پیگیری سفارش دارای تأخیر', customerId: 'c1', dueAt: iso(-5), done: false },
-  { id: 't2', title: 'یادآوری نوبت فردا به مراجع', customerId: 'c2', dueAt: iso(2), done: false },
-  { id: 't3', title: 'ارسال دستور مراقبت پس از لیزر', customerId: 'c5', dueAt: iso(4), done: false },
-  { id: 't4', title: 'تأیید آدرس ارسال بسته پستی', customerId: 'c3', dueAt: iso(-14), done: false },
-  { id: 't5', title: 'پیگیری پرداخت پیش‌فاکتور مشاوره', customerId: 'c7', dueAt: iso(-24), done: false },
-  { id: 't6', title: 'تماس رضایت‌سنجی یک هفته بعد از ویزیت', customerId: 'c4', dueAt: iso(5), done: false },
-  { id: 't7', title: 'ثبت شماره پیگیری تیپاکس', customerId: 'c9', dueAt: iso(1), done: false },
-  { id: 't8', title: 'بررسی موجودی سرم ویتامین C', dueAt: iso(-8), done: false },
-  { id: 't9', title: 'هماهنگی تغییر ساعت ویزیت دکتر راد', customerId: 'c11', dueAt: iso(6), done: false },
-  { id: 't10', title: 'ارسال پیش‌فاکتور پکیج فیشیال', customerId: 'c12', dueAt: iso(-30), done: true },
-  { id: 't11', title: 'تکمیل پرونده رضایت‌نامه عکس', customerId: 'c6', dueAt: iso(-48), done: true },
-  { id: 't12', title: 'به‌روزرسانی برچسب مشتریان VIP', dueAt: iso(24), done: false },
+  {
+    id: 't1',
+    title: 'تماس پیگیری سفارش دارای تأخیر',
+    customerId: 'c1',
+    dueAt: iso(-5),
+    done: false,
+    assignee: 'مریم (فروش)',
+    priority: 'high',
+    subtasks: [
+      { id: 'ts1', title: 'استعلام وضعیت بسته از تیپاکس', done: true },
+      { id: 'ts2', title: 'اعلام زمان جدید تحویل به مشتری', done: false },
+    ],
+  },
+  { id: 't2', title: 'یادآوری نوبت فردا به مراجع', customerId: 'c2', dueAt: iso(2), done: false, assignee: 'سارا (پذیرش)', priority: 'medium' },
+  {
+    id: 't3',
+    title: 'ارسال دستور مراقبت پس از لیزر',
+    customerId: 'c5',
+    dueAt: iso(4),
+    done: false,
+    assignee: 'سارا (پذیرش)',
+    priority: 'low',
+    subtasks: [
+      { id: 'ts3', title: 'ارسال فایل راهنمای PDF در واتساپ', done: false },
+    ],
+  },
+  { id: 't4', title: 'تأیید آدرس ارسال بسته پستی', customerId: 'c3', dueAt: iso(-14), done: false, assignee: 'مریم (فروش)', priority: 'high' },
+  { id: 't5', title: 'پیگیری پرداخت پیش‌فاکتور مشاوره', customerId: 'c7', dueAt: iso(-24), done: false, assignee: 'مریم (فروش)', priority: 'high' },
+  { id: 't6', title: 'تماس رضایت‌سنجی یک هفته بعد از ویزیت', customerId: 'c4', dueAt: iso(5), done: false, assignee: 'سارا (پذیرش)', priority: 'medium' },
+  { id: 't7', title: 'ثبت شماره پیگیری تیپاکس', customerId: 'c9', dueAt: iso(1), done: false, assignee: 'مریم (فروش)', priority: 'medium' },
+  { id: 't8', title: 'بررسی موجودی سرم ویتامین C', dueAt: iso(-8), done: false, assignee: 'علی (استقرار)', priority: 'high' },
+  { id: 't9', title: 'هماهنگی تغییر ساعت ویزیت دکتر راد', customerId: 'c11', dueAt: iso(6), done: false, assignee: 'سارا (پذیرش)', priority: 'low' },
+  { id: 't10', title: 'ارسال پیش‌فاکتور پکیج فیشیال', customerId: 'c12', dueAt: iso(-30), done: true, assignee: 'مریم (فروش)', priority: 'medium' },
+  { id: 't11', title: 'تکمیل پرونده رضایت‌نامه عکس', customerId: 'c6', dueAt: iso(-48), done: true, assignee: 'سارا (پذیرش)', priority: 'low' },
+  { id: 't12', title: 'به‌روزرسانی برچسب مشتریان VIP', dueAt: iso(24), done: false, assignee: 'مریم (فروش)', priority: 'low' },
 ];
 
 export const tickets: Ticket[] = [
@@ -2172,8 +2361,11 @@ export const createInitialState = (): AppState => ({
   orders,
   orderLogs,
   invoices,
+  paymentAllocations,
   sayadiCheques,
   paymentTransactions,
+  contracts,
+  warranties,
   products,
   stockMovements,
   coupons,
@@ -2210,6 +2402,7 @@ export const createInitialState = (): AppState => ({
   customPacks: [],
   auditLogs: initialAuditLogs,
   processedRuleKeys: ['u1_a2', 'u2_o1', 'u_dyn_vip_c1', 'u_dyn_vip_c4', 'u_dyn_vip_c6', 'u_dyn_vip_c12'],
+  recentIdempotencyKeys: [],
   settings: {
     businessName: 'کلینیک و فروشگاه تخصصی آوا',
     workStartHour: 9,

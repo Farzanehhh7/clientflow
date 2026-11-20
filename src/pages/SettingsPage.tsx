@@ -123,7 +123,7 @@ export function SettingsPage({ onStartTour }: SettingsPageProps) {
   const [srvBufBefore, setSrvBufBefore] = useState('5');
   const [srvBufAfter, setSrvBufAfter] = useState('10');
   const [resName, setResName] = useState('');
-  const [resType, setResType] = useState<'staff' | 'room'>('staff');
+  const [resType, setResType] = useState<'staff' | 'room' | 'device'>('staff');
 
   const toggleWorkDay = (dayIdx: number) => {
     setWorkDays((prev) =>
@@ -1112,7 +1112,7 @@ export function SettingsPage({ onStartTour }: SettingsPageProps) {
             </div>
 
             <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
-              <h2 className="mb-3 text-sm font-semibold">منابع (پزشکان و اتاق‌ها)</h2>
+              <h2 className="mb-3 text-sm font-semibold">منابع (پرسنل، اتاق‌ها و تجهیزات)</h2>
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
@@ -1124,18 +1124,19 @@ export function SettingsPage({ onStartTour }: SettingsPageProps) {
               >
                 <input
                   type="text"
-                  placeholder="نام پزشک یا اتاق..."
+                  placeholder="نام کارشناس، اتاق یا دستگاه..."
                   value={resName}
                   onChange={(e) => setResName(e.target.value)}
                   className="flex-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-800"
                 />
                 <select
                   value={resType}
-                  onChange={(e) => setResType(e.target.value as 'staff' | 'room')}
+                  onChange={(e) => setResType(e.target.value as 'staff' | 'room' | 'device')}
                   className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-800"
                 >
                   <option value="staff">پزشک / پرسنل</option>
-                  <option value="room">اتاق / دستگاه</option>
+                  <option value="room">اتاق</option>
+                  <option value="device">دستگاه / تجهیز</option>
                 </select>
                 <button
                   type="submit"
@@ -1148,7 +1149,9 @@ export function SettingsPage({ onStartTour }: SettingsPageProps) {
                 {state.resources.map((r) => (
                   <div key={r.id} className="flex items-center justify-between py-2 text-xs">
                     <span className="font-medium">{r.name}</span>
-                    <span className="text-slate-500">{r.type === 'staff' ? 'پزشک / کارشناس' : 'اتاق / تجهیز'}</span>
+                    <span className="text-slate-500">
+                      {r.type === 'staff' ? 'پزشک / کارشناس' : r.type === 'device' ? 'دستگاه / تجهیز' : 'اتاق'}
+                    </span>
                   </div>
                 ))}
               </div>

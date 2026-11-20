@@ -3,9 +3,28 @@ import type {
   CustomFieldDef,
   IndustryPack,
   PackCustomerConfig,
+  PackOrderConfig,
   PackSalesConfig,
   PackTemplate,
 } from '../types';
+
+const DEFAULT_ORDER_META: PackOrderConfig = {
+  channelDefault: 'website',
+  statusLabels: {
+    new: 'جدید',
+    confirmed: 'تأییدشده',
+    shipped: 'ارسال‌شده',
+    delivered: 'تحویل‌شده',
+    cancelled: 'لغوشده',
+  },
+  transitions: {
+    new: ['confirmed', 'cancelled'],
+    confirmed: ['shipped', 'cancelled'],
+    shipped: ['delivered', 'cancelled'],
+    delivered: [],
+    cancelled: [],
+  },
+};
 
 export const INDUSTRY_PACKS: PackTemplate[] = [
   {
@@ -37,6 +56,17 @@ export const INDUSTRY_PACKS: PackTemplate[] = [
         { key: 'won', label: 'تایید و شروع درمان', probability: 100, slaHours: 0 },
         { key: 'lost', label: 'انصراف مراجع', probability: 0, slaHours: 0 },
       ],
+    },
+    orderMeta: {
+      channelDefault: 'store',
+      statusLabels: {
+        new: 'ثبت نسخه / سفارش',
+        confirmed: 'تأیید پذیرش',
+        shipped: 'ارسال با پیک / تحویل گیشه',
+        delivered: 'تحویل مراجع',
+        cancelled: 'لغو پذیرش',
+      },
+      transitions: DEFAULT_ORDER_META.transitions,
     },
     customFields: [
       { key: 'allergies', label: 'حساسیت‌ها و آلرژی‌ها', entity: 'customer', type: 'text', active: true, showInTable: true, order: 1 },
@@ -97,6 +127,7 @@ export const INDUSTRY_PACKS: PackTemplate[] = [
         { key: 'lost', label: 'لغو / عدم خرید', probability: 0, slaHours: 0 },
       ],
     },
+    orderMeta: DEFAULT_ORDER_META,
     customFields: [
       { key: 'preferred_carrier', label: 'اولویت ارسال / شرکت حمل', entity: 'customer', type: 'select', options: ['تیپاکس', 'پست پیشتاز', 'اسنپ‌باکس'], active: true, showInTable: true, order: 1 },
       { key: 'gift_wrap', label: 'بسته‌بندی هدیه', entity: 'order', type: 'checkbox', active: true, showInTable: true, order: 2 },
@@ -146,6 +177,17 @@ export const INDUSTRY_PACKS: PackTemplate[] = [
         { key: 'won', label: 'بستن قرارداد و استقرار', probability: 100, slaHours: 0 },
         { key: 'lost', label: 'عدم تمدید / ازدست‌رفته', probability: 0, slaHours: 0 },
       ],
+    },
+    orderMeta: {
+      channelDefault: 'website',
+      statusLabels: {
+        new: 'درخواست لایسنس',
+        confirmed: 'تأیید مالی و صدور کلید',
+        shipped: 'ارسال دسترسی / پکیج',
+        delivered: 'فعال و تحویل‌شده',
+        cancelled: 'لغوشده',
+      },
+      transitions: DEFAULT_ORDER_META.transitions,
     },
     customFields: [
       { key: 'license_key', label: 'کلید لایسنس', entity: 'customer', type: 'text', unique: true, active: true, showInTable: true, order: 1 },
@@ -424,6 +466,17 @@ export const INDUSTRY_PACKS: PackTemplate[] = [
         { key: 'lost', label: 'لغو رویداد', probability: 0, slaHours: 0 },
       ],
     },
+    orderMeta: {
+      channelDefault: 'phone',
+      statusLabels: {
+        new: 'دریافت سفارش',
+        confirmed: 'در حال آماده‌سازی',
+        shipped: 'ارسال با پیک',
+        delivered: 'تحویل مشتری',
+        cancelled: 'لغوشده',
+      },
+      transitions: DEFAULT_ORDER_META.transitions,
+    },
     customFields: [
       { key: 'favorite_table', label: 'ترجیح میز / ذائقه غذایی', entity: 'customer', type: 'text', active: true, order: 1 },
       { key: 'diet_pref', label: 'رژیم غذایی', entity: 'customer', type: 'select', options: ['معمولی', 'گیاهخوار', 'بدون گلوتن'], active: true, showInTable: true, order: 2 },
@@ -552,4 +605,14 @@ export function getPackSalesConfig(
   if (pack?.salesMeta) return pack.salesMeta;
   const generalPack = INDUSTRY_PACKS.find((p) => p.key === 'general')!;
   return generalPack.salesMeta!;
+}
+
+export function getPackOrderConfig(
+  packKey: IndustryPack,
+  customPacks?: PackTemplate[],
+): PackOrderConfig {
+  const pack =
+    INDUSTRY_PACKS.find((p) => p.key === packKey) ??
+    customPacks?.find((p) => p.key === packKey);
+  return pack?.orderMeta ?? DEFAULT_ORDER_META;
 }

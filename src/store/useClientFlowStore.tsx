@@ -22,6 +22,8 @@ import type {
   ConsentLog,
   ContentItem,
   ContentStatus,
+  Contract,
+  ContractStatus,
   Coupon,
   CsvImportBatch,
   CustomEntityDef,
@@ -48,10 +50,13 @@ import type {
   OfficialHoliday,
   Opportunity,
   Order,
+  OrderChannel,
+  OrderReturn,
   OrderShipment,
   OrderStatus,
   OutboxMessage,
   PackTemplate,
+  PaymentAllocation,
   PaymentMethod,
   PaymentTransaction,
   PipelineStage,
@@ -80,6 +85,8 @@ import type {
   TimeEntry,
   UtmTouch,
   WaitlistEntry,
+  WarrantyClaim,
+  WarrantyRecord,
   WorkflowDefinition,
   WorkflowInstance,
   WorkflowStep,
@@ -171,6 +178,10 @@ function mergeLoadedState(parsed: Partial<AppState> | null | undefined): AppStat
     ticketMessages: parsed.ticketMessages ?? fallback.ticketMessages,
     sayadiCheques: parsed.sayadiCheques ?? fallback.sayadiCheques,
     paymentTransactions: parsed.paymentTransactions ?? fallback.paymentTransactions,
+    paymentAllocations: parsed.paymentAllocations ?? fallback.paymentAllocations,
+    contracts: parsed.contracts ?? fallback.contracts,
+    warranties: parsed.warranties ?? fallback.warranties,
+    recentIdempotencyKeys: parsed.recentIdempotencyKeys ?? fallback.recentIdempotencyKeys ?? [],
     scheduledReports: parsed.scheduledReports ?? fallback.scheduledReports,
     branches: parsed.branches ?? fallback.branches,
     customPacks: parsed.customPacks ?? fallback.customPacks,
@@ -279,27 +290,59 @@ type ClientFlowContextValue = {
   addWaitlistEntry: (entry: Omit<WaitlistEntry, 'id' | 'createdAt' | 'status'>) => void;
   bookFromWaitlist: (waitlistId: string, startIso: string, resourceId: string) => { ok: boolean; error?: string };
   simulateSmsConfirmReply: (appointmentId: string, outboxId?: string) => void;
+  sendAppointmentReminder: (appointmentId: string) => { ok: boolean; error?: string };
 
-  // Orders, Shop, Inventory, Shipments, Invoices, Projects
+  // Orders, Shop, Inventory, Shipments, Returns, Invoices, Allocations, Contracts, Warranties, Projects
   addOrder: (data: {
     customerId: string;
-    items: { name: string; qty: number; price: number }[];
+    channel?: OrderChannel;
+    idempotencyKey?: string;
+    items: { productId?: string; name: string; qty: number; price: number }[];
     promisedAt?: string;
     couponCode?: string;
     customFields?: Record<string, string>;
-  }) => { ok: boolean; error?: string };
+  }) => { ok: boolean; error?: string; order?: Order };
   updateOrderStatus: (id: string, nextStatus: OrderStatus, trackingCode?: string) => void;
   recordOrderShipment: (orderId: string, shipment: Omit<OrderShipment, 'id' | 'shippedAt'>) => void;
+  recordOrderReturn: (
+    orderId: string,
+    data: {
+      items: { name: string; qty: number; price: number }[];
+      refundAmount: number;
+      refundMethod: PaymentMethod;
+      reason: string;
+      restock: boolean;
+    },
+  ) => void;
   adjustProductStock: (productId: string, delta: number, reason: string) => void;
   addProduct: (product: Omit<Product, 'id'>) => void;
   toggleCoupon: (id: string) => void;
   addCoupon: (coupon: Omit<Coupon, 'id' | 'usedCount'>) => void;
   createInvoiceForOrder: (orderId: string, method?: PaymentMethod) => void;
+  createInvoiceFromContract: (contractId: string, method?: PaymentMethod) => void;
   recordInvoicePayment: (invoiceId: string, amount: number, method: PaymentMethod) => void;
+  allocatePaymentToInvoices: (data: {
+    customerId: string;
+    totalAmount: number;
+    method: PaymentMethod;
+    reference?: string;
+    note?: string;
+    allocations: { invoiceId: string; amount: number }[];
+  }) => { ok: boolean; error?: string };
+  sendOverdueInvoiceReminder: (invoiceId: string) => { ok: boolean; error?: string };
+  addContract: (data: Omit<Contract, 'id' | 'contractNo' | 'createdAt'>) => void;
+  renewContract: (contractId: string) => void;
+  updateContractStatus: (contractId: string, status: ContractStatus) => void;
+  runContractRenewalReminders: () => number;
+  addWarrantyRecord: (data: Omit<WarrantyRecord, 'id' | 'claims' | 'createdAt'>) => void;
+  addWarrantyClaim: (warrantyId: string, claim: Omit<WarrantyClaim, 'id'>) => void;
+  updateWarrantyClaimStatus: (warrantyId: string, claimId: string, status: WarrantyClaim['status']) => void;
   addProject: (data: { title: string; customerId: string; dueAt: string }) => void;
   updateProjectStatus: (id: string, status: ProjectStatus) => void;
-  addProjectTask: (projectId: string, task: { title: string; assignee: string; estimatedHours: number }) => void;
+  addProjectTask: (projectId: string, task: { title: string; assignee: string; estimatedHours: number; dueAt?: string }) => void;
   toggleProjectTask: (projectId: string, taskId: string) => void;
+  addProjectTaskSubtask: (projectId: string, taskId: string, title: string) => void;
+  toggleProjectTaskSubtask: (projectId: string, taskId: string, subtaskId: string) => void;
   addTimeEntry: (entry: Omit<TimeEntry, 'id' | 'loggedAt'>) => void;
   toggleDeploymentCheck: (projectId: string, checkId: string) => void;
 
@@ -386,8 +429,18 @@ type ClientFlowContextValue = {
   ) => { ok: boolean; error?: string };
 
   // Tasks, Tickets, TicketMessages, SLA Escalation, Merge & Knowledge Base Versioning
-  addTask: (data: { title: string; customerId?: string; dueAt: string }) => void;
+  addTask: (data: {
+    title: string;
+    customerId?: string;
+    dueAt: string;
+    assignee?: string;
+    priority?: Task['priority'];
+    subtasks?: { id: string; title: string; done: boolean }[];
+    projectId?: string;
+  }) => void;
   toggleTaskDone: (id: string) => void;
+  addTaskSubtask: (taskId: string, title: string) => void;
+  toggleTaskSubtask: (taskId: string, subtaskId: string) => void;
   addTicket: (data: {
     customerId: string;
     subject: string;
@@ -1007,6 +1060,18 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
           ),
           paymentTransactions: prev.paymentTransactions.map((pt) =>
             pt.customerId === duplicateId ? { ...pt, customerId: primaryId } : pt,
+          ),
+          paymentAllocations: (prev.paymentAllocations ?? []).map((pa) =>
+            pa.customerId === duplicateId ? { ...pa, customerId: primaryId } : pa,
+          ),
+          contracts: (prev.contracts ?? []).map((ct) =>
+            ct.customerId === duplicateId ? { ...ct, customerId: primaryId } : ct,
+          ),
+          warranties: (prev.warranties ?? []).map((wr) =>
+            wr.customerId === duplicateId ? { ...wr, customerId: primaryId } : wr,
+          ),
+          projects: prev.projects.map((pr) =>
+            pr.customerId === duplicateId ? { ...pr, customerId: primaryId } : pr,
           ),
           opportunities: prev.opportunities.map((opp) =>
             opp.customerId === duplicateId ? { ...opp, customerId: primaryId } : opp,
@@ -1823,11 +1888,56 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
     [pushToast],
   );
 
+  const sendAppointmentReminder = useCallback(
+    (appointmentId: string) => {
+      const cur = stateRef.current;
+      const apt = cur.appointments.find((a) => a.id === appointmentId);
+      if (!apt) return { ok: false, error: 'نوبت یافت نشد.' };
+      const cust = cur.customers.find((c) => c.id === apt.customerId);
+      if (!cust) return { ok: false, error: 'مشتری یافت نشد.' };
+      if (cust.consentSms === false) {
+        pushToast(`ارسال پیامک به ${cust.name} به علت عدم رضایت پیامکی مسدود است.`, 'error');
+        return { ok: false, error: 'مشتری رضایت پیامکی ندارد.' };
+      }
+      const srv = cur.services.find((s) => s.id === apt.serviceId);
+      const nowIso = new Date().toISOString();
+      const timeLabel = new Date(apt.start).toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
+      const msg: OutboxMessage = {
+        id: `msg_apt_rem_${Date.now()}`,
+        to: cust.phone,
+        customerId: cust.id,
+        customerName: cust.name,
+        appointmentId: apt.id,
+        canSimulateConfirm: apt.status === 'booked',
+        body: `${cust.name} گرامی، یادآور نوبت «${srv?.name ?? 'خدمت'}» شما ساعت ${timeLabel} در ${cur.settings.businessName}. جهت تأیید عدد ۱ را ارسال کنید.`,
+        channel: 'sms',
+        ruleName: 'یادآور نوبت (ارسال به Outbox)',
+        deliveryStatus: 'delivered',
+        retryCount: 0,
+        maxRetries: cur.automationPolicy.maxRetries,
+        at: nowIso,
+      };
+      setState((prev) => ({
+        ...prev,
+        appointments: prev.appointments.map((a) =>
+          a.id === appointmentId ? { ...a, reminder2hSent: true, reminderSentAt: nowIso } : a,
+        ),
+        outbox: [msg, ...prev.outbox],
+        auditLogs: [makeAudit('نوبت', 'update', `یادآور نوبت ${cust.name} در Outbox ثبت شد.`), ...prev.auditLogs].slice(0, 100),
+      }));
+      pushToast(`یادآور نوبت ${cust.name} در صندوق ارسال (Outbox) قرار گرفت.`);
+      return { ok: true };
+    },
+    [pushToast],
+  );
+
   // --- ORDERS, INVENTORY, INVOICES, PROJECTS ---
   const addOrder = useCallback(
     (data: {
       customerId: string;
-      items: { name: string; qty: number; price: number }[];
+      channel?: OrderChannel;
+      idempotencyKey?: string;
+      items: { productId?: string; name: string; qty: number; price: number }[];
       promisedAt?: string;
       couponCode?: string;
       customFields?: Record<string, string>;
@@ -1835,13 +1945,23 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
       if (!data.customerId || data.items.length === 0) {
         return { ok: false, error: 'مشتری و حداقل یک قلم کالا الزامی است.' };
       }
+      const cur = stateRef.current;
+      if (data.idempotencyKey) {
+        const recentKeys = cur.recentIdempotencyKeys ?? [];
+        const dupOrder = cur.orders.find((o) => o.idempotencyKey === data.idempotencyKey);
+        if (recentKeys.includes(data.idempotencyKey) || dupOrder) {
+          pushToast('ثبت تکراری سفارش با کلید یکتای مشابه مسدود شد (Idempotency).', 'info');
+          return { ok: false, error: 'این سفارش قبلاً ثبت شده است (جلوگیری از ارسال تکراری / Idempotency).' };
+        }
+      }
+
       const subtotal = data.items.reduce((sum, it) => sum + it.qty * it.price, 0);
       let discountAmount = 0;
       let validCoupon: string | undefined;
 
       if (data.couponCode?.trim()) {
         const codeUpper = data.couponCode.trim().toUpperCase();
-        const coupon = stateRef.current.coupons.find(
+        const coupon = cur.coupons.find(
           (c) => c.code === codeUpper && c.active && c.usedCount < c.maxUses,
         );
         if (!coupon) {
@@ -1853,13 +1973,34 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
 
       const nowIso = new Date().toISOString();
       const activeBranch =
-        stateRef.current.settings.activeBranchId !== 'all'
-          ? stateRef.current.settings.activeBranchId
-          : stateRef.current.branches[0]?.id;
+        cur.settings.activeBranchId !== 'all'
+          ? cur.settings.activeBranchId
+          : cur.branches[0]?.id;
+      const orderSeq = 1 + cur.orders.length;
+      const candidateNo = formatDocumentNumber('order', orderSeq, cur.settings.numbering);
+      const uniqueOrderId = cur.orders.some((o) => o.id === candidateNo)
+        ? `${candidateNo}-${Date.now().toString().slice(-3)}`
+        : candidateNo;
+
+      const snapItems = data.items.map((it) => {
+        const catalogProd = it.productId
+          ? cur.products.find((p) => p.id === it.productId)
+          : cur.products.find((p) => p.name === it.name);
+        return {
+          productId: it.productId ?? catalogProd?.id,
+          name: it.name,
+          qty: it.qty,
+          price: it.price,
+          unitPriceSnapshot: it.price,
+        };
+      });
+
       const order: Order = {
-        id: `o_${Date.now()}`,
+        id: uniqueOrderId,
         customerId: data.customerId,
-        items: data.items,
+        channel: data.channel ?? 'website',
+        idempotencyKey: data.idempotencyKey,
+        items: snapItems,
         status: 'new',
         createdAt: nowIso,
         updatedAt: nowIso,
@@ -1867,6 +2008,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         couponCode: validCoupon,
         discountAmount,
         shipments: [],
+        returns: [],
         branchId: activeBranch,
         customFields: data.customFields,
       };
@@ -1874,6 +2016,9 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
       setState((prev) => ({
         ...prev,
         orders: [order, ...prev.orders],
+        recentIdempotencyKeys: data.idempotencyKey
+          ? [data.idempotencyKey, ...(prev.recentIdempotencyKeys ?? [])].slice(0, 50)
+          : prev.recentIdempotencyKeys,
         orderLogs: [
           { id: `ol_${Date.now()}`, orderId: order.id, from: 'ایجاد', to: 'new', at: nowIso },
           ...prev.orderLogs,
@@ -1881,11 +2026,11 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         coupons: validCoupon
           ? prev.coupons.map((c) => (c.code === validCoupon ? { ...c, usedCount: c.usedCount + 1 } : c))
           : prev.coupons,
-        auditLogs: [makeAudit('سفارش', 'create', `سفارش ${order.id} ثبت شد.`), ...prev.auditLogs].slice(0, 100),
+        auditLogs: [makeAudit('سفارش', 'create', `سفارش ${order.id} (کانال: ${order.channel}) ثبت شد.`), ...prev.auditLogs].slice(0, 100),
       }));
       setTimeout(() => fireAutomationEvent('on_create', 'order', order as unknown as Record<string, unknown>), 50);
-      pushToast('سفارش جدید ثبت شد.');
-      return { ok: true };
+      pushToast(`سفارش ${order.id} با قیمت لحظه‌ای (Snapshot) ثبت شد.`);
+      return { ok: true, order };
     },
     [fireAutomationEvent, pushToast],
   );
@@ -2111,6 +2256,94 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
     [pushToast],
   );
 
+  const recordOrderReturn = useCallback(
+    (
+      orderId: string,
+      data: {
+        items: { name: string; qty: number; price: number }[];
+        refundAmount: number;
+        refundMethod: PaymentMethod;
+        reason: string;
+        restock: boolean;
+      },
+    ) => {
+      const cur = stateRef.current;
+      const ord = cur.orders.find((o) => o.id === orderId);
+      if (!ord || data.items.length === 0) return;
+      const nowIso = new Date().toISOString();
+      const ret: OrderReturn = {
+        id: `ret_${Date.now()}`,
+        orderId,
+        customerId: ord.customerId,
+        items: data.items,
+        refundAmount: Math.max(0, data.refundAmount),
+        refundMethod: data.refundMethod,
+        reason: data.reason.trim() || 'مرجوعی سفارش',
+        restock: data.restock,
+        createdAt: nowIso,
+      };
+
+      const newMovements: StockMovement[] = [];
+      let nextProducts = cur.products;
+      if (data.restock) {
+        nextProducts = cur.products.map((prod) => {
+          const retQty = data.items
+            .filter((it) => it.name === prod.name)
+            .reduce((s, it) => s + it.qty, 0);
+          if (retQty <= 0) return prod;
+          const nextStock = prod.stock + retQty;
+          newMovements.push({
+            id: `sm_ret_${Date.now()}_${prod.id}`,
+            productId: prod.id,
+            productName: prod.name,
+            orderId,
+            type: 'in',
+            qtyChange: retQty,
+            balanceAfter: nextStock,
+            reason: `بازگشت به انبار از مرجوعی سفارش ${orderId}`,
+            at: nowIso,
+          });
+          return { ...prod, stock: nextStock };
+        });
+      }
+
+      setState((prev) => ({
+        ...prev,
+        products: nextProducts,
+        stockMovements: [...newMovements, ...prev.stockMovements],
+        orders: prev.orders.map((o) =>
+          o.id === orderId
+            ? {
+                ...o,
+                updatedAt: nowIso,
+                returns: [...(o.returns ?? []), ret],
+              }
+            : o,
+        ),
+        orderLogs: [
+          {
+            id: `ol_ret_${Date.now()}`,
+            orderId,
+            from: 'مرجوعی / استرداد وجه',
+            to: `${ret.reason} (${ret.refundAmount.toLocaleString('en-US')} تومان)`,
+            at: nowIso,
+          },
+          ...prev.orderLogs,
+        ],
+        auditLogs: [
+          makeAudit('سفارش', 'update', `مرجوعی و استرداد وجه برای سفارش ${orderId} ثبت شد.`),
+          ...prev.auditLogs,
+        ].slice(0, 100),
+      }));
+      pushToast(
+        data.restock
+          ? 'مرجوعی، استرداد وجه و بازگشت کالا به موجودی انبار ثبت شد.'
+          : 'مرجوعی و استرداد وجه برای سفارش ثبت شد.',
+      );
+    },
+    [pushToast],
+  );
+
   const createInvoiceForOrder = useCallback(
     (orderId: string, method: PaymentMethod = 'online') => {
       const existing = stateRef.current.invoices.find((inv) => inv.orderId === orderId);
@@ -2153,6 +2386,51 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
     [pushToast],
   );
 
+  const createInvoiceFromContract = useCallback(
+    (contractId: string, method: PaymentMethod = 'transfer') => {
+      const cur = stateRef.current;
+      const contract = cur.contracts.find((c) => c.id === contractId);
+      if (!contract) return;
+      const existing = cur.invoices.find((i) => i.contractId === contractId && i.status !== 'paid');
+      if (existing) {
+        pushToast(`فاکتور باز ${existing.invoiceNo} قبلاً برای این قرارداد صادر شده است.`, 'info');
+        return;
+      }
+      const subtotal = contract.amount;
+      const tax = Math.round(subtotal * 0.1);
+      const grandTotal = subtotal + tax;
+      const nowIso = new Date().toISOString();
+      const invNo = formatDocumentNumber('invoice', 1 + cur.invoices.length, cur.settings.numbering);
+      const inv: Invoice = {
+        id: `inv_ctr_${Date.now()}`,
+        invoiceNo: invNo,
+        orderId: `قرارداد ${contract.contractNo}`,
+        contractId: contract.id,
+        customerId: contract.customerId,
+        subtotal,
+        discount: 0,
+        tax,
+        grandTotal,
+        paidAmount: 0,
+        method,
+        status: 'issued',
+        issuedAt: nowIso,
+        dueAt: new Date(Date.now() + 7 * 24 * 3600_000).toISOString(),
+        branchId: contract.branchId,
+      };
+      setState((prev) => ({
+        ...prev,
+        invoices: [inv, ...prev.invoices],
+        auditLogs: [
+          makeAudit('مالی', 'create', `فاکتور ${inv.invoiceNo} از قرارداد ${contract.contractNo} صادر شد.`),
+          ...prev.auditLogs,
+        ].slice(0, 100),
+      }));
+      pushToast(`فاکتور ${inv.invoiceNo} از قرارداد صادر شد.`);
+    },
+    [pushToast],
+  );
+
   const recordInvoicePayment = useCallback(
     (invoiceId: string, amount: number, method: PaymentMethod) => {
       if (amount <= 0) return;
@@ -2173,6 +2451,299 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
       pushToast('پرداخت فاکتور ثبت شد.');
     },
     [pushToast],
+  );
+
+  const allocatePaymentToInvoices = useCallback(
+    (data: {
+      customerId: string;
+      totalAmount: number;
+      method: PaymentMethod;
+      reference?: string;
+      note?: string;
+      allocations: { invoiceId: string; amount: number }[];
+    }) => {
+      const validLines = data.allocations.filter((a) => a.amount > 0);
+      if (validLines.length === 0) {
+        return { ok: false, error: 'حداقل یک فاکتور با مبلغ تخصیص بیشتر از صفر انتخاب کنید.' };
+      }
+      const allocatedSum = validLines.reduce((s, a) => s + a.amount, 0);
+      if (allocatedSum > data.totalAmount) {
+        return { ok: false, error: 'جمع مبالغ تخصیص‌یافته نمی‌تواند از کل پرداخت بیشتر باشد.' };
+      }
+
+      const cur = stateRef.current;
+      const nowIso = new Date().toISOString();
+      const allocMap = new Map<string, number>();
+      const detailLines: { invoiceId: string; invoiceNo: string; amount: number }[] = [];
+
+      for (const line of validLines) {
+        const inv = cur.invoices.find((i) => i.id === line.invoiceId);
+        if (!inv) continue;
+        allocMap.set(inv.id, line.amount);
+        detailLines.push({ invoiceId: inv.id, invoiceNo: inv.invoiceNo, amount: line.amount });
+      }
+
+      const record: PaymentAllocation = {
+        id: `pa_${Date.now()}`,
+        customerId: data.customerId,
+        totalAmount: data.totalAmount,
+        method: data.method,
+        reference: data.reference?.trim() || undefined,
+        note: data.note?.trim() || undefined,
+        allocations: detailLines,
+        createdAt: nowIso,
+      };
+
+      setState((prev) => ({
+        ...prev,
+        paymentAllocations: [record, ...(prev.paymentAllocations ?? [])],
+        invoices: prev.invoices.map((inv) => {
+          const addAmt = allocMap.get(inv.id);
+          if (!addAmt) return inv;
+          const nextPaid = Math.min(inv.grandTotal, inv.paidAmount + addAmt);
+          return {
+            ...inv,
+            paidAmount: nextPaid,
+            method: data.method,
+            status: nextPaid >= inv.grandTotal ? 'paid' : 'partial',
+          };
+        }),
+        auditLogs: [
+          makeAudit('مالی', 'update', `تخصیص پرداخت تجمیعی به ${detailLines.length} فاکتور ثبت شد.`),
+          ...prev.auditLogs,
+        ].slice(0, 100),
+      }));
+      pushToast(`پرداخت با موفقیت به ${detailLines.length} فاکتور تخصیص یافت.`);
+      return { ok: true };
+    },
+    [pushToast],
+  );
+
+  const sendOverdueInvoiceReminder = useCallback(
+    (invoiceId: string) => {
+      const cur = stateRef.current;
+      const inv = cur.invoices.find((i) => i.id === invoiceId);
+      if (!inv) return { ok: false, error: 'فاکتور یافت نشد.' };
+      const cust = cur.customers.find((c) => c.id === inv.customerId);
+      if (!cust) return { ok: false, error: 'مشتری یافت نشد.' };
+      const balance = Math.max(0, inv.grandTotal - inv.paidAmount);
+      if (balance <= 0) return { ok: false, error: 'این فاکتور تسویه شده است.' };
+      if (cust.consentSms === false) {
+        pushToast(`ارسال پیامک به ${cust.name} به دلیل عدم رضایت پیامکی انجام نشد.`, 'error');
+        return { ok: false, error: 'مشتری رضایت پیامکی ندارد.' };
+      }
+
+      const nowIso = new Date().toISOString();
+      const msg: OutboxMessage = {
+        id: `msg_inv_${Date.now()}`,
+        to: cust.phone,
+        customerId: cust.id,
+        customerName: cust.name,
+        body: `${cust.name} گرامی، مانده فاکتور ${inv.invoiceNo} به مبلغ ${balance.toLocaleString('en-US')} تومان در ${cur.settings.businessName} سررسید شده است. لطفاً جهت تسویه اقدام فرمایید.`,
+        channel: 'sms',
+        ruleName: 'یادآور سررسید فاکتور معوق',
+        deliveryStatus: 'delivered',
+        retryCount: 0,
+        maxRetries: cur.automationPolicy.maxRetries,
+        at: nowIso,
+      };
+      setState((prev) => ({
+        ...prev,
+        invoices: prev.invoices.map((i) =>
+          i.id === invoiceId
+            ? { ...i, reminderCount: (i.reminderCount ?? 0) + 1, lastReminderAt: nowIso }
+            : i,
+        ),
+        outbox: [msg, ...prev.outbox],
+        auditLogs: [
+          makeAudit('مالی', 'automation', `یادآور سررسید فاکتور ${inv.invoiceNo} در Outbox ثبت شد.`),
+          ...prev.auditLogs,
+        ].slice(0, 100),
+      }));
+      pushToast(`یادآور سررسید فاکتور ${inv.invoiceNo} به Outbox ارسال شد.`);
+      return { ok: true };
+    },
+    [pushToast],
+  );
+
+  // --- CONTRACTS & WARRANTIES ---
+  const addContract = useCallback(
+    (data: Omit<Contract, 'id' | 'contractNo' | 'createdAt'>) => {
+      const cur = stateRef.current;
+      const nowIso = new Date().toISOString();
+      const contractNo = `CTR-${new Date().getFullYear() - 621}-${101 + (cur.contracts?.length ?? 0)}`;
+      const activeBranch =
+        cur.settings.activeBranchId !== 'all' ? cur.settings.activeBranchId : cur.branches[0]?.id;
+      const created: Contract = {
+        ...data,
+        id: `ctr_${Date.now()}`,
+        contractNo,
+        branchId: data.branchId ?? activeBranch,
+        createdAt: nowIso,
+      };
+      setState((prev) => ({
+        ...prev,
+        contracts: [created, ...(prev.contracts ?? [])],
+        auditLogs: [
+          makeAudit('قراردادها', 'create', `قرارداد ${created.contractNo} ثبت شد.`),
+          ...prev.auditLogs,
+        ].slice(0, 100),
+      }));
+      pushToast(`قرارداد ${created.contractNo} ثبت شد.`);
+    },
+    [pushToast],
+  );
+
+  const renewContract = useCallback(
+    (contractId: string) => {
+      const cur = stateRef.current;
+      const target = (cur.contracts ?? []).find((c) => c.id === contractId);
+      if (!target) return;
+      const nowMs = Date.now();
+      const durMs = Math.max(
+        30 * 24 * 3600_000,
+        new Date(target.endDate).getTime() - new Date(target.startDate).getTime(),
+      );
+      const nextStart = new Date(Math.max(nowMs, new Date(target.endDate).getTime()));
+      const nextEnd = new Date(nextStart.getTime() + durMs);
+
+      setState((prev) => ({
+        ...prev,
+        contracts: (prev.contracts ?? []).map((c) =>
+          c.id === contractId
+            ? {
+                ...c,
+                startDate: nextStart.toISOString(),
+                endDate: nextEnd.toISOString(),
+                status: 'renewed',
+              }
+            : c,
+        ),
+        auditLogs: [
+          makeAudit('قراردادها', 'update', `قرارداد ${target.contractNo} تمدید شد.`),
+          ...prev.auditLogs,
+        ].slice(0, 100),
+      }));
+      pushToast(`قرارداد ${target.contractNo} برای یک دوره جدید تمدید شد.`);
+    },
+    [pushToast],
+  );
+
+  const updateContractStatus = useCallback((contractId: string, status: ContractStatus) => {
+    setState((prev) => ({
+      ...prev,
+      contracts: (prev.contracts ?? []).map((c) => (c.id === contractId ? { ...c, status } : c)),
+    }));
+  }, []);
+
+  const runContractRenewalReminders = useCallback(() => {
+    const cur = stateRef.current;
+    const nowMs = Date.now();
+    const nowIso = new Date().toISOString();
+    const msgs: OutboxMessage[] = [];
+    const updatedIds = new Set<string>();
+
+    for (const c of cur.contracts ?? []) {
+      if (c.status === 'expired' || c.status === 'draft') continue;
+      const daysLeft = (new Date(c.endDate).getTime() - nowMs) / (24 * 3600_000);
+      if (daysLeft <= c.renewalReminderDays && daysLeft >= -5) {
+        const cust = cur.customers.find((cu) => cu.id === c.customerId);
+        updatedIds.add(c.id);
+        if (cust && cust.consentSms !== false) {
+          msgs.push({
+            id: `msg_ctr_${Date.now()}_${c.id}`,
+            to: cust.phone,
+            customerId: cust.id,
+            customerName: cust.name,
+            body: `${cust.name} گرامی، قرارداد «${c.title}» (${c.contractNo}) در حال نزدیک شدن به تاریخ پایان است. جهت تمدید با ${cur.settings.businessName} در ارتباط باشید.`,
+            channel: 'sms',
+            ruleName: 'قانون یادآور تمدید قرارداد',
+            deliveryStatus: 'delivered',
+            retryCount: 0,
+            maxRetries: cur.automationPolicy.maxRetries,
+            at: nowIso,
+          });
+        }
+      }
+    }
+
+    if (updatedIds.size === 0) {
+      pushToast('قرارداد در آستانه انقضای جدیدی برای ارسال یادآور یافت نشد.', 'info');
+      return 0;
+    }
+
+    setState((prev) => ({
+      ...prev,
+      contracts: (prev.contracts ?? []).map((c) =>
+        updatedIds.has(c.id)
+          ? {
+              ...c,
+              status: c.status === 'active' || c.status === 'renewed' ? 'expiring_soon' : c.status,
+              lastReminderAt: nowIso,
+            }
+          : c,
+      ),
+      outbox: [...msgs, ...prev.outbox],
+      auditLogs: [
+        makeAudit('قراردادها', 'automation', `یادآور تمدید برای ${updatedIds.size} قرارداد در Outbox ثبت شد.`),
+        ...prev.auditLogs,
+      ].slice(0, 100),
+    }));
+    pushToast(`یادآور تمدید برای ${updatedIds.size} قرارداد در صف Outbox ثبت شد.`);
+    return updatedIds.size;
+  }, [pushToast]);
+
+  const addWarrantyRecord = useCallback(
+    (data: Omit<WarrantyRecord, 'id' | 'claims' | 'createdAt'>) => {
+      const created: WarrantyRecord = {
+        ...data,
+        id: `war_${Date.now()}`,
+        claims: [],
+        createdAt: new Date().toISOString(),
+      };
+      setState((prev) => ({
+        ...prev,
+        warranties: [created, ...(prev.warranties ?? [])],
+        auditLogs: [
+          makeAudit('گارانتی', 'create', `رکورد گارانتی شماره سریال ${created.serialNumber} ثبت شد.`),
+          ...prev.auditLogs,
+        ].slice(0, 100),
+      }));
+      pushToast(`کارت گارانتی ${created.serialNumber} ثبت شد.`);
+    },
+    [pushToast],
+  );
+
+  const addWarrantyClaim = useCallback(
+    (warrantyId: string, claim: Omit<WarrantyClaim, 'id'>) => {
+      const createdClaim: WarrantyClaim = { ...claim, id: `wc_${Date.now()}` };
+      setState((prev) => ({
+        ...prev,
+        warranties: (prev.warranties ?? []).map((w) =>
+          w.id === warrantyId ? { ...w, claims: [createdClaim, ...w.claims] } : w,
+        ),
+        auditLogs: [
+          makeAudit('گارانتی', 'update', `درخواست خدمات پس از فروش جدید برای گارانتی ثبت شد.`),
+          ...prev.auditLogs,
+        ].slice(0, 100),
+      }));
+      pushToast('پرونده پذیرش خدمات پس از فروش ثبت شد.');
+    },
+    [pushToast],
+  );
+
+  const updateWarrantyClaimStatus = useCallback(
+    (warrantyId: string, claimId: string, status: WarrantyClaim['status']) => {
+      setState((prev) => ({
+        ...prev,
+        warranties: (prev.warranties ?? []).map((w) =>
+          w.id === warrantyId
+            ? { ...w, claims: w.claims.map((cl) => (cl.id === claimId ? { ...cl, status } : cl)) }
+            : w,
+        ),
+      }));
+    },
+    [],
   );
 
   // --- PROJECTS & DEPLOYMENT ---
@@ -2212,7 +2783,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
   }, []);
 
   const addProjectTask = useCallback(
-    (projectId: string, task: { title: string; assignee: string; estimatedHours: number }) => {
+    (projectId: string, task: { title: string; assignee: string; estimatedHours: number; dueAt?: string }) => {
       if (!task.title.trim()) return;
       setState((prev) => ({
         ...prev,
@@ -2227,6 +2798,8 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
                     title: task.title.trim(),
                     assignee: task.assignee,
                     estimatedHours: Math.max(0.5, task.estimatedHours),
+                    dueAt: task.dueAt,
+                    subtasks: [],
                     done: false,
                   },
                 ],
@@ -2234,7 +2807,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
             : p,
         ),
       }));
-      pushToast('زیرتسک پروژه اضافه شد.');
+      pushToast('تسک پروژه اضافه شد.');
     },
     [pushToast],
   );
@@ -2247,6 +2820,49 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
           ? {
               ...p,
               tasks: p.tasks.map((t) => (t.id === taskId ? { ...t, done: !t.done } : t)),
+            }
+          : p,
+      ),
+    }));
+  }, []);
+
+  const addProjectTaskSubtask = useCallback((projectId: string, taskId: string, title: string) => {
+    if (!title.trim()) return;
+    setState((prev) => ({
+      ...prev,
+      projects: prev.projects.map((p) =>
+        p.id === projectId
+          ? {
+              ...p,
+              tasks: p.tasks.map((t) =>
+                t.id === taskId
+                  ? {
+                      ...t,
+                      subtasks: [...(t.subtasks ?? []), { id: `pts_${Date.now()}`, title: title.trim(), done: false }],
+                    }
+                  : t,
+              ),
+            }
+          : p,
+      ),
+    }));
+  }, []);
+
+  const toggleProjectTaskSubtask = useCallback((projectId: string, taskId: string, subtaskId: string) => {
+    setState((prev) => ({
+      ...prev,
+      projects: prev.projects.map((p) =>
+        p.id === projectId
+          ? {
+              ...p,
+              tasks: p.tasks.map((t) =>
+                t.id === taskId
+                  ? {
+                      ...t,
+                      subtasks: (t.subtasks ?? []).map((s) => (s.id === subtaskId ? { ...s, done: !s.done } : s)),
+                    }
+                  : t,
+              ),
             }
           : p,
       ),
@@ -3626,7 +4242,15 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
   );
 
   const addTask = useCallback(
-    (data: { title: string; customerId?: string; dueAt: string }) => {
+    (data: {
+      title: string;
+      customerId?: string;
+      dueAt: string;
+      assignee?: string;
+      priority?: Task['priority'];
+      subtasks?: { id: string; title: string; done: boolean }[];
+      projectId?: string;
+    }) => {
       if (!data.title.trim()) return;
       const task: Task = {
         id: `t_${Date.now()}`,
@@ -3634,6 +4258,10 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         customerId: data.customerId || undefined,
         dueAt: data.dueAt,
         done: false,
+        assignee: data.assignee?.trim() || undefined,
+        priority: data.priority ?? 'medium',
+        subtasks: data.subtasks ?? [],
+        projectId: data.projectId,
       };
       setState((prev) => ({ ...prev, tasks: [task, ...prev.tasks] }));
       pushToast('پیگیری جدید ثبت شد.');
@@ -3645,6 +4273,35 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
     setState((prev) => ({
       ...prev,
       tasks: prev.tasks.map((t) => (t.id === id ? { ...t, done: !t.done } : t)),
+    }));
+  }, []);
+
+  const addTaskSubtask = useCallback((taskId: string, title: string) => {
+    if (!title.trim()) return;
+    setState((prev) => ({
+      ...prev,
+      tasks: prev.tasks.map((t) =>
+        t.id === taskId
+          ? {
+              ...t,
+              subtasks: [...(t.subtasks ?? []), { id: `ts_${Date.now()}`, title: title.trim(), done: false }],
+            }
+          : t,
+      ),
+    }));
+  }, []);
+
+  const toggleTaskSubtask = useCallback((taskId: string, subtaskId: string) => {
+    setState((prev) => ({
+      ...prev,
+      tasks: prev.tasks.map((t) =>
+        t.id === taskId
+          ? {
+              ...t,
+              subtasks: (t.subtasks ?? []).map((s) => (s.id === subtaskId ? { ...s, done: !s.done } : s)),
+            }
+          : t,
+      ),
     }));
   }, []);
 
@@ -5168,19 +5825,33 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         addWaitlistEntry,
         bookFromWaitlist,
         simulateSmsConfirmReply,
+        sendAppointmentReminder,
         addOrder,
         updateOrderStatus,
         recordOrderShipment,
+        recordOrderReturn,
         adjustProductStock,
         addProduct,
         toggleCoupon,
         addCoupon,
         createInvoiceForOrder,
+        createInvoiceFromContract,
         recordInvoicePayment,
+        allocatePaymentToInvoices,
+        sendOverdueInvoiceReminder,
+        addContract,
+        renewContract,
+        updateContractStatus,
+        runContractRenewalReminders,
+        addWarrantyRecord,
+        addWarrantyClaim,
+        updateWarrantyClaimStatus,
         addProject,
         updateProjectStatus,
         addProjectTask,
         toggleProjectTask,
+        addProjectTaskSubtask,
+        toggleProjectTaskSubtask,
         addTimeEntry,
         toggleDeploymentCheck,
         addLead,
@@ -5229,6 +5900,8 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         submitLandingForm,
         addTask,
         toggleTaskDone,
+        addTaskSubtask,
+        toggleTaskSubtask,
         addTicket,
         updateTicket,
         addTicketMessage,

@@ -23,6 +23,7 @@ export function InvoicePreviewModal({ invoice, onClose }: InvoicePreviewModalPro
 
   const customer = state.customers.find((c) => c.id === invoice.customerId);
   const order = state.orders.find((o) => o.id === invoice.orderId);
+  const contract = invoice.contractId ? state.contracts.find((ct) => ct.id === invoice.contractId) : undefined;
   const balance = Math.max(0, invoice.grandTotal - invoice.paidAmount);
 
   return (
@@ -70,18 +71,22 @@ export function InvoicePreviewModal({ invoice, onClose }: InvoicePreviewModalPro
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-                {(order?.items ?? [{ name: `سفارش ${invoice.orderId}`, qty: 1, price: invoice.subtotal }]).map(
-                  (item, idx) => (
-                    <tr key={idx}>
-                      <td className="px-3 py-2.5 font-medium">{item.name}</td>
-                      <td className="px-3 py-2.5 tabular-nums">{toFa(item.qty)}</td>
-                      <td className="px-3 py-2.5 tabular-nums">{formatToman(item.price)}</td>
-                      <td className="px-3 py-2.5 text-left tabular-nums font-medium">
-                        {formatToman(item.qty * item.price)}
-                      </td>
-                    </tr>
-                  ),
-                )}
+                {(order?.items ?? [
+                  {
+                    name: contract ? `${contract.title} (${contract.contractNo})` : `سفارش ${invoice.orderId}`,
+                    qty: 1,
+                    price: invoice.subtotal,
+                  },
+                ]).map((item, idx) => (
+                  <tr key={idx}>
+                    <td className="px-3 py-2.5 font-medium">{item.name}</td>
+                    <td className="px-3 py-2.5 tabular-nums">{toFa(item.qty)}</td>
+                    <td className="px-3 py-2.5 tabular-nums">{formatToman(item.price)}</td>
+                    <td className="px-3 py-2.5 text-left tabular-nums font-medium">
+                      {formatToman(item.qty * item.price)}
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>

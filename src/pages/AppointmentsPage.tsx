@@ -2,12 +2,14 @@ import { useMemo, useState } from 'react';
 import dayjs from 'dayjs';
 import {
   AlertCircle,
+  Bell,
   CalendarClock,
   CalendarOff,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
   Clock,
+  Cpu,
   Globe,
   ListChecks,
   MessageSquareReply,
@@ -60,6 +62,7 @@ export function AppointmentsPage() {
     addAppointment,
     rescheduleAppointment,
     updateAppointmentStatus,
+    addResource,
     addResourceTimeOff,
     removeResourceTimeOff,
     addOfficialHoliday,
@@ -67,6 +70,7 @@ export function AppointmentsPage() {
     addWaitlistEntry,
     bookFromWaitlist,
     simulateSmsConfirmReply,
+    sendAppointmentReminder,
     pushToast,
   } = useClientFlow();
 
@@ -121,12 +125,27 @@ export function AppointmentsPage() {
   const [holTitle, setHolTitle] = useState('تعطیل رسمی');
 
   const [portalOpen, setPortalOpen] = useState(false);
+  const [resourcesModalOpen, setResourcesModalOpen] = useState(false);
+  const [newResName, setNewResName] = useState('');
+  const [newResType, setNewResType] = useState<'staff' | 'room' | 'device'>('device');
 
   const weekDays = useMemo(() => getJalaliWeekDays(weekOffset), [weekOffset]);
   const weekRangeLabel = useMemo(() => getJalaliWeekRangeLabel(weekDays), [weekDays]);
   const monthGrid = useMemo(() => getJalaliMonthGrid(monthOffset), [monthOffset]);
 
   const waitingCount = state.waitlist.filter((w) => w.status !== 'booked').length;
+  const notifiedCount = state.waitlist.filter((w) => w.status === 'notified').length;
+
+  const noShowStats = useMemo(() => {
+    const pastOrSettled = state.appointments.filter((a) => a.status !== 'cancelled');
+    const noShowApts = state.appointments.filter((a) => a.status === 'noshow');
+    const byCustomer = new Map<string, number>();
+    for (const a of noShowApts) {
+      byCustomer.set(a.customerId, (byCustomer.get(a.customerId) ?? 0) + 1);
+    }
+    const rate = pastOrSettled.length > 0 ? Math.round((noShowApts.length / pastOrSettled.length) * 100) : 0;
+    return { total: noShowApts.length, rate, byCustomer };
+  }, [state.appointments]);
 
   const openModalForDay = (dayKey?: string, defaultResId?: string) => {
     setCustomerId(state.customers[0]?.id ?? '');
@@ -254,6 +273,7 @@ export function AppointmentsPage() {
     const res = state.resources.find((r) => r.id === apt.resourceId);
     const meta = STATUS_META[apt.status];
     const hasBuffer = Boolean(srv?.bufferBeforeMin || srv?.bufferAfterMin);
+    const custNoShowCount = noShowStats.byCustomer.get(apt.customerId) ?? 0;
 
     return (
       <div
@@ -272,8 +292,18 @@ export function AppointmentsPage() {
           </span>
           <span className={meta.colorClass}>{meta.label}</span>
         </div>
-        <div className="mt-1 truncate font-semibold text-slate-800 dark:text-slate-200">
-          {cust?.name ?? 'مشتری'}
+        <div className="mt-1 flex items-center justify-between gap-1">
+          <span className="truncate font-semibold text-slate-800 dark:text-slate-200">
+            {cust?.name ?? 'مشتری'}
+          </span>
+          {custNoShowCount > 0 && (
+            <span
+              title={`این مشتری سابقه ${toFa(custNoShowCount)} عدم حضور دارد`}
+              className="shrink-0 rounded bg-amber-100 px-1 py-0.5 text-[10px] font-medium tabular-nums text-amber-800 dark:bg-amber-950/50 dark:text-amber-300"
+            >
+              {toFa(custNoShowCount)} غیبت
+            </span>
+          )}
         </div>
         <div className="mt-0.5 truncate text-[11px] text-slate-500 dark:text-slate-400">
           {srv?.name} · {res?.name}
@@ -281,6 +311,11 @@ export function AppointmentsPage() {
         {hasBuffer && (
           <div className="mt-0.5 text-[10px] text-slate-400 tabular-nums">
             بافر: {toFa(srv?.bufferBeforeMin ?? 0)} / {toFa(srv?.bufferAfterMin ?? 0)} د
+          </div>
+        )}
+        {apt.reminder2hSent && (
+          <div className="mt-0.5 text-[10px] text-emerald-600 dark:text-emerald-400">
+            یادآور در Outbox ثبت شد
           </div>
         )}
         {aptTableFields.map((def) => {
@@ -328,6 +363,16 @@ export function AppointmentsPage() {
           >
             <CalendarClock size={13} />
           </button>
+          {(apt.status === 'booked' || apt.status === 'confirmed') && (
+            <button
+              type="button"
+              onClick={() => sendAppointmentReminder(apt.id)}
+              title="ارسال یادآور نوبت به Outbox"
+              className="rounded border border-slate-200 bg-white p-1 text-slate-500 hover:text-amber-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
+            >
+              <Bell size={13} />
+            </button>
+          )}
         </div>
 
         {(apt.status === 'booked' || apt.status === 'confirmed') && (
@@ -458,10 +503,10 @@ export function AppointmentsPage() {
               onChange={(e) => setResourceFilter(e.target.value)}
               className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium dark:border-slate-800 dark:bg-slate-900"
             >
-              <option value="all">همه منابع (پزشک / اتاق)</option>
+              <option value="all">همه منابع (پرسنل / اتاق / دستگاه)</option>
               {state.resources.map((r) => (
                 <option key={r.id} value={r.id}>
-                  {r.name}
+                  {r.name} ({r.type === 'staff' ? 'پرسنل' : r.type === 'device' ? 'دستگاه' : 'اتاق'})
                 </option>
               ))}
             </select>
@@ -486,6 +531,14 @@ export function AppointmentsPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setResourcesModalOpen(true)}
+            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+          >
+            <Cpu size={15} />
+            منابع و تجهیزات ({toFa(state.resources.length)})
+          </button>
           <button
             type="button"
             onClick={() => setWaitlistOpen(true)}
@@ -519,6 +572,35 @@ export function AppointmentsPage() {
             ثبت نوبت جدید
           </button>
         </div>
+      </div>
+
+      {/* No-Show Tracking & Auto-Waitlist Bar */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs dark:border-slate-800 dark:bg-slate-900">
+        <div className="flex flex-wrap items-center gap-4 tabular-nums">
+          <span className="text-slate-500">
+            پیگیری عدم حضور (No-Show):{' '}
+            <strong className="text-amber-600 dark:text-amber-400">
+              {toFa(noShowStats.total)} نوبت ({toFa(noShowStats.rate)}٪)
+            </strong>
+          </span>
+          <span className="text-slate-500">
+            منابع فعال:{' '}
+            <strong className="text-slate-800 dark:text-slate-200">
+              {toFa(state.resources.filter((r) => r.type === 'staff').length)} کارشناس ·{' '}
+              {toFa(state.resources.filter((r) => r.type === 'room').length)} اتاق ·{' '}
+              {toFa(state.resources.filter((r) => r.type === 'device').length)} دستگاه
+            </strong>
+          </span>
+        </div>
+        {notifiedCount > 0 && (
+          <button
+            type="button"
+            onClick={() => setWaitlistOpen(true)}
+            className="font-medium text-emerald-700 hover:underline dark:text-emerald-400"
+          >
+            {toFa(notifiedCount)} جای خالی به لیست انتظار پیشنهاد شده — تبدیل به نوبت
+          </button>
+        )}
       </div>
 
       {/* VIEW 1: WEEKLY WITH DRAG & DROP */}
@@ -739,7 +821,7 @@ export function AppointmentsPage() {
                   <div>
                     <div className="text-sm font-semibold">{res.name}</div>
                     <div className="text-xs text-slate-500">
-                      {res.type === 'staff' ? 'پزشک / کارشناس' : 'اتاق / تجهیز'} · {toFa(list.length)} نوبت
+                      {res.type === 'staff' ? 'پزشک / کارشناس' : res.type === 'device' ? 'دستگاه / تجهیز' : 'اتاق'} · {toFa(list.length)} نوبت
                     </div>
                   </div>
                   <button
@@ -1320,6 +1402,61 @@ export function AppointmentsPage() {
       </Modal>
 
       <OnlineBookingModal open={portalOpen} onClose={() => setPortalOpen(false)} />
+
+      {/* Resources (Staff / Room / Device) Manager Modal */}
+      <Modal
+        open={resourcesModalOpen}
+        onClose={() => setResourcesModalOpen(false)}
+        title="مدیریت منابع نوبت‌دهی (پرسنل، اتاق‌ها و تجهیزات)"
+        maxWidth="md"
+      >
+        <div className="space-y-4">
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!newResName.trim()) return;
+              addResource({ name: newResName.trim(), type: newResType });
+              setNewResName('');
+            }}
+            className="flex flex-wrap gap-2"
+          >
+            <input
+              type="text"
+              required
+              value={newResName}
+              onChange={(e) => setNewResName(e.target.value)}
+              placeholder="نام پزشک، اتاق یا دستگاه..."
+              className="flex-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-800"
+            />
+            <select
+              value={newResType}
+              onChange={(e) => setNewResType(e.target.value as 'staff' | 'room' | 'device')}
+              className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-800"
+            >
+              <option value="staff">پزشک / کارشناس</option>
+              <option value="room">اتاق</option>
+              <option value="device">دستگاه / تجهیز</option>
+            </select>
+            <button
+              type="submit"
+              className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700"
+            >
+              افزودن منبع
+            </button>
+          </form>
+
+          <div className="divide-y divide-slate-200 rounded-xl border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
+            {state.resources.map((r) => (
+              <div key={r.id} className="flex items-center justify-between px-3 py-2.5 text-xs">
+                <span className="font-medium text-slate-900 dark:text-slate-100">{r.name}</span>
+                <span className="text-slate-500">
+                  {r.type === 'staff' ? 'پزشک / کارشناس' : r.type === 'device' ? 'دستگاه / تجهیز' : 'اتاق'}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }
