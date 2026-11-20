@@ -1,5 +1,4 @@
 import { useMemo, useState } from 'react';
-import dayjs from 'dayjs';
 import {
   ArrowDown,
   ArrowUp,
@@ -11,9 +10,12 @@ import {
   GripVertical,
   Landmark,
   Maximize2,
+  Plus,
   RotateCcw,
   SlidersHorizontal,
+  Trash2,
   TrendingUp,
+  UserCog,
   Wallet,
   X,
 } from 'lucide-react';
@@ -27,10 +29,37 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
+import {
+  AgingChartWidget,
+  AppointmentsNoShowChart,
+  CohortRetentionWidget,
+  type DashboardAnalyticsScope,
+  PackKpisGoalsWidget,
+  RevenueBreakdownWidget,
+  RevenueTrendWidget,
+  SalesFunnelWidget,
+  SlaNpsTrendWidget,
+} from '../components/dashboard/DashboardCharts';
+import { JalaliDateRangePicker } from '../components/ui/JalaliDateRangePicker';
+import {
+  DASHBOARD_PERSONA_LABELS,
+  DASHBOARD_WIDGET_CATALOG,
+} from '../data/dashboardCatalog';
 import { useClientFlow } from '../store/useClientFlowStore';
-import type { DashboardWidgetConfig, DashboardWidgetId, OrderStatus } from '../types';
+import type {
+  DashboardPersonaRole,
+  DashboardWidgetConfig,
+  DashboardWidgetId,
+  OrderStatus,
+} from '../types';
 import { displayDigits, getUiText } from '../utils/i18n';
-import { formatJalaliDateTime, formatToman, getJalaliWeekDays, isSameDay } from '../utils/jalali';
+import {
+  formatJalaliDateTime,
+  formatToman,
+  isIsoInJalaliRange,
+  isSameDay,
+  type JalaliDatePreset,
+} from '../utils/jalali';
 import { evaluateTicketSla, formatRemainingMinutesFa, isTicketClosedStatus } from '../utils/slaEngine';
 
 export type NavPageKey =
@@ -71,10 +100,20 @@ const ORDER_STATUS_COLORS: Record<OrderStatus, string> = {
 };
 
 export function DashboardPage({ onNavigate, onStartTour }: DashboardPageProps) {
-  const { state, toggleTaskDone, updateDashboardWidgets, resetDashboardWidgets, updateSettings } =
-    useClientFlow();
+  const {
+    state,
+    toggleTaskDone,
+    setDashboardPersona,
+    updateDashboardWidgets,
+    resetDashboardWidgets,
+    updateSettings,
+  } = useClientFlow();
   const [customizeMode, setCustomizeMode] = useState(false);
   const [draggingWidgetId, setDraggingWidgetId] = useState<DashboardWidgetId | null>(null);
+
+  const [datePreset, setDatePreset] = useState<JalaliDatePreset | 'custom'>('all');
+  const [fromJalali, setFromJalali] = useState('');
+  const [toJalali, setToJalali] = useState('');
 
   const lang = state.settings.language ?? 'fa';
   const latinDigits = state.settings.latinDigits;
@@ -82,13 +121,17 @@ export function DashboardPage({ onNavigate, onStartTour }: DashboardPageProps) {
   const t = getUiText(lang);
   const fmtNum = (v: string | number) => displayDigits(v, lang, latinDigits);
 
+  const activePersona: DashboardPersonaRole =
+    state.settings.dashboardPersona ?? (state.settings.role === 'admin' ? 'admin' : 'receptionist');
+
   const nowIso = new Date().toISOString();
   const nowMs = Date.now();
   const activeBranch = state.settings.activeBranchId;
 
   const branchCustomers = useMemo(() => {
-    if (!activeBranch || activeBranch === 'all') return state.customers;
-    return state.customers.filter((c) => !c.branchId || c.branchId === activeBranch);
+    const base = state.customers.filter((c) => !c.isDeleted);
+    if (!activeBranch || activeBranch === 'all') return base;
+    return base.filter((c) => !c.branchId || c.branchId === activeBranch);
   }, [state.customers, activeBranch]);
 
   const branchAppointments = useMemo(() => {
@@ -111,12 +154,43 @@ export function DashboardPage({ onNavigate, onStartTour }: DashboardPageProps) {
     return state.opportunities.filter((opp) => !opp.branchId || opp.branchId === activeBranch);
   }, [state.opportunities, activeBranch]);
 
+  const analyticsScope: DashboardAnalyticsScope = useMemo(
+    () => ({
+      fromJalali,
+      toJalali,
+      branchCustomers,
+      branchAppointments,
+      branchOrders,
+      branchInvoices,
+      branchOpportunities,
+    }),
+    [
+      fromJalali,
+      toJalali,
+      branchCustomers,
+      branchAppointments,
+      branchOrders,
+      branchInvoices,
+      branchOpportunities,
+    ],
+  );
+
   const metrics = useMemo(() => {
-    const todaysAppointments = branchAppointments.filter(
+    const filteredApts = branchAppointments.filter((a) =>
+      isIsoInJalaliRange(a.start, fromJalali, toJalali),
+    );
+    const filteredOrders = branchOrders.filter((o) =>
+      isIsoInJalaliRange(o.createdAt, fromJalali, toJalali),
+    );
+    const filteredCusts = branchCustomers.filter((c) =>
+      isIsoInJalaliRange(c.createdAt, fromJalali, toJalali),
+    );
+
+    const todaysAppointments = filteredApts.filter(
       (a) => a.status !== 'cancelled' && isSameDay(a.start, nowIso),
     ).length;
 
-    const settledAppointments = branchAppointments.filter(
+    const settledAppointments = filteredApts.filter(
       (a) => a.status === 'done' || a.status === 'noshow',
     );
     const noShowCount = settledAppointments.filter((a) => a.status === 'noshow').length;
@@ -125,7 +199,7 @@ export function DashboardPage({ onNavigate, onStartTour }: DashboardPageProps) {
         ? Math.round((noShowCount / settledAppointments.length) * 100)
         : 0;
 
-    const overdueOrders = branchOrders.filter(
+    const overdueOrders = filteredOrders.filter(
       (o) =>
         o.promisedAt &&
         new Date(o.promisedAt).getTime() < nowMs &&
@@ -134,16 +208,19 @@ export function DashboardPage({ onNavigate, onStartTour }: DashboardPageProps) {
     ).length;
 
     return {
-      totalCustomers: branchCustomers.length,
+      totalCustomers: filteredCusts.length,
       todaysAppointments,
       noShowRate,
       overdueOrders,
     };
-  }, [branchAppointments, branchCustomers.length, branchOrders, nowIso, nowMs]);
+  }, [branchAppointments, branchCustomers, branchOrders, fromJalali, toJalali, nowIso, nowMs]);
 
   const financeMetrics = useMemo(() => {
-    const totalBilled = branchInvoices.reduce((s, inv) => s + inv.grandTotal, 0);
-    const totalPaid = branchInvoices.reduce((s, inv) => s + inv.paidAmount, 0);
+    const invs = branchInvoices.filter((inv) =>
+      isIsoInJalaliRange(inv.issuedAt, fromJalali, toJalali),
+    );
+    const totalBilled = invs.reduce((s, inv) => s + inv.grandTotal, 0);
+    const totalPaid = invs.reduce((s, inv) => s + inv.paidAmount, 0);
     const receivables = Math.max(0, totalBilled - totalPaid);
     const activeCheques = state.sayadiCheques.filter(
       (c) => c.status === 'received' || c.status === 'deposited',
@@ -159,11 +236,14 @@ export function DashboardPage({ onNavigate, onStartTour }: DashboardPageProps) {
       bouncedCount,
       gatewayPaidCount,
     };
-  }, [branchInvoices, state.sayadiCheques, state.paymentTransactions]);
+  }, [branchInvoices, fromJalali, toJalali, state.sayadiCheques, state.paymentTransactions]);
 
   const pipelineMetrics = useMemo(() => {
-    const activeOpps = branchOpportunities.filter((o) => o.stage !== 'won' && o.stage !== 'lost');
-    const wonOpps = branchOpportunities.filter((o) => o.stage === 'won');
+    const opps = branchOpportunities.filter((o) =>
+      isIsoInJalaliRange(o.createdAt, fromJalali, toJalali),
+    );
+    const activeOpps = opps.filter((o) => o.stage !== 'won' && o.stage !== 'lost');
+    const wonOpps = opps.filter((o) => o.stage === 'won');
     const totalActiveVal = activeOpps.reduce((s, o) => s + o.amount, 0);
     const weightedForecast = activeOpps.reduce(
       (s, o) => s + Math.round((o.amount * o.probability) / 100),
@@ -178,30 +258,20 @@ export function DashboardPage({ onNavigate, onStartTour }: DashboardPageProps) {
       wonVal,
       openQuotes,
     };
-  }, [branchOpportunities, state.quotes]);
-
-  const weeklyAppointmentsData = useMemo(() => {
-    const days = getJalaliWeekDays(0);
-    return days.map((d) => {
-      const count = branchAppointments.filter(
-        (a) => a.status !== 'cancelled' && dayjs(a.start).format('YYYY-MM-DD') === d.dateKey,
-      ).length;
-      return {
-        name: d.weekdayName,
-        count,
-      };
-    });
-  }, [branchAppointments]);
+  }, [branchOpportunities, fromJalali, toJalali, state.quotes]);
 
   const ordersByStatusData = useMemo(() => {
     const statuses: OrderStatus[] = ['new', 'confirmed', 'shipped', 'delivered', 'cancelled'];
+    const filtered = branchOrders.filter((o) =>
+      isIsoInJalaliRange(o.createdAt, fromJalali, toJalali),
+    );
     return statuses.map((s) => ({
       status: s,
       name: ORDER_STATUS_LABELS[s][lang],
-      count: branchOrders.filter((o) => o.status === s).length,
+      count: filtered.filter((o) => o.status === s).length,
       color: ORDER_STATUS_COLORS[s],
     }));
-  }, [branchOrders, lang]);
+  }, [branchOrders, fromJalali, toJalali, lang]);
 
   const urgentTasks = useMemo(
     () =>
@@ -218,7 +288,9 @@ export function DashboardPage({ onNavigate, onStartTour }: DashboardPageProps) {
   );
 
   const slaOverview = useMemo(() => {
-    const active = state.tickets.filter((tk) => !isTicketClosedStatus(tk.status) && !tk.mergedIntoTicketId);
+    const active = state.tickets.filter(
+      (tk) => !isTicketClosedStatus(tk.status) && !tk.mergedIntoTicketId,
+    );
     const evals = active.map((tk) => ({
       ticket: tk,
       evalRes: evaluateTicketSla(tk, state.slaPolicies, state.settings, state.officialHolidays, nowMs),
@@ -230,7 +302,8 @@ export function DashboardPage({ onNavigate, onStartTour }: DashboardPageProps) {
       const ev = evaluateTicketSla(tk, state.slaPolicies, state.settings, state.officialHolidays, nowMs);
       return ev.overallState !== 'breached';
     }).length;
-    const compliancePct = totalEval.length > 0 ? Math.round((totalCompliant / totalEval.length) * 100) : 100;
+    const compliancePct =
+      totalEval.length > 0 ? Math.round((totalCompliant / totalEval.length) * 100) : 100;
     const avgFirstRespMin =
       totalEval.filter((tk) => tk.firstRespondedAt).length > 0
         ? Math.round(
@@ -263,6 +336,35 @@ export function DashboardPage({ onNavigate, onStartTour }: DashboardPageProps) {
     [state.settings.dashboardWidgets],
   );
 
+  const availableCatalogToAdd = useMemo(() => {
+    const activeIds = new Set(sortedWidgets.map((w) => w.id));
+    return DASHBOARD_WIDGET_CATALOG.filter((item) => !activeIds.has(item.id));
+  }, [sortedWidgets]);
+
+  const addWidgetToBoard = (widgetId: DashboardWidgetId) => {
+    const def = DASHBOARD_WIDGET_CATALOG.find((c) => c.id === widgetId);
+    if (!def) return;
+    const next: DashboardWidgetConfig[] = [
+      ...sortedWidgets,
+      {
+        id: def.id,
+        title: def.title,
+        titleEn: def.titleEn,
+        visible: true,
+        size: def.defaultSize,
+        order: sortedWidgets.length + 1,
+      },
+    ];
+    updateDashboardWidgets(next);
+  };
+
+  const removeWidgetFromBoard = (widgetId: DashboardWidgetId) => {
+    const next = sortedWidgets
+      .filter((w) => w.id !== widgetId)
+      .map((w, i) => ({ ...w, order: i + 1 }));
+    updateDashboardWidgets(next);
+  };
+
   const moveWidget = (idx: number, dir: -1 | 1) => {
     const nextIdx = idx + dir;
     if (nextIdx < 0 || nextIdx >= sortedWidgets.length) return;
@@ -292,7 +394,9 @@ export function DashboardPage({ onNavigate, onStartTour }: DashboardPageProps) {
 
   const toggleWidgetSize = (id: DashboardWidgetId) => {
     updateDashboardWidgets(
-      sortedWidgets.map((w) => (w.id === id ? { ...w, size: w.size === 'full' ? 'half' : 'full' } : w)),
+      sortedWidgets.map((w) =>
+        w.id === id ? { ...w, size: w.size === 'full' ? 'half' : 'full' } : w,
+      ),
     );
   };
 
@@ -303,6 +407,27 @@ export function DashboardPage({ onNavigate, onStartTour }: DashboardPageProps) {
 
   const renderWidgetBody = (w: DashboardWidgetConfig) => {
     switch (w.id) {
+      case 'pack_kpis_goals':
+        return <PackKpisGoalsWidget scope={analyticsScope} />;
+
+      case 'chart_revenue_trend':
+        return <RevenueTrendWidget scope={analyticsScope} />;
+
+      case 'chart_sales_funnel':
+        return <SalesFunnelWidget scope={analyticsScope} />;
+
+      case 'chart_revenue_breakdown':
+        return <RevenueBreakdownWidget scope={analyticsScope} />;
+
+      case 'chart_cohort_retention':
+        return <CohortRetentionWidget scope={analyticsScope} />;
+
+      case 'chart_aging':
+        return <AgingChartWidget scope={analyticsScope} />;
+
+      case 'chart_sla_nps':
+        return <SlaNpsTrendWidget scope={analyticsScope} />;
+
       case 'kpi_summary':
         return (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -359,40 +484,10 @@ export function DashboardPage({ onNavigate, onStartTour }: DashboardPageProps) {
 
       case 'chart_appointments':
         return (
-          <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
-            <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-sm font-semibold">{t.dash.weeklyAppts}</h2>
-              <button
-                type="button"
-                onClick={() => onNavigate('appointments')}
-                className="inline-flex items-center gap-1 text-xs font-medium text-indigo-600 hover:underline dark:text-indigo-400"
-              >
-                {isEn ? 'Calendar' : 'تقویم نوبت‌ها'}
-                <ArrowUpLeft size={14} />
-              </button>
-            </div>
-            <div className="h-64 w-full" dir="ltr">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={weeklyAppointmentsData} margin={{ top: 8, right: 12, left: -16, bottom: 4 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} vertical={false} />
-                  <XAxis dataKey="name" tick={{ fill: axisColor, fontSize: 12 }} axisLine={false} tickLine={false} />
-                  <YAxis allowDecimals={false} tick={{ fill: axisColor, fontSize: 12 }} axisLine={false} tickLine={false} />
-                  <Tooltip
-                    formatter={(value: number) => [fmtNum(value), isEn ? 'Appointments' : 'تعداد نوبت']}
-                    contentStyle={{
-                      borderRadius: 8,
-                      border: `1px solid ${gridStroke}`,
-                      backgroundColor: isDark ? '#0f172a' : '#ffffff',
-                      color: isDark ? '#f8fafc' : '#0f172a',
-                      fontFamily: 'Vazirmatn, sans-serif',
-                      fontSize: 12,
-                    }}
-                  />
-                  <Bar dataKey="count" fill="#4f46e5" radius={[6, 6, 0, 0]} maxBarSize={40} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
+          <AppointmentsNoShowChart
+            scope={analyticsScope}
+            onNavigateAppointments={() => onNavigate('appointments')}
+          />
         );
 
       case 'chart_orders':
@@ -764,7 +859,7 @@ export function DashboardPage({ onNavigate, onStartTour }: DashboardPageProps) {
 
   return (
     <div className="space-y-5">
-      {/* Non-blocking Onboarding Starter Banner */}
+      {/* Onboarding Tour Banner */}
       {!state.settings.onboardingCompleted && onStartTour && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-indigo-200 bg-indigo-50/70 px-4 py-3 text-xs dark:border-indigo-900/60 dark:bg-indigo-950/30">
           <div className="flex items-center gap-2.5 text-indigo-900 dark:text-indigo-200">
@@ -795,16 +890,34 @@ export function DashboardPage({ onNavigate, onStartTour }: DashboardPageProps) {
         </div>
       )}
 
-      {/* Dashboard Toolbar: Active Branch + Widget Layout Customizer */}
+      {/* Dashboard Toolbar: Role-based Persona Switcher + Branch + Customize Controls */}
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="text-xs text-slate-500 dark:text-slate-400">
-          {activeBranchObj
-            ? isEn
-              ? `Branch Scope: ${activeBranchObj.name} (${activeBranchObj.city})`
-              : `محدوده شعبه فعال: ${activeBranchObj.name} (${activeBranchObj.city})`
-            : isEn
-              ? 'Scope: All Branches Combined'
-              : 'نمای تجمیعی: همه شعبه‌ها'}
+        <div className="flex flex-wrap items-center gap-2.5">
+          <div className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs dark:border-slate-800 dark:bg-slate-900">
+            <UserCog size={14} className="text-indigo-500" />
+            <span className="text-slate-500 dark:text-slate-400">نمای نقش:</span>
+            <select
+              value={activePersona}
+              onChange={(e) => setDashboardPersona(e.target.value as DashboardPersonaRole)}
+              className="bg-transparent font-semibold text-slate-800 focus:outline-none dark:text-slate-100"
+            >
+              {(Object.keys(DASHBOARD_PERSONA_LABELS) as DashboardPersonaRole[]).map((roleKey) => (
+                <option key={roleKey} value={roleKey} className="dark:bg-slate-900">
+                  {DASHBOARD_PERSONA_LABELS[roleKey][lang]}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <span className="text-xs text-slate-500 dark:text-slate-400">
+            {activeBranchObj
+              ? isEn
+                ? `Branch: ${activeBranchObj.name}`
+                : `شعبه: ${activeBranchObj.name}`
+              : isEn
+                ? 'All Branches'
+                : 'نمای تجمیعی شعب'}
+          </span>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -815,7 +928,7 @@ export function DashboardPage({ onNavigate, onStartTour }: DashboardPageProps) {
               className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
             >
               <RotateCcw size={13} />
-              {t.resetLayout}
+              بازنشانی به پیش‌فرض نقش
             </button>
           )}
           <button
@@ -832,6 +945,41 @@ export function DashboardPage({ onNavigate, onStartTour }: DashboardPageProps) {
           </button>
         </div>
       </div>
+
+      {/* Jalali Date Range Picker with Shamsi Presets */}
+      <JalaliDateRangePicker
+        preset={datePreset}
+        fromJalali={fromJalali}
+        toJalali={toJalali}
+        onChange={(next) => {
+          setDatePreset(next.preset);
+          setFromJalali(next.fromJalali);
+          setToJalali(next.toJalali);
+        }}
+      />
+
+      {/* Add Widget Catalog Drawer (when customizing) */}
+      {customizeMode && availableCatalogToAdd.length > 0 && (
+        <div className="rounded-xl border border-indigo-200 bg-indigo-50/40 p-4 dark:border-indigo-900/60 dark:bg-indigo-950/20">
+          <div className="mb-2.5 flex items-center gap-1.5 text-xs font-bold text-indigo-800 dark:text-indigo-200">
+            <Plus size={14} />
+            افزودن ویجت جدید به داشبورد «{DASHBOARD_PERSONA_LABELS[activePersona].fa}»
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {availableCatalogToAdd.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => addWidgetToBoard(item.id)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-white px-2.5 py-1.5 text-xs font-medium text-indigo-700 shadow-xs hover:bg-indigo-600 hover:text-white dark:border-indigo-800 dark:bg-slate-900 dark:text-indigo-300 dark:hover:bg-indigo-600 dark:hover:text-white"
+              >
+                <Plus size={12} />
+                {isEn ? item.titleEn : item.title}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Customizable Widget Grid */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
@@ -899,11 +1047,21 @@ export function DashboardPage({ onNavigate, onStartTour }: DashboardPageProps) {
                       {w.visible ? <EyeOff size={12} /> : <Eye size={12} />}
                       {w.visible ? (isEn ? 'Hide' : 'مخفی') : isEn ? 'Show' : 'نمایش'}
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => removeWidgetFromBoard(w.id)}
+                      title="حذف ویجت از داشبورد"
+                      className="rounded border border-rose-200 bg-white p-1 text-rose-600 hover:bg-rose-50 dark:border-rose-900 dark:bg-slate-800 dark:text-rose-400"
+                    >
+                      <Trash2 size={13} />
+                    </button>
                   </div>
                 </div>
               )}
 
-              {w.visible ? renderWidgetBody(w) : (
+              {w.visible ? (
+                renderWidgetBody(w)
+              ) : (
                 <div className="py-6 text-center text-xs text-slate-500">
                   {isEn ? `${w.titleEn} (Hidden)` : `ویجت «${w.title}» مخفی است`}
                 </div>

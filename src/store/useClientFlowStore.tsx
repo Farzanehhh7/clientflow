@@ -1,4 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { getDefaultWidgetsForPersona } from '../data/dashboardCatalog';
 import { INDUSTRY_PACKS, buildPackFromState, getPackSalesConfig } from '../data/packs';
 import { DEFAULT_TENANT_ID } from '../data/repositories/customerRepository';
 import { stampCreateMeta, stampUpdateMeta } from '../data/repositories/types';
@@ -36,6 +37,7 @@ import type {
   CustomerRelation,
   CustomerSavedView,
   CustomerSegment,
+  DashboardPersonaRole,
   DashboardWidgetConfig,
   DeploymentCheckItem,
   EntityRelationDef,
@@ -80,6 +82,7 @@ import type {
   SalesLead,
   SalesPipeline,
   SalesTarget,
+  SavedReportConfig,
   SayadiCheque,
   SayadiChequeStatus,
   ScheduledReport,
@@ -233,6 +236,7 @@ function mergeLoadedState(parsed: Partial<AppState> | null | undefined): AppStat
     warranties: parsed.warranties ?? fallback.warranties,
     recentIdempotencyKeys: parsed.recentIdempotencyKeys ?? fallback.recentIdempotencyKeys ?? [],
     scheduledReports: parsed.scheduledReports ?? fallback.scheduledReports,
+    savedReports: parsed.savedReports ?? [],
     branches: parsed.branches ?? fallback.branches,
     customPacks: parsed.customPacks ?? fallback.customPacks,
     messageTemplates: parsed.messageTemplates ?? fallback.messageTemplates,
@@ -627,9 +631,14 @@ type ClientFlowContextValue = {
     outcome: 'succeeded' | 'failed' | 'cancelled';
   }) => { ok: boolean; refId?: string; errorMessage?: string };
 
-  // Reports & Dashboard Customization (FR-RPT-01/04)
+  // Reports & Dashboard Customization (FR-RPT-01/04 + Phase 9)
+  setDashboardPersona: (persona: DashboardPersonaRole) => void;
   updateDashboardWidgets: (widgets: DashboardWidgetConfig[]) => void;
   resetDashboardWidgets: () => void;
+  updateKpiTarget: (kpiId: string, targetValue: number) => void;
+  saveCustomReport: (rep: Omit<SavedReportConfig, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }) => SavedReportConfig;
+  deleteCustomReport: (id: string) => void;
+  toggleShareSavedReport: (id: string) => void;
   addScheduledReport: (rep: Omit<ScheduledReport, 'id' | 'nextRunAt'>) => void;
   toggleScheduledReport: (id: string) => void;
   deleteScheduledReport: (id: string) => void;
@@ -6816,21 +6825,137 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
     [pushToast],
   );
 
-  // --- DASHBOARD WIDGETS & SCHEDULED REPORTS (FR-RPT-01/04) ---
+  // --- DASHBOARD WIDGETS, ROLE LAYOUTS, KPI TARGETS & SAVED REPORTS (Phase 9) ---
+  const setDashboardPersona = useCallback((persona: DashboardPersonaRole) => {
+    setState((prev) => {
+      const savedForRole = prev.settings.dashboardLayoutsByRole?.[persona];
+      const nextWidgets =
+        savedForRole && savedForRole.length > 0
+          ? savedForRole
+          : getDefaultWidgetsForPersona(persona);
+      return {
+        ...prev,
+        settings: {
+          ...prev.settings,
+          dashboardPersona: persona,
+          dashboardWidgets: nextWidgets,
+        },
+      };
+    });
+  }, []);
+
   const updateDashboardWidgets = useCallback((widgets: DashboardWidgetConfig[]) => {
-    setState((prev) => ({
-      ...prev,
-      settings: { ...prev.settings, dashboardWidgets: widgets },
-    }));
+    setState((prev) => {
+      const persona: DashboardPersonaRole =
+        prev.settings.dashboardPersona ?? (prev.settings.role === 'admin' ? 'admin' : 'receptionist');
+      return {
+        ...prev,
+        settings: {
+          ...prev.settings,
+          dashboardPersona: persona,
+          dashboardWidgets: widgets,
+          dashboardLayoutsByRole: {
+            ...(prev.settings.dashboardLayoutsByRole ?? {}),
+            [persona]: widgets,
+          },
+        },
+      };
+    });
   }, []);
 
   const resetDashboardWidgets = useCallback(() => {
-    setState((prev) => ({
-      ...prev,
-      settings: { ...prev.settings, dashboardWidgets: defaultDashboardWidgets },
-    }));
-    pushToast('چیدمان ویجت‌های داشبورد به حالت پیش‌فرض بازگشت.', 'info');
+    setState((prev) => {
+      const persona: DashboardPersonaRole =
+        prev.settings.dashboardPersona ?? (prev.settings.role === 'admin' ? 'admin' : 'receptionist');
+      const defaults =
+        persona === 'admin' ? getDefaultWidgetsForPersona('admin') : getDefaultWidgetsForPersona(persona);
+      return {
+        ...prev,
+        settings: {
+          ...prev.settings,
+          dashboardPersona: persona,
+          dashboardWidgets: defaults.length > 0 ? defaults : defaultDashboardWidgets,
+          dashboardLayoutsByRole: {
+            ...(prev.settings.dashboardLayoutsByRole ?? {}),
+            [persona]: defaults,
+          },
+        },
+      };
+    });
+    pushToast('چیدمان ویجت‌های داشبورد به حالت پیش‌فرض نقش بازگشت.', 'info');
   }, [pushToast]);
+
+  const updateKpiTarget = useCallback(
+    (kpiId: string, targetValue: number) => {
+      setState((prev) => ({
+        ...prev,
+        settings: {
+          ...prev.settings,
+          kpiTargets: {
+            ...(prev.settings.kpiTargets ?? {}),
+            [kpiId]: Math.max(0, targetValue),
+          },
+        },
+      }));
+      pushToast('هدف شاخص عملکردی (KPI) به‌روزرسانی شد.');
+    },
+    [pushToast],
+  );
+
+  const saveCustomReport = useCallback(
+    (rep: Omit<SavedReportConfig, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }): SavedReportConfig => {
+      const nowIso = new Date().toISOString();
+      const existing = rep.id
+        ? (stateRef.current.savedReports ?? []).find((r) => r.id === rep.id)
+        : undefined;
+      const saved: SavedReportConfig = {
+        ...rep,
+        id: existing?.id ?? `rpt_${Date.now()}`,
+        shareToken: existing?.shareToken ?? `sh_${Math.random().toString(36).slice(2, 9)}`,
+        createdAt: existing?.createdAt ?? nowIso,
+        updatedAt: nowIso,
+      };
+      setState((prev) => {
+        const list = prev.savedReports ?? [];
+        const nextList = existing
+          ? list.map((r) => (r.id === existing.id ? saved : r))
+          : [saved, ...list];
+        return { ...prev, savedReports: nextList };
+      });
+      pushToast(`گزارش «${saved.title}» ذخیره شد.`);
+      return saved;
+    },
+    [pushToast],
+  );
+
+  const deleteCustomReport = useCallback(
+    (id: string) => {
+      setState((prev) => ({
+        ...prev,
+        savedReports: (prev.savedReports ?? []).filter((r) => r.id !== id),
+      }));
+      pushToast('گزارش ذخیره‌شده حذف شد.', 'info');
+    },
+    [pushToast],
+  );
+
+  const toggleShareSavedReport = useCallback(
+    (id: string) => {
+      setState((prev) => ({
+        ...prev,
+        savedReports: (prev.savedReports ?? []).map((r) =>
+          r.id === id
+            ? {
+                ...r,
+                shared: !r.shared,
+                shareToken: r.shareToken || `sh_${Math.random().toString(36).slice(2, 9)}`,
+              }
+            : r,
+        ),
+      }));
+    },
+    [],
+  );
 
   const addScheduledReport = useCallback(
     (rep: Omit<ScheduledReport, 'id' | 'nextRunAt'>) => {
@@ -7340,8 +7465,13 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         addSayadiCheque,
         updateSayadiChequeStatus,
         processSandboxPayment,
+        setDashboardPersona,
         updateDashboardWidgets,
         resetDashboardWidgets,
+        updateKpiTarget,
+        saveCustomReport,
+        deleteCustomReport,
+        toggleShareSavedReport,
         addScheduledReport,
         toggleScheduledReport,
         deleteScheduledReport,

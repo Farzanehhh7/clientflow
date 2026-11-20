@@ -1,20 +1,17 @@
 import { useMemo, useState } from 'react';
-import { CalendarClock, Download, Mail, Plus, Printer, Trash2 } from 'lucide-react';
+import { CalendarClock, Mail, Plus, Printer, Trash2 } from 'lucide-react';
+import { ReportBuilderTab } from '../components/reports/ReportBuilderTab';
+import { JalaliDateRangePicker } from '../components/ui/JalaliDateRangePicker';
 import { useClientFlow } from '../store/useClientFlowStore';
 import type { ScheduledReport } from '../types';
-import { exportRowsToCsv } from '../utils/csv';
-import { formatJalali, formatJalaliDateTime, formatToman, toFa } from '../utils/jalali';
-
-type DatasetKey = 'customers' | 'appointments' | 'orders' | 'invoices' | 'opportunities' | 'tickets';
-
-const DATASET_LABELS: Record<DatasetKey, string> = {
-  customers: 'مشتریان',
-  appointments: 'نوبت‌ها',
-  orders: 'سفارش‌ها',
-  invoices: 'فاکتورها',
-  opportunities: 'فرصت‌های فروش',
-  tickets: 'تیکت‌های پشتیبانی',
-};
+import {
+  formatJalali,
+  formatJalaliDateTime,
+  formatToman,
+  isIsoInJalaliRange,
+  type JalaliDatePreset,
+  toFa,
+} from '../utils/jalali';
 
 const SCHED_DATASET_LABELS: Record<ScheduledReport['dataset'], string> = {
   aging: 'تراز سنی مطالبات',
@@ -36,9 +33,9 @@ export function ReportsPage() {
     runScheduledReportNow,
   } = useClientFlow();
   const [tab, setTab] = useState<'aging' | 'resources' | 'cohort' | 'builder' | 'scheduled'>('aging');
-  const [dataset, setDataset] = useState<DatasetKey>('orders');
-  const [statusFilter, setStatusFilter] = useState('all');
-  const [searchQuery, setSearchQuery] = useState('');
+  const [datePreset, setDatePreset] = useState<JalaliDatePreset | 'custom'>('all');
+  const [fromJalali, setFromJalali] = useState('');
+  const [toJalali, setToJalali] = useState('');
 
   // Scheduled report form
   const [schedTitle, setSchedTitle] = useState('');
@@ -70,7 +67,7 @@ export function ReportsPage() {
     return state.appointments.filter((a) => !a.branchId || a.branchId === activeBranch);
   }, [state.appointments, activeBranch]);
 
-  // 1. Receivable Aging Calculation
+  // 1. Receivable Aging Calculation (0-30 / 31-60 / 61-90 / 90+)
   const agingData = useMemo(() => {
     const byCustomer = new Map<
       string,
@@ -80,7 +77,8 @@ export function ReportsPage() {
         phone: string;
         bucket0_30: number;
         bucket31_60: number;
-        bucketOver60: number;
+        bucket61_90: number;
+        bucketOver90: number;
         totalOpen: number;
         invoiceCount: number;
       }
@@ -88,9 +86,11 @@ export function ReportsPage() {
 
     let total0_30 = 0;
     let total31_60 = 0;
-    let totalOver60 = 0;
+    let total61_90 = 0;
+    let totalOver90 = 0;
 
     for (const inv of branchInvoices) {
+      if (!isIsoInJalaliRange(inv.issuedAt, fromJalali, toJalali)) continue;
       const balance = Math.max(0, inv.grandTotal - inv.paidAmount);
       if (balance <= 0) continue;
 
@@ -102,7 +102,8 @@ export function ReportsPage() {
         phone: cust?.phone ?? '—',
         bucket0_30: 0,
         bucket31_60: 0,
-        bucketOver60: 0,
+        bucket61_90: 0,
+        bucketOver90: 0,
         totalOpen: 0,
         invoiceCount: 0,
       };
@@ -113,9 +114,12 @@ export function ReportsPage() {
       } else if (ageDays <= 60) {
         row.bucket31_60 += balance;
         total31_60 += balance;
+      } else if (ageDays <= 90) {
+        row.bucket61_90 += balance;
+        total61_90 += balance;
       } else {
-        row.bucketOver60 += balance;
-        totalOver60 += balance;
+        row.bucketOver90 += balance;
+        totalOver90 += balance;
       }
       row.totalOpen += balance;
       row.invoiceCount += 1;
@@ -127,15 +131,19 @@ export function ReportsPage() {
       rows,
       total0_30,
       total31_60,
-      totalOver60,
-      grandReceivables: total0_30 + total31_60 + totalOver60,
+      total61_90,
+      totalOver90,
+      grandReceivables: total0_30 + total31_60 + total61_90 + totalOver90,
     };
-  }, [branchInvoices, state.customers, nowMs]);
+  }, [branchInvoices, state.customers, nowMs, fromJalali, toJalali]);
 
-  // 2. Resource / Doctor Performance
+  // 2. Resource / Staff Performance
   const resourceStats = useMemo(() => {
+    const filteredApts = branchAppointments.filter((a) =>
+      isIsoInJalaliRange(a.start, fromJalali, toJalali),
+    );
     return state.resources.map((res) => {
-      const list = branchAppointments.filter((a) => a.resourceId === res.id);
+      const list = filteredApts.filter((a) => a.resourceId === res.id);
       const doneList = list.filter((a) => a.status === 'done');
       const noShowCount = list.filter((a) => a.status === 'noshow').length;
       const cancelledCount = list.filter((a) => a.status === 'cancelled').length;
@@ -148,7 +156,7 @@ export function ReportsPage() {
       return {
         id: res.id,
         name: res.name,
-        typeLabel: res.type === 'staff' ? 'پزشک / کارشناس' : 'اتاق / تجهیز',
+        typeLabel: res.type === 'staff' ? 'کارشناس / متخصص' : 'اتاق / تجهیز',
         total: list.length,
         done: doneList.length,
         noShowCount,
@@ -157,34 +165,47 @@ export function ReportsPage() {
         revenue,
       };
     });
-  }, [state.resources, branchAppointments, state.services]);
+  }, [state.resources, branchAppointments, state.services, fromJalali, toJalali]);
 
   // 3. Cohort / Retention / LTV / Churn Analysis (FR-RPT-05/08)
   const cohortBI = useMemo(() => {
-    const total = branchCustomers.length;
-    const churnedCount = branchCustomers.filter((c) => c.lifecycle === 'churned').length;
+    const scopedCustomers = branchCustomers.filter((c) =>
+      isIsoInJalaliRange(c.createdAt, fromJalali, toJalali),
+    );
+    const scopedOrders = branchOrders.filter((o) =>
+      isIsoInJalaliRange(o.createdAt, fromJalali, toJalali),
+    );
+    const scopedApts = branchAppointments.filter((a) =>
+      isIsoInJalaliRange(a.start, fromJalali, toJalali),
+    );
+    const scopedOpps = state.opportunities.filter((o) =>
+      isIsoInJalaliRange(o.createdAt, fromJalali, toJalali),
+    );
+
+    const total = scopedCustomers.length;
+    const churnedCount = scopedCustomers.filter((c) => c.lifecycle === 'churned').length;
     const churnRate = total > 0 ? Math.round((churnedCount / total) * 100) : 0;
     const retentionRate = Math.max(0, 100 - churnRate);
 
     const revenueByCustomer = new Map<string, number>();
     const activityCountByCustomer = new Map<string, number>();
 
-    for (const o of branchOrders) {
+    for (const o of scopedOrders) {
       if (o.status === 'cancelled') continue;
       const val = o.items.reduce((s, it) => s + it.qty * it.price, 0) - (o.discountAmount ?? 0);
       revenueByCustomer.set(o.customerId, (revenueByCustomer.get(o.customerId) ?? 0) + val);
       activityCountByCustomer.set(o.customerId, (activityCountByCustomer.get(o.customerId) ?? 0) + 1);
     }
-    for (const a of branchAppointments) {
+    for (const a of scopedApts) {
       if (a.status !== 'done') continue;
       const srv = state.services.find((s) => s.id === a.serviceId);
       revenueByCustomer.set(a.customerId, (revenueByCustomer.get(a.customerId) ?? 0) + (srv?.price ?? 0));
       activityCountByCustomer.set(a.customerId, (activityCountByCustomer.get(a.customerId) ?? 0) + 1);
     }
 
-    const totalLtvSum = branchCustomers.reduce((s, c) => s + (revenueByCustomer.get(c.id) ?? 0), 0);
+    const totalLtvSum = scopedCustomers.reduce((s, c) => s + (revenueByCustomer.get(c.id) ?? 0), 0);
     const avgLtv = total > 0 ? Math.round(totalLtvSum / total) : 0;
-    const repeatCustomers = branchCustomers.filter(
+    const repeatCustomers = scopedCustomers.filter(
       (c) => (activityCountByCustomer.get(c.id) ?? 0) >= 2 || c.lifecycle === 'vip',
     ).length;
     const repeatRate = total > 0 ? Math.round((repeatCustomers / total) * 100) : 0;
@@ -194,7 +215,7 @@ export function ReportsPage() {
       string,
       { month: string; size: number; m1: number; m2: number; m3: number; ltvSum: number }
     >();
-    branchCustomers.forEach((c) => {
+    scopedCustomers.forEach((c) => {
       const jMonth = formatJalali(c.createdAt, 'YYYY/MM');
       const cur = cohortMap.get(jMonth) ?? { month: jMonth, size: 0, m1: 0, m2: 0, m3: 0, ltvSum: 0 };
       cur.size += 1;
@@ -221,7 +242,7 @@ export function ReportsPage() {
 
     // Channel LTV breakdown
     const sourceMap = new Map<string, { source: string; count: number; totalLtv: number; churned: number }>();
-    branchCustomers.forEach((c) => {
+    scopedCustomers.forEach((c) => {
       const src = c.source || 'سایر / مستقیم';
       const cur = sourceMap.get(src) ?? { source: src, count: 0, totalLtv: 0, churned: 0 };
       cur.count += 1;
@@ -233,7 +254,7 @@ export function ReportsPage() {
 
     // Rep performance breakdown
     const repMap = new Map<string, { owner: string; won: number; total: number; revenue: number }>();
-    state.opportunities.forEach((opp) => {
+    scopedOpps.forEach((opp) => {
       const cur = repMap.get(opp.ownerName) ?? { owner: opp.ownerName, won: 0, total: 0, revenue: 0 };
       cur.total += 1;
       if (opp.stage === 'won') {
@@ -253,218 +274,13 @@ export function ReportsPage() {
       sourceStats,
       repStats,
     };
-  }, [branchCustomers, branchOrders, branchAppointments, state.services, state.opportunities]);
-
-  // 4. No-Code Report Builder
-  const statusOptions = useMemo(() => {
-    switch (dataset) {
-      case 'customers':
-        return [
-          ['all', 'همه'],
-          ['vip', 'VIP'],
-          ['active', 'فعال'],
-          ['lead', 'سرنخ'],
-          ['churned', 'ریزش‌کرده'],
-        ];
-      case 'appointments':
-        return [
-          ['all', 'همه'],
-          ['booked', 'رزرو شده'],
-          ['confirmed', 'تأیید شده'],
-          ['checked_in', 'پذیرش در محل'],
-          ['done', 'انجام شده'],
-          ['noshow', 'عدم حضور'],
-          ['cancelled', 'لغو شده'],
-        ];
-      case 'orders':
-        return [
-          ['all', 'همه'],
-          ['new', 'جدید'],
-          ['confirmed', 'تأییدشده'],
-          ['shipped', 'ارسال‌شده'],
-          ['delivered', 'تحویل‌شده'],
-          ['cancelled', 'لغوشده'],
-        ];
-      case 'invoices':
-        return [
-          ['all', 'همه'],
-          ['issued', 'صادرشده'],
-          ['partial', 'پرداخت جزئی'],
-          ['paid', 'تسویه‌شده'],
-        ];
-      case 'opportunities':
-        return [
-          ['all', 'همه'],
-          ['lead', 'سرنخ'],
-          ['contacted', 'تماس اولیه'],
-          ['proposal', 'ارسال پیشنهاد'],
-          ['negotiation', 'مذاکره'],
-          ['won', 'موفق'],
-          ['lost', 'ناموفق'],
-        ];
-      case 'tickets':
-        return [
-          ['all', 'همه'],
-          ['open', 'باز'],
-          ['pending', 'در انتظار'],
-          ['resolved', 'حل‌شده'],
-        ];
-    }
-  }, [dataset]);
-
-  const builtReport = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    const custName = (id?: string) => state.customers.find((c) => c.id === id)?.name ?? '—';
-
-    if (dataset === 'customers') {
-      const headers = ['نام', 'موبایل', 'چرخه عمر', 'منبع', 'برچسب‌ها', 'تاریخ ثبت'];
-      const rows = branchCustomers
-        .filter((c) => statusFilter === 'all' || (c.lifecycle ?? 'active') === statusFilter)
-        .filter(
-          (c) =>
-            !q ||
-            c.name.toLowerCase().includes(q) ||
-            c.phone.includes(q) ||
-            (c.source ?? '').toLowerCase().includes(q),
-        )
-        .map((c) => [
-          c.name,
-          c.phone,
-          c.lifecycle ?? 'active',
-          c.source ?? '—',
-          c.tags.join('، ') || '—',
-          formatJalali(c.createdAt),
-        ]);
-      return { headers, rows };
-    }
-
-    if (dataset === 'appointments') {
-      const headers = ['مشتری', 'خدمت', 'منبع', 'زمان شروع', 'وضعیت'];
-      const rows = branchAppointments
-        .filter((a) => statusFilter === 'all' || a.status === statusFilter)
-        .filter((a) => {
-          const name = custName(a.customerId).toLowerCase();
-          return !q || name.includes(q);
-        })
-        .map((a) => [
-          custName(a.customerId),
-          state.services.find((s) => s.id === a.serviceId)?.name ?? '—',
-          state.resources.find((r) => r.id === a.resourceId)?.name ?? '—',
-          formatJalaliDateTime(a.start),
-          a.status,
-        ]);
-      return { headers, rows };
-    }
-
-    if (dataset === 'orders') {
-      const headers = ['شناسه سفارش', 'مشتری', 'تعداد اقلام', 'مبلغ نهایی (تومان)', 'وضعیت', 'تاریخ ثبت'];
-      const rows = branchOrders
-        .filter((o) => statusFilter === 'all' || o.status === statusFilter)
-        .filter(
-          (o) =>
-            !q ||
-            o.id.toLowerCase().includes(q) ||
-            custName(o.customerId).toLowerCase().includes(q),
-        )
-        .map((o) => {
-          const total =
-            o.items.reduce((s, it) => s + it.qty * it.price, 0) - (o.discountAmount ?? 0);
-          return [
-            o.id,
-            custName(o.customerId),
-            o.items.reduce((s, it) => s + it.qty, 0),
-            total,
-            o.status,
-            formatJalaliDateTime(o.createdAt),
-          ];
-        });
-      return { headers, rows };
-    }
-
-    if (dataset === 'invoices') {
-      const headers = ['شماره فاکتور', 'مشتری', 'مبلغ کل', 'پرداخت‌شده', 'مانده', 'وضعیت'];
-      const rows = branchInvoices
-        .filter((inv) => statusFilter === 'all' || inv.status === statusFilter)
-        .filter(
-          (inv) =>
-            !q ||
-            inv.invoiceNo.toLowerCase().includes(q) ||
-            custName(inv.customerId).toLowerCase().includes(q),
-        )
-        .map((inv) => [
-          inv.invoiceNo,
-          custName(inv.customerId),
-          inv.grandTotal,
-          inv.paidAmount,
-          Math.max(0, inv.grandTotal - inv.paidAmount),
-          inv.status,
-        ]);
-      return { headers, rows };
-    }
-
-    if (dataset === 'opportunities') {
-      const headers = ['عنوان فرصت', 'مخاطب', 'مسئول', 'مرحله', 'مبلغ (تومان)', 'احتمال (٪)'];
-      const rows = state.opportunities
-        .filter((o) => statusFilter === 'all' || o.stage === statusFilter)
-        .filter(
-          (o) =>
-            !q ||
-            o.title.toLowerCase().includes(q) ||
-            o.contactName.toLowerCase().includes(q),
-        )
-        .map((o) => [o.title, o.contactName, o.ownerName, o.stage, o.amount, o.probability]);
-      return { headers, rows };
-    }
-
-    const headers = ['شناسه', 'مشتری', 'موضوع', 'اولویت', 'وضعیت', 'تاریخ ثبت'];
-    const rows = state.tickets
-      .filter((tItem) => statusFilter === 'all' || tItem.status === statusFilter)
-      .filter(
-        (tItem) =>
-          !q ||
-          tItem.subject.toLowerCase().includes(q) ||
-          custName(tItem.customerId).toLowerCase().includes(q),
-      )
-      .map((tItem) => [
-        tItem.id,
-        custName(tItem.customerId),
-        tItem.subject,
-        tItem.priority,
-        tItem.status,
-        formatJalaliDateTime(tItem.createdAt),
-      ]);
-    return { headers, rows };
-  }, [
-    dataset,
-    statusFilter,
-    searchQuery,
-    state.customers,
-    state.services,
-    state.resources,
-    state.opportunities,
-    state.tickets,
-    branchCustomers,
-    branchAppointments,
-    branchOrders,
-    branchInvoices,
-  ]);
-
-  const handleDownloadCsv = () => {
-    const csv = exportRowsToCsv(builtReport.headers, builtReport.rows);
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `clientflow-report-${dataset}-${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
+  }, [branchCustomers, branchOrders, branchAppointments, state.services, state.opportunities, fromJalali, toJalali]);
 
   const tabTitles = {
     aging: 'تراز سنی مطالبات (Receivable Aging)',
-    resources: 'عملکرد منابع و پزشکان',
+    resources: 'عملکرد منابع و کارشناسان',
     cohort: 'تحلیل Cohort، ماندگاری، LTV و ریزش',
-    builder: 'گزارش‌ساز بدون کد (CSV / PDF)',
+    builder: 'گزارش‌ساز بدون کد (نمودار / CSV / XLSX / PDF)',
     scheduled: 'زمان‌بندی ارسال گزارش',
   };
 
@@ -489,9 +305,9 @@ export function ReportsPage() {
           {(
             [
               ['aging', 'تراز سنی مطالبات'],
-              ['resources', 'عملکرد منابع و پزشکان'],
+              ['resources', 'عملکرد منابع'],
               ['cohort', 'تحلیل Cohort / LTV / Churn'],
-              ['builder', 'گزارش‌ساز بدون کد (CSV)'],
+              ['builder', `گزارش‌ساز بدون کد (${toFa((state.savedReports ?? []).length)})`],
               ['scheduled', `زمان‌بندی گزارش (${toFa(state.scheduledReports.length)})`],
             ] as const
           ).map(([key, label]) => (
@@ -520,10 +336,25 @@ export function ReportsPage() {
         </button>
       </div>
 
+      {(tab === 'aging' || tab === 'resources' || tab === 'cohort') && (
+        <div className="print-hidden">
+          <JalaliDateRangePicker
+            preset={datePreset}
+            fromJalali={fromJalali}
+            toJalali={toJalali}
+            onChange={(next) => {
+              setDatePreset(next.preset);
+              setFromJalali(next.fromJalali);
+              setToJalali(next.toJalali);
+            }}
+          />
+        </div>
+      )}
+
       {/* TAB 1: AGING */}
       {tab === 'aging' && (
         <div className="space-y-4">
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
             <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
               <div className="text-xs text-slate-500">جمع کل مطالبات باز</div>
               <div className="mt-1.5 text-xl font-bold tabular-nums text-rose-600 dark:text-rose-400">
@@ -543,9 +374,15 @@ export function ReportsPage() {
               </div>
             </div>
             <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
-              <div className="text-xs text-slate-500">معوق بالای ۶۰ روز</div>
+              <div className="text-xs text-slate-500">معوق ۶۱ تا ۹۰ روز</div>
+              <div className="mt-1.5 text-xl font-bold tabular-nums text-orange-600 dark:text-orange-400">
+                {formatToman(agingData.total61_90)}
+              </div>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+              <div className="text-xs text-slate-500">معوق بالای ۹۰ روز</div>
               <div className="mt-1.5 text-xl font-bold tabular-nums text-rose-600 dark:text-rose-400">
-                {formatToman(agingData.totalOver60)}
+                {formatToman(agingData.totalOver90)}
               </div>
             </div>
           </div>
@@ -553,7 +390,7 @@ export function ReportsPage() {
           <div className="overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
             {agingData.rows.length === 0 ? (
               <p className="p-8 text-center text-xs text-slate-500">
-                هیچ فاکتور تسویه‌نشده‌ای در سیستم وجود ندارد.
+                هیچ فاکتور تسویه‌نشده‌ای در این بازه وجود ندارد.
               </p>
             ) : (
               <div className="overflow-x-auto">
@@ -561,10 +398,11 @@ export function ReportsPage() {
                   <thead className="border-b border-slate-200 bg-slate-50/70 text-xs text-slate-500 dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-400">
                     <tr>
                       <th className="px-4 py-3 font-medium">مشتری</th>
-                      <th className="px-4 py-3 font-medium">تعداد فاکتور باز</th>
+                      <th className="px-4 py-3 font-medium">تعداد فاکتور</th>
                       <th className="px-4 py-3 font-medium">۰ تا ۳۰ روز</th>
                       <th className="px-4 py-3 font-medium">۳۱ تا ۶۰ روز</th>
-                      <th className="px-4 py-3 font-medium">بالای ۶۰ روز</th>
+                      <th className="px-4 py-3 font-medium">۶۱ تا ۹۰ روز</th>
+                      <th className="px-4 py-3 font-medium">بالای ۹۰ روز</th>
                       <th className="px-4 py-3 font-medium text-left">جمع بدهی</th>
                     </tr>
                   </thead>
@@ -580,8 +418,11 @@ export function ReportsPage() {
                         <td className="px-4 py-2.5 text-xs tabular-nums text-amber-600 dark:text-amber-400">
                           {formatToman(r.bucket31_60)}
                         </td>
+                        <td className="px-4 py-2.5 text-xs tabular-nums text-orange-600 dark:text-orange-400">
+                          {formatToman(r.bucket61_90)}
+                        </td>
                         <td className="px-4 py-2.5 text-xs tabular-nums text-rose-600 dark:text-rose-400">
-                          {formatToman(r.bucketOver60)}
+                          {formatToman(r.bucketOver90)}
                         </td>
                         <td className="px-4 py-2.5 text-left text-xs font-bold tabular-nums">
                           {formatToman(r.totalOpen)}
@@ -799,108 +640,7 @@ export function ReportsPage() {
       )}
 
       {/* TAB 4: NO-CODE REPORT BUILDER */}
-      {tab === 'builder' && (
-        <div className="space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-4 print-hidden dark:border-slate-800 dark:bg-slate-900">
-            <div className="flex flex-wrap items-center gap-3">
-              <div>
-                <label className="mb-1 block text-[11px] text-slate-500">مجموعه داده</label>
-                <select
-                  value={dataset}
-                  onChange={(e) => {
-                    setDataset(e.target.value as DatasetKey);
-                    setStatusFilter('all');
-                  }}
-                  className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium dark:border-slate-700 dark:bg-slate-800"
-                >
-                  {(Object.keys(DATASET_LABELS) as DatasetKey[]).map((k) => (
-                    <option key={k} value={k}>
-                      {DATASET_LABELS[k]}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="mb-1 block text-[11px] text-slate-500">فیلتر وضعیت</label>
-                <select
-                  value={statusFilter}
-                  onChange={(e) => setStatusFilter(e.target.value)}
-                  className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium dark:border-slate-700 dark:bg-slate-800"
-                >
-                  {statusOptions.map(([val, label]) => (
-                    <option key={val} value={val}>
-                      {label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="mb-1 block text-[11px] text-slate-500">جستجو در ردیف‌ها</label>
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="نام، شماره یا عنوان..."
-                  className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-800"
-                />
-              </div>
-            </div>
-
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => window.print()}
-                className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-slate-200 px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
-              >
-                <Printer size={15} />
-                خروجی PDF
-              </button>
-              <button
-                type="button"
-                onClick={handleDownloadCsv}
-                className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg bg-indigo-600 px-4 py-2 text-xs font-medium text-white hover:bg-indigo-700"
-              >
-                <Download size={15} />
-                خروجی CSV ({toFa(builtReport.rows.length)} ردیف)
-              </button>
-            </div>
-          </div>
-
-          <div className="overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
-            <div className="overflow-x-auto">
-              <table className="w-full text-right text-xs">
-                <thead className="border-b border-slate-200 bg-slate-50/70 text-slate-500 dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-400">
-                  <tr>
-                    {builtReport.headers.map((h) => (
-                      <th key={h} className="px-4 py-3 font-medium">
-                        {h}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-                  {builtReport.rows.slice(0, 30).map((row, idx) => (
-                    <tr key={idx} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40">
-                      {row.map((cell, cIdx) => (
-                        <td key={cIdx} className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">
-                          {typeof cell === 'number' ? toFa(cell.toLocaleString('en-US')) : toFa(String(cell))}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            {builtReport.rows.length > 30 && (
-              <div className="border-t border-slate-200 px-4 py-2 text-xs text-slate-500 dark:border-slate-800">
-                نمایش ۳۰ ردیف اول در پیش‌نمایش؛ فایل CSV شامل تمام {toFa(builtReport.rows.length)} ردیف است.
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+      {tab === 'builder' && <ReportBuilderTab />}
 
       {/* TAB 5: SCHEDULED REPORT DELIVERY (FR-RPT-04) */}
       {tab === 'scheduled' && (

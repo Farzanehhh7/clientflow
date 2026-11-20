@@ -275,3 +275,20 @@ export function exportRowsToCsv(
   const dataLines = rows.map((row) => row.map(esc).join(','));
   return '\uFEFF' + [headerLine, ...dataLines].join('\n');
 }
+
+export function exportRowsToXlsx(
+  sheetName: string,
+  headers: string[],
+  rows: (string | number | boolean | null | undefined)[][],
+  fileName: string,
+): void {
+  const aoa = [
+    headers,
+    ...rows.map((r) => r.map((cell) => (cell === null || cell === undefined ? '' : cell))),
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, sheetName.slice(0, 31) || 'گزارش');
+  XLSX.writeFile(wb, fileName);
+}
+

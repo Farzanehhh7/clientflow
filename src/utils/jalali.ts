@@ -242,4 +242,88 @@ export function getJalaliMonthGridByYearMonth(targetYear: number, targetMonth: n
   };
 }
 
+export type JalaliDatePreset =
+  | 'today'
+  | 'this_week'
+  | 'this_month'
+  | 'shamsi_year'
+  | 'last_30_days'
+  | 'all';
+
+export function getJalaliDateRangePreset(preset: JalaliDatePreset): {
+  fromJalali: string;
+  toJalali: string;
+  label: string;
+} {
+  const now = dayjs().startOf('day');
+  const todayJ = getTodayJalaliAscii();
+  const jNow = now.calendar('jalali');
+
+  if (preset === 'today') {
+    return { fromJalali: todayJ, toJalali: todayJ, label: 'امروز' };
+  }
+  if (preset === 'this_week') {
+    const daysSinceSaturday = (now.day() + 1) % 7;
+    const sat = now.subtract(daysSinceSaturday, 'day');
+    const jSat = sat.calendar('jalali');
+    return {
+      fromJalali: `${jSat.year()}/${String(jSat.month() + 1).padStart(2, '0')}/${String(jSat.date()).padStart(2, '0')}`,
+      toJalali: todayJ,
+      label: 'هفته جاری',
+    };
+  }
+  if (preset === 'this_month') {
+    return {
+      fromJalali: `${jNow.year()}/${String(jNow.month() + 1).padStart(2, '0')}/01`,
+      toJalali: todayJ,
+      label: 'ماه شمسی جاری',
+    };
+  }
+  if (preset === 'shamsi_year') {
+    return {
+      fromJalali: `${jNow.year()}/01/01`,
+      toJalali: todayJ,
+      label: 'سال شمسی جاری',
+    };
+  }
+  if (preset === 'last_30_days') {
+    const past = now.subtract(29, 'day');
+    const jPast = past.calendar('jalali');
+    return {
+      fromJalali: `${jPast.year()}/${String(jPast.month() + 1).padStart(2, '0')}/${String(jPast.date()).padStart(2, '0')}`,
+      toJalali: todayJ,
+      label: '۳۰ روز اخیر',
+    };
+  }
+  return { fromJalali: '', toJalali: '', label: 'کل بازه زمانی' };
+}
+
+export function isIsoInJalaliRange(
+  iso: string | undefined,
+  fromJalali?: string,
+  toJalali?: string,
+): boolean {
+  if (!fromJalali && !toJalali) return true;
+  if (!iso) return false;
+  const targetMs = dayjs(iso).valueOf();
+  if (!Number.isFinite(targetMs)) return false;
+
+  if (fromJalali) {
+    const fromIso = jalaliToIsoUtc(fromJalali);
+    if (fromIso) {
+      const startMs = dayjs(fromIso).startOf('day').valueOf();
+      if (targetMs < startMs) return false;
+    }
+  }
+  if (toJalali) {
+    const toIso = jalaliToIsoUtc(toJalali);
+    if (toIso) {
+      const endMs = dayjs(toIso).endOf('day').valueOf();
+      if (targetMs > endMs) return false;
+    }
+  }
+  return true;
+}
+
 export { toFa };
+

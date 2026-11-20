@@ -1315,6 +1315,28 @@ export type PackMarketingConfig = {
   contentLabel?: string;
 };
 
+export type PackKpiMetricKey =
+  | 'revenue'
+  | 'orders_count'
+  | 'appointments_count'
+  | 'done_appointments'
+  | 'no_show_rate'
+  | 'new_customers'
+  | 'active_pipeline_value'
+  | 'won_deals_revenue'
+  | 'sla_compliance_pct'
+  | 'nps_score'
+  | 'open_receivables';
+
+export type PackKpiDef = {
+  id: string;
+  metricKey: PackKpiMetricKey;
+  label: string;
+  unit: 'toman' | 'count' | 'pct' | 'score';
+  targetValue: number;
+  higherIsBetter: boolean;
+};
+
 export type PackTemplate = {
   id: string;
   key: string;
@@ -1327,6 +1349,7 @@ export type PackTemplate = {
   salesMeta?: PackSalesConfig;
   orderMeta?: PackOrderConfig;
   marketingMeta?: PackMarketingConfig;
+  kpiDefs?: PackKpiDef[];
   customFields: Omit<CustomFieldDef, 'id'>[];
   customEntities: Omit<CustomEntityDef, 'id' | 'createdAt'>[];
   services: Omit<Service, 'id'>[];
@@ -1337,8 +1360,17 @@ export type PackTemplate = {
   isCustom?: boolean;
 };
 
+export type DashboardPersonaRole = 'admin' | 'manager' | 'sales' | 'support' | 'receptionist';
+
 export type DashboardWidgetId =
+  | 'pack_kpis_goals'
   | 'kpi_summary'
+  | 'chart_revenue_trend'
+  | 'chart_sales_funnel'
+  | 'chart_revenue_breakdown'
+  | 'chart_cohort_retention'
+  | 'chart_aging'
+  | 'chart_sla_nps'
   | 'chart_appointments'
   | 'chart_orders'
   | 'chart_finance'
@@ -1347,6 +1379,46 @@ export type DashboardWidgetId =
   | 'kpi_pipeline'
   | 'list_cheques'
   | 'sla_overview';
+
+export type ReportEntityKey =
+  | 'customers'
+  | 'appointments'
+  | 'orders'
+  | 'invoices'
+  | 'opportunities'
+  | 'tickets'
+  | 'leads'
+  | 'payments';
+
+export type ReportFilterOp = 'eq' | 'neq' | 'contains' | 'gte' | 'lte';
+export type ReportFilterRule = {
+  id: string;
+  field: string;
+  op: ReportFilterOp;
+  value: string;
+};
+
+export type ReportAggType = 'count' | 'sum' | 'avg' | 'min' | 'max';
+export type ReportChartType = 'table' | 'bar' | 'line' | 'area' | 'pie';
+
+export type SavedReportConfig = {
+  id: string;
+  title: string;
+  entity: ReportEntityKey;
+  columns: string[];
+  filters: ReportFilterRule[];
+  groupBy: string;
+  aggregation: ReportAggType;
+  metricField: string;
+  chartType: ReportChartType;
+  datePreset?: string;
+  dateFromJalali?: string;
+  dateToJalali?: string;
+  shared?: boolean;
+  shareToken?: string;
+  createdAt: string;
+  updatedAt: string;
+};
 
 export type DashboardWidgetConfig = {
   id: DashboardWidgetId;
@@ -1410,7 +1482,10 @@ export type BusinessSettings = {
   latinDigits?: boolean;
   onboardingCompleted: boolean;
   simulatedOffline?: boolean;
+  dashboardPersona?: DashboardPersonaRole;
   dashboardWidgets: DashboardWidgetConfig[];
+  dashboardLayoutsByRole?: Partial<Record<DashboardPersonaRole, DashboardWidgetConfig[]>>;
+  kpiTargets?: Record<string, number>;
 };
 
 export type AppState = {
@@ -1481,6 +1556,7 @@ export type AppState = {
   automationLogs: AutomationRunLog[];
   npsSurveys: NpsSurvey[];
   scheduledReports: ScheduledReport[];
+  savedReports?: SavedReportConfig[];
   branches: Branch[];
   customPacks: PackTemplate[];
   auditLogs: AuditLogEntry[];

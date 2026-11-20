@@ -3,11 +3,19 @@ import type {
   CustomFieldDef,
   IndustryPack,
   PackCustomerConfig,
+  PackKpiDef,
   PackMarketingConfig,
   PackOrderConfig,
   PackSalesConfig,
   PackTemplate,
 } from '../types';
+
+export const DEFAULT_PACK_KPIS: PackKpiDef[] = [
+  { id: 'kpi_rev', metricKey: 'revenue', label: 'درآمد کل وصولی', unit: 'toman', targetValue: 60_000_000, higherIsBetter: true },
+  { id: 'kpi_cust', metricKey: 'new_customers', label: 'مشتریان جدید جذب‌شده', unit: 'count', targetValue: 20, higherIsBetter: true },
+  { id: 'kpi_sla', metricKey: 'sla_compliance_pct', label: 'انطباق با SLA پشتیبانی', unit: 'pct', targetValue: 90, higherIsBetter: true },
+  { id: 'kpi_nps', metricKey: 'nps_score', label: 'شاخص رضایت (NPS)', unit: 'score', targetValue: 60, higherIsBetter: true },
+];
 
 const DEFAULT_ORDER_META: PackOrderConfig = {
   channelDefault: 'website',
@@ -73,6 +81,12 @@ export const INDUSTRY_PACKS: PackTemplate[] = [
       showContentCalendar: true,
       contentLabel: 'تقویم محتوای کلینیک و شبکه‌های اجتماعی',
     },
+    kpiDefs: [
+      { id: 'cl_rev', metricKey: 'revenue', label: 'درآمد کلینیک (وصولی)', unit: 'toman', targetValue: 75_000_000, higherIsBetter: true },
+      { id: 'cl_apts', metricKey: 'done_appointments', label: 'ویزیت و جلسات انجام‌شده', unit: 'count', targetValue: 35, higherIsBetter: true },
+      { id: 'cl_ns', metricKey: 'no_show_rate', label: 'نرخ عدم حضور (سقف هدف)', unit: 'pct', targetValue: 10, higherIsBetter: false },
+      { id: 'cl_nps', metricKey: 'nps_score', label: 'شاخص رضایت مراجعین (NPS)', unit: 'score', targetValue: 70, higherIsBetter: true },
+    ],
     customFields: [
       { key: 'allergies', label: 'حساسیت‌ها و آلرژی‌ها', entity: 'customer', type: 'text', active: true, showInTable: true, order: 1 },
       { key: 'skin_type', label: 'نوع پوست / نیاز درمانی', entity: 'customer', type: 'select', options: ['مختلط', 'چرب', 'خشک', 'حساس'], active: true, showInTable: true, order: 2 },
@@ -189,6 +203,12 @@ export const INDUSTRY_PACKS: PackTemplate[] = [
       showContentCalendar: true,
       contentLabel: 'تقویم محتوای فروشگاه و کمپین محصول',
     },
+    kpiDefs: [
+      { id: 'sh_rev', metricKey: 'revenue', label: 'فروش وصول‌شده فروشگاه', unit: 'toman', targetValue: 90_000_000, higherIsBetter: true },
+      { id: 'sh_ord', metricKey: 'orders_count', label: 'تعداد کل سفارش‌ها', unit: 'count', targetValue: 45, higherIsBetter: true },
+      { id: 'sh_cust', metricKey: 'new_customers', label: 'خریداران جدید', unit: 'count', targetValue: 25, higherIsBetter: true },
+      { id: 'sh_nps', metricKey: 'nps_score', label: 'رضایت خریداران (NPS)', unit: 'score', targetValue: 65, higherIsBetter: true },
+    ],
     customFields: [
       { key: 'preferred_carrier', label: 'اولویت ارسال / شرکت حمل', entity: 'customer', type: 'select', options: ['تیپاکس', 'پست پیشتاز', 'اسنپ‌باکس'], active: true, showInTable: true, order: 1 },
       { key: 'gift_wrap', label: 'بسته‌بندی هدیه', entity: 'order', type: 'checkbox', active: true, showInTable: true, order: 2 },
@@ -302,6 +322,12 @@ export const INDUSTRY_PACKS: PackTemplate[] = [
       },
       transitions: DEFAULT_ORDER_META.transitions,
     },
+    kpiDefs: [
+      { id: 'sw_won', metricKey: 'won_deals_revenue', label: 'ارزش قراردادهای لایسنس قطعی', unit: 'toman', targetValue: 120_000_000, higherIsBetter: true },
+      { id: 'sw_pipe', metricKey: 'active_pipeline_value', label: 'ارزش قیف فروش SaaS فعال', unit: 'toman', targetValue: 200_000_000, higherIsBetter: true },
+      { id: 'sw_sla', metricKey: 'sla_compliance_pct', label: 'انطباق SLA پشتیبانی فنی', unit: 'pct', targetValue: 95, higherIsBetter: true },
+      { id: 'sw_nps', metricKey: 'nps_score', label: 'رضایت مشتریان SaaS (NPS)', unit: 'score', targetValue: 65, higherIsBetter: true },
+    ],
     customFields: [
       { key: 'license_key', label: 'کلید لایسنس', entity: 'customer', type: 'text', unique: true, active: true, showInTable: true, order: 1 },
       { key: 'server_env', label: 'اطلاعات سرور / محیط استقرار', entity: 'customer', type: 'select', options: ['ابری (Cloud)', 'سرور داخلی (On-Premise)'], active: true, showInTable: true, order: 2 },
@@ -402,6 +428,12 @@ export const INDUSTRY_PACKS: PackTemplate[] = [
         { key: 'lost', label: 'لغو مناقصه', probability: 0, slaHours: 0 },
       ],
     },
+    kpiDefs: [
+      { id: 'b2b_won', metricKey: 'won_deals_revenue', label: 'فروش قراردادهای B2B', unit: 'toman', targetValue: 180_000_000, higherIsBetter: true },
+      { id: 'b2b_pipe', metricKey: 'active_pipeline_value', label: 'ارزش پرونده‌های در حال مذاکره', unit: 'toman', targetValue: 250_000_000, higherIsBetter: true },
+      { id: 'b2b_rec', metricKey: 'open_receivables', label: 'سقف مجاز مطالبات باز', unit: 'toman', targetValue: 40_000_000, higherIsBetter: false },
+      { id: 'b2b_sla', metricKey: 'sla_compliance_pct', label: 'انطباق پاسخگویی حقوقی', unit: 'pct', targetValue: 92, higherIsBetter: true },
+    ],
     customFields: [
       { key: 'credit_limit', label: 'سقف اعتبار خرید چکی (تومان)', entity: 'customer', type: 'money', active: true, showInTable: true, order: 1 },
       { key: 'industry_sector', label: 'حوزه فعالیت شرکت', entity: 'customer', type: 'select', options: ['تولیدی', 'بازرگانی', 'پیمانکاری', 'خدمات'], active: true, order: 2 },
@@ -473,6 +505,12 @@ export const INDUSTRY_PACKS: PackTemplate[] = [
     tier: 'light',
     description: 'دانشجو/فراگیر، ثبت‌نام دوره، تقویم کلاس‌ها، حضور و غیاب و تمدید ترم بعدی',
     descriptionEn: 'Students, courses, class schedule, attendance tracking & term renewals',
+    kpiDefs: [
+      { id: 'ed_rev', metricKey: 'revenue', label: 'شهریه وصول‌شده آموزشگاه', unit: 'toman', targetValue: 55_000_000, higherIsBetter: true },
+      { id: 'ed_cust', metricKey: 'new_customers', label: 'فراگیران جدید ثبت‌نامی', unit: 'count', targetValue: 30, higherIsBetter: true },
+      { id: 'ed_apts', metricKey: 'done_appointments', label: 'جلسات تعیین سطح / کلاس', unit: 'count', targetValue: 25, higherIsBetter: true },
+      { id: 'ed_nps', metricKey: 'nps_score', label: 'رضایت فراگیران (NPS)', unit: 'score', targetValue: 70, higherIsBetter: true },
+    ],
     salesMeta: {
       pipelineName: 'قیف جذب و ثبت‌نام فراگیران',
       leadSingular: 'متقاضی دوره',
@@ -563,6 +601,12 @@ export const INDUSTRY_PACKS: PackTemplate[] = [
     tier: 'light',
     description: 'پرونده ملک/خودرو، ثبت بازدید حضوری، قیف مذاکره و تطبیق بودجه خریدار',
     descriptionEn: 'Property/Vehicle listings, viewing appointments, negotiation pipeline & buyer matching',
+    kpiDefs: [
+      { id: 're_won', metricKey: 'won_deals_revenue', label: 'ارزش کل قراردادهای بسته‌شده', unit: 'toman', targetValue: 300_000_000, higherIsBetter: true },
+      { id: 're_pipe', metricKey: 'active_pipeline_value', label: 'ارزش فایل‌های در حال مذاکره', unit: 'toman', targetValue: 450_000_000, higherIsBetter: true },
+      { id: 're_apts', metricKey: 'done_appointments', label: 'بازدیدهای حضوری انجام‌شده', unit: 'count', targetValue: 25, higherIsBetter: true },
+      { id: 're_cust', metricKey: 'new_customers', label: 'خریداران و متقاضیان جدید', unit: 'count', targetValue: 20, higherIsBetter: true },
+    ],
     salesMeta: {
       pipelineName: 'قیف معاملات ملک و خودرو',
       leadSingular: 'خریدار / متقاضی',
@@ -671,6 +715,12 @@ export const INDUSTRY_PACKS: PackTemplate[] = [
       showContentCalendar: true,
       contentLabel: 'تقویم محتوای اینستاگرام و نمونه‌کار',
     },
+    kpiDefs: [
+      { id: 'sl_rev', metricKey: 'revenue', label: 'درآمد سالن و باشگاه', unit: 'toman', targetValue: 65_000_000, higherIsBetter: true },
+      { id: 'sl_apts', metricKey: 'done_appointments', label: 'جلسات و نوبت‌های انجام‌شده', unit: 'count', targetValue: 40, higherIsBetter: true },
+      { id: 'sl_ns', metricKey: 'no_show_rate', label: 'نرخ کنسلی/عدم حضور', unit: 'pct', targetValue: 8, higherIsBetter: false },
+      { id: 'sl_nps', metricKey: 'nps_score', label: 'رضایت مشتریان (NPS)', unit: 'score', targetValue: 75, higherIsBetter: true },
+    ],
     customFields: [
       { key: 'preferred_stylist', label: 'متخصص / مربی دلخواه', entity: 'customer', type: 'text', active: true, showInTable: true, order: 1 },
       { key: 'membership_tier', label: 'سطح عضویت باشگاه/سالن', entity: 'customer', type: 'select', options: ['برنزی', 'نقره‌ای', 'طلایی VIP'], active: true, order: 2 },
@@ -737,6 +787,12 @@ export const INDUSTRY_PACKS: PackTemplate[] = [
     tier: 'light',
     description: 'منوی غذا و نوشیدنی، ثبت سفارش سریع، باشگاه مشتریان و کد تخفیف وفاداری',
     descriptionEn: 'Menu items, fast order tracking, loyalty club & promo coupons',
+    kpiDefs: [
+      { id: 'rs_rev', metricKey: 'revenue', label: 'فروش وصول‌شده رستوران/کافه', unit: 'toman', targetValue: 70_000_000, higherIsBetter: true },
+      { id: 'rs_ord', metricKey: 'orders_count', label: 'تعداد سفارش‌های ثبت‌شده', unit: 'count', targetValue: 60, higherIsBetter: true },
+      { id: 'rs_apts', metricKey: 'done_appointments', label: 'رزرو میزهای تکمیل‌شده', unit: 'count', targetValue: 20, higherIsBetter: true },
+      { id: 'rs_nps', metricKey: 'nps_score', label: 'رضایت مهمانان (NPS)', unit: 'score', targetValue: 72, higherIsBetter: true },
+    ],
     salesMeta: {
       pipelineName: 'قیف قراردادهای کترینگ و رویداد',
       leadSingular: 'متقاضی کترینگ',
@@ -825,6 +881,12 @@ export const INDUSTRY_PACKS: PackTemplate[] = [
     tier: 'light',
     description: 'مدیریت کارفرمایان، زمان‌سنجی پروژه، پیش‌فاکتور، پیگیری پرداخت و نمای ساده Solo',
     descriptionEn: 'Clients, project milestones, time tracking, invoices & Solo workspace',
+    kpiDefs: [
+      { id: 'fr_rev', metricKey: 'revenue', label: 'درآمد وصول‌شده پروژه‌ها', unit: 'toman', targetValue: 45_000_000, higherIsBetter: true },
+      { id: 'fr_won', metricKey: 'won_deals_revenue', label: 'قراردادهای پروژه‌ای منعقدشده', unit: 'toman', targetValue: 60_000_000, higherIsBetter: true },
+      { id: 'fr_rec', metricKey: 'open_receivables', label: 'سقف مطالبات تسویه‌نشده', unit: 'toman', targetValue: 15_000_000, higherIsBetter: false },
+      { id: 'fr_nps', metricKey: 'nps_score', label: 'رضایت کارفرمایان (NPS)', unit: 'score', targetValue: 75, higherIsBetter: true },
+    ],
     salesMeta: {
       pipelineName: 'قیف پروژه‌ها و مشاوره',
       leadSingular: 'کارفرمای بالقوه',
@@ -898,6 +960,7 @@ export const INDUSTRY_PACKS: PackTemplate[] = [
     tier: 'light',
     description: 'پیکربندی متعادل برای کسب‌وکارهای عمومی بدون فیلدهای تخصصی صنعتی',
     descriptionEn: 'Balanced standard setup suitable for general service businesses',
+    kpiDefs: DEFAULT_PACK_KPIS,
     salesMeta: {
       pipelineName: 'قیف فروش اصلی',
       leadSingular: 'سرنخ فروش',
@@ -1033,4 +1096,15 @@ export function getPackMarketingConfig(
     customPacks?.find((p) => p.key === packKey);
   return pack?.marketingMeta ?? { showContentCalendar: false };
 }
+
+export function getPackKpiDefs(
+  packKey: IndustryPack,
+  customPacks?: PackTemplate[],
+): PackKpiDef[] {
+  const pack =
+    INDUSTRY_PACKS.find((p) => p.key === packKey) ??
+    customPacks?.find((p) => p.key === packKey);
+  return pack?.kpiDefs && pack.kpiDefs.length > 0 ? pack.kpiDefs : DEFAULT_PACK_KPIS;
+}
+
 

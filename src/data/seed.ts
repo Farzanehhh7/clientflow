@@ -165,14 +165,21 @@ export const branches: Branch[] = [
 
 export const defaultDashboardWidgets: DashboardWidgetConfig[] = [
   { id: 'kpi_summary', title: 'شاخص‌های کلیدی عملکرد (KPI)', titleEn: 'Key Performance Metrics', visible: true, size: 'full', order: 1 },
-  { id: 'chart_appointments', title: 'نمودار نوبت‌های هفته جاری', titleEn: 'Weekly Appointments Chart', visible: true, size: 'half', order: 2 },
-  { id: 'chart_orders', title: 'نمودار وضعیت سفارش‌ها', titleEn: 'Orders by Status Chart', visible: true, size: 'half', order: 3 },
-  { id: 'chart_finance', title: 'خلاصه مالی، وصولی و چک صیادی', titleEn: 'Finance & Sayadi Overview', visible: true, size: 'half', order: 4 },
-  { id: 'kpi_pipeline', title: 'وضعیت قیف فروش و پیش‌فاکتورها', titleEn: 'Sales Pipeline Snapshot', visible: true, size: 'half', order: 5 },
-  { id: 'list_tasks', title: 'پیگیری‌های فوری و امروز', titleEn: 'Urgent Tasks', visible: true, size: 'half', order: 6 },
-  { id: 'list_tickets', title: 'آخرین تیکت‌های باز', titleEn: 'Open Tickets', visible: true, size: 'half', order: 7 },
-  { id: 'sla_overview', title: 'پایش SLA و عملکرد پشتیبانی', titleEn: 'Support SLA Monitor', visible: true, size: 'half', order: 8 },
-  { id: 'list_cheques', title: 'سررسید چک‌های صیادی', titleEn: 'Sayadi Cheques Due', visible: true, size: 'full', order: 9 },
+  { id: 'pack_kpis_goals', title: 'اهداف KPI صنعت (هدف در برابر عملکرد)', titleEn: 'Industry KPI Goals', visible: true, size: 'full', order: 2 },
+  { id: 'chart_revenue_trend', title: 'روند درآمد و پرداخت‌ها', titleEn: 'Revenue & Payment Trend', visible: true, size: 'half', order: 3 },
+  { id: 'chart_sales_funnel', title: 'قیف تبدیل فروش', titleEn: 'Sales Conversion Funnel', visible: true, size: 'half', order: 4 },
+  { id: 'chart_appointments', title: 'روند نوبت‌ها و نرخ عدم حضور', titleEn: 'Appointments & No-Show Rate', visible: true, size: 'half', order: 5 },
+  { id: 'chart_revenue_breakdown', title: 'تفکیک درآمد (منبع / مسئول / محصول)', titleEn: 'Revenue Breakdown', visible: true, size: 'half', order: 6 },
+  { id: 'chart_orders', title: 'نمودار وضعیت سفارش‌ها', titleEn: 'Orders by Status Chart', visible: true, size: 'half', order: 7 },
+  { id: 'chart_aging', title: 'نمودار تراز سنی مطالبات', titleEn: 'Receivables Aging Chart', visible: true, size: 'half', order: 8 },
+  { id: 'chart_sla_nps', title: 'روند پایبندی SLA و NPS', titleEn: 'SLA Compliance & NPS Trend', visible: true, size: 'half', order: 9 },
+  { id: 'chart_cohort_retention', title: 'نرخ ماندگاری کوهورت مشتریان', titleEn: 'Cohort Retention Trend', visible: true, size: 'half', order: 10 },
+  { id: 'chart_finance', title: 'خلاصه مالی، وصولی و چک صیادی', titleEn: 'Finance & Sayadi Overview', visible: true, size: 'half', order: 11 },
+  { id: 'kpi_pipeline', title: 'وضعیت قیف فروش و پیش‌فاکتورها', titleEn: 'Sales Pipeline Snapshot', visible: true, size: 'half', order: 12 },
+  { id: 'list_tasks', title: 'پیگیری‌های فوری و امروز', titleEn: 'Urgent Tasks', visible: true, size: 'half', order: 13 },
+  { id: 'list_tickets', title: 'آخرین تیکت‌های باز', titleEn: 'Open Tickets', visible: true, size: 'half', order: 14 },
+  { id: 'sla_overview', title: 'پایش SLA و عملکرد پشتیبانی', titleEn: 'Support SLA Monitor', visible: true, size: 'half', order: 15 },
+  { id: 'list_cheques', title: 'سررسید چک‌های صیادی', titleEn: 'Sayadi Cheques Due', visible: true, size: 'full', order: 16 },
 ];
 
 export const customers: Customer[] = CUSTOMER_NAMES.map((name, idx) => {
