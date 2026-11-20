@@ -76,6 +76,7 @@ export type NavPageKey =
   | 'custom_entities'
   | 'reports'
   | 'automation'
+  | 'integrations'
   | 'settings';
 
 interface DashboardPageProps {

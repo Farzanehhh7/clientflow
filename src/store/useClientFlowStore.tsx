@@ -4,7 +4,11 @@ import { INDUSTRY_PACKS, buildPackFromState, getPackSalesConfig } from '../data/
 import { DEFAULT_TENANT_ID } from '../data/repositories/customerRepository';
 import { stampCreateMeta, stampUpdateMeta } from '../data/repositories/types';
 import { createInitialState, defaultDashboardWidgets } from '../data/seed';
+import { getChatProvider, getSmsProvider } from '../services/providers/messagingAdapters';
 import { notificationProvider } from '../services/providers/notificationProvider';
+import { getPaymentGatewayProvider } from '../services/providers/paymentGatewayAdapter';
+import { getTelephonyProvider } from '../services/providers/telephonyAdapter';
+import { computeSyncHmacPreview } from '../services/providers/webhookAndOpenApi';
 import type {
   AppState,
   Appointment,
@@ -13,8 +17,10 @@ import type {
   AutomationPolicy,
   Branch,
   BusinessSettings,
+  CallLogEntry,
   CampaignRecipient,
   CampaignRecipientStatus,
+  ChatProviderDriver,
   ClientFlowConfigBundle,
   CommissionLedgerEntry,
   CommissionLedgerStatus,
@@ -87,8 +93,10 @@ import type {
   SayadiChequeStatus,
   ScheduledReport,
   KbVisibility,
+  IntegrationsConfig,
   Service,
   SlaPolicy,
+  SmsProviderDriver,
   StockMovement,
   SurveyType,
   Task,
@@ -102,6 +110,7 @@ import type {
   WaitlistEntry,
   WarrantyClaim,
   WarrantyRecord,
+  WebhookEndpoint,
   WebhookLogEntry,
   WorkflowDefinition,
   WorkflowHistoryEntry,
@@ -241,6 +250,12 @@ function mergeLoadedState(parsed: Partial<AppState> | null | undefined): AppStat
     customPacks: parsed.customPacks ?? fallback.customPacks,
     messageTemplates: parsed.messageTemplates ?? fallback.messageTemplates,
     webhookLogs: parsed.webhookLogs ?? fallback.webhookLogs,
+    callLogs: parsed.callLogs ?? fallback.callLogs,
+    webhookEndpoints: parsed.webhookEndpoints ?? fallback.webhookEndpoints,
+    integrationsConfig: {
+      ...(fallback.integrationsConfig as IntegrationsConfig),
+      ...(parsed.integrationsConfig ?? {}),
+    },
     ruleCooldowns: parsed.ruleCooldowns ?? {},
     lastAutomationRunAt: parsed.lastAutomationRunAt ?? fallback.lastAutomationRunAt,
     automationTickCount: parsed.automationTickCount ?? fallback.automationTickCount ?? 1,
@@ -282,10 +297,23 @@ function loadInitialState(): AppState {
   }
 }
 
+export type ActiveCallSession = {
+  id: string;
+  direction: 'inbound' | 'outbound';
+  phone: string;
+  customerId?: string;
+  customerName: string;
+  extension: string;
+  providerDriver: 'simotel' | 'issabel';
+  phase: 'ringing' | 'connected';
+  startedAt: string;
+};
+
 type ClientFlowContextValue = {
   state: AppState;
   toasts: ToastMessage[];
   pendingNps: PendingNpsPrompt | null;
+  activeCall: ActiveCallSession | null;
   dismissPendingNps: () => void;
   pushToast: (text: string, type?: ToastMessage['type']) => void;
   dismissToast: (id: string) => void;
@@ -629,7 +657,46 @@ type ClientFlowContextValue = {
     amount: number;
     cardMasked: string;
     outcome: 'succeeded' | 'failed' | 'cancelled';
-  }) => { ok: boolean; refId?: string; errorMessage?: string };
+  }) => {
+    ok: boolean;
+    refId?: string;
+    authority?: string;
+    errorMessage?: string;
+    adapterSteps?: { step: string; detail: string; at: string }[];
+  };
+
+  // Phase 10: Integrations (Telephony/VoIP, SMS/Chat Adapters, Webhooks)
+  updateIntegrationsConfig: (patch: Partial<IntegrationsConfig>) => void;
+  startOutboundCall: (phone: string, customerId?: string) => void;
+  triggerIncomingCall: (customerId?: string, phoneOverride?: string) => void;
+  answerActiveCall: () => void;
+  dismissActiveCall: () => void;
+  completeActiveCall: (data: {
+    status: CallLogEntry['status'];
+    outcome?: InteractionOutcome;
+    durationSec: number;
+    notes: string;
+    createFollowUpTask?: boolean;
+  }) => void;
+  sendViaSmsAdapter: (data: {
+    driver?: SmsProviderDriver;
+    to: string;
+    body: string;
+    customerId?: string;
+    customerName?: string;
+  }) => OutboxMessage;
+  sendViaChatAdapter: (data: {
+    driver?: ChatProviderDriver;
+    to: string;
+    body: string;
+    customerId?: string;
+    customerName?: string;
+  }) => OutboxMessage;
+  simulateOutboxDlr: (outboxId: string, outcome: 'delivered' | 'failed') => void;
+  addWebhookEndpoint: (data: { name: string; url: string; secret: string; events: string[] }) => void;
+  toggleWebhookEndpoint: (id: string) => void;
+  deleteWebhookEndpoint: (id: string) => void;
+  testFireWebhookEndpoint: (id: string, eventName: string) => void;
 
   // Reports & Dashboard Customization (FR-RPT-01/04 + Phase 9)
   setDashboardPersona: (persona: DashboardPersonaRole) => void;
@@ -676,6 +743,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
   const [state, setState] = useState<AppState>(() => loadInitialState());
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [pendingNps, setPendingNps] = useState<PendingNpsPrompt | null>(null);
+  const [activeCall, setActiveCall] = useState<ActiveCallSession | null>(null);
   const stateRef = useRef(state);
   stateRef.current = state;
 
@@ -6764,12 +6832,43 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
     }) => {
       const inv = stateRef.current.invoices.find((i) => i.id === data.invoiceId);
       if (!inv) return { ok: false, errorMessage: 'فاکتور یافت نشد.' };
+
+      const adapter = getPaymentGatewayProvider(data.gateway);
+      const reqOut = adapter.requestPayment({
+        invoiceId: inv.id,
+        invoiceNo: inv.invoiceNo,
+        amount: data.amount,
+        callbackUrl: `${window.location.origin}/api/payments/callback/${data.gateway}`,
+        description: `پرداخت فاکتور ${inv.invoiceNo}`,
+      });
+      const cbOut = adapter.handleCallback(reqOut.authority, data.outcome);
+      const verifyOut = adapter.verifyPayment(cbOut, data.amount, data.cardMasked);
+
+      const adapterSteps = [
+        {
+          step: '1. RequestPayment (Redirect)',
+          detail: `Authority=${reqOut.authority} → ${reqOut.redirectUrl}`,
+          at: reqOut.requestedAt,
+        },
+        {
+          step: '2. Gateway Callback',
+          detail: `Status=${cbOut.status} · Ref=${cbOut.gatewayRefPreview}`,
+          at: cbOut.receivedAt,
+        },
+        {
+          step: '3. VerifyPayment',
+          detail: verifyOut.verified
+            ? `Verified=true · RefId=${verifyOut.refId}`
+            : `Verified=false · ${verifyOut.errorCode}`,
+          at: verifyOut.verifiedAt,
+        },
+      ];
+
       const nowIso = new Date().toISOString();
-      const refId =
-        data.outcome === 'succeeded' ? `SHP-${Math.floor(10000000 + Math.random() * 89999999)}` : undefined;
+      const refId = verifyOut.verified ? verifyOut.refId : undefined;
       const errorMessage =
         data.outcome === 'failed'
-          ? 'تراکنش توسط شاپرک ناموفق اعلام شد (موجودی ناکافی / خطای رمز پویا)'
+          ? 'تراکنش توسط درگاه ناموفق اعلام شد (موجودی ناکافی / خطای رمز پویا)'
           : data.outcome === 'cancelled'
             ? 'پرداخت توسط کاربر در صفحه درگاه لغو شد'
             : undefined;
@@ -6783,6 +6882,10 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         amount: data.amount,
         cardMasked: data.cardMasked,
         refId,
+        authority: reqOut.authority,
+        callbackStatus: cbOut.status,
+        verifiedAt: verifyOut.verified ? verifyOut.verifiedAt : undefined,
+        adapterSteps,
         status: data.outcome,
         errorCode: data.outcome === 'failed' ? 'ERR_51_FUNDS' : data.outcome === 'cancelled' ? 'ERR_USER_CANCEL' : undefined,
         errorMessage,
@@ -6809,7 +6912,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
           makeAudit(
             'درگاه پرداخت',
             data.outcome === 'succeeded' ? 'approve' : 'system',
-            `تراکنش ${inv.invoiceNo} در درگاه ${data.gateway}: ${data.outcome}${refId ? ` (کد پیگیری ${refId})` : ''}`,
+            `تراکنش ${inv.invoiceNo} (${adapter.displayName}): ${data.outcome}${refId ? ` (کد پیگیری ${refId})` : ''}`,
           ),
           ...prev.auditLogs,
         ].slice(0, 100),
@@ -6817,10 +6920,337 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
 
       if (data.outcome === 'succeeded') {
         pushToast(`پرداخت آنلاین با موفقیت تأیید شد. کد رهگیری: ${refId}`);
-        return { ok: true, refId };
+        return { ok: true, refId, authority: reqOut.authority, adapterSteps };
       }
       pushToast(errorMessage ?? 'تراکنش ناموفق بود.', 'error');
-      return { ok: false, errorMessage };
+      return { ok: false, errorMessage, authority: reqOut.authority, adapterSteps };
+    },
+    [pushToast],
+  );
+
+  // --- PHASE 10: INTEGRATIONS (TELEPHONY, SMS/CHAT ADAPTERS, WEBHOOKS) ---
+  const updateIntegrationsConfig = useCallback(
+    (patch: Partial<IntegrationsConfig>) => {
+      setState((prev) => ({
+        ...prev,
+        integrationsConfig: {
+          ...(prev.integrationsConfig ?? createInitialState().integrationsConfig!),
+          ...patch,
+        },
+        auditLogs: [
+          makeAudit('یکپارچه‌سازی', 'update', 'تنظیمات آداپتورها و درگاه‌های ارتباطی به‌روزرسانی شد.'),
+          ...prev.auditLogs,
+        ].slice(0, 100),
+      }));
+      pushToast('تنظیمات یکپارچه‌سازی ذخیره شد.');
+    },
+    [pushToast],
+  );
+
+  const startOutboundCall = useCallback(
+    (phone: string, customerId?: string) => {
+      const cfg = stateRef.current.integrationsConfig;
+      const driver = cfg?.telephonyDriver ?? 'simotel';
+      const ext = cfg?.telephonyExtension ?? '101';
+      const cust =
+        (customerId
+          ? stateRef.current.customers.find((c) => c.id === customerId)
+          : stateRef.current.customers.find((c) => c.phone === phone)) ?? undefined;
+      const provider = getTelephonyProvider(driver);
+      provider.dial({
+        phone,
+        customerId: cust?.id,
+        customerName: cust?.name ?? 'مخاطب خروجی',
+        agentName: stateRef.current.settings.role === 'admin' ? 'مدیر سیستم' : 'کارشناس پاسخگو',
+        extension: ext,
+      });
+      setActiveCall({
+        id: `call_out_${Date.now()}`,
+        direction: 'outbound',
+        phone,
+        customerId: cust?.id,
+        customerName: cust?.name ?? 'شماره‌گیری خروجی',
+        extension: ext,
+        providerDriver: driver,
+        phase: 'connected',
+        startedAt: new Date().toISOString(),
+      });
+    },
+    [],
+  );
+
+  const triggerIncomingCall = useCallback((customerId?: string, phoneOverride?: string) => {
+    const cfg = stateRef.current.integrationsConfig;
+    const driver = cfg?.telephonyDriver ?? 'simotel';
+    const ext = cfg?.telephonyExtension ?? '101';
+    const cust = customerId
+      ? stateRef.current.customers.find((c) => c.id === customerId)
+      : stateRef.current.customers[Math.floor(Math.random() * Math.min(8, stateRef.current.customers.length))];
+    const phone = phoneOverride || cust?.phone || '09120001122';
+    const provider = getTelephonyProvider(driver);
+    const inc = provider.buildIncomingCall(phone, ext, cust);
+    setActiveCall({
+      id: inc.callId,
+      direction: 'inbound',
+      phone: inc.phone,
+      customerId: cust?.id,
+      customerName: inc.customerName,
+      extension: inc.extension,
+      providerDriver: inc.providerDriver,
+      phase: 'ringing',
+      startedAt: inc.ringingSince,
+    });
+  }, []);
+
+  const answerActiveCall = useCallback(() => {
+    setActiveCall((prev) => (prev ? { ...prev, phase: 'connected' } : null));
+  }, []);
+
+  const dismissActiveCall = useCallback(() => {
+    setActiveCall(null);
+  }, []);
+
+  const completeActiveCall = useCallback(
+    (data: {
+      status: CallLogEntry['status'];
+      outcome?: InteractionOutcome;
+      durationSec: number;
+      notes: string;
+      createFollowUpTask?: boolean;
+    }) => {
+      const curCall = activeCall;
+      if (!curCall) return;
+      const nowIso = new Date().toISOString();
+      const agentName = stateRef.current.settings.role === 'admin' ? 'مدیر سیستم' : 'کارشناس پاسخگو';
+      const entry: CallLogEntry = {
+        id: `call_${Date.now()}`,
+        direction: curCall.direction,
+        customerId: curCall.customerId,
+        customerName: curCall.customerName,
+        phone: curCall.phone,
+        agentName,
+        extension: curCall.extension,
+        providerDriver: curCall.providerDriver,
+        status: data.status,
+        outcome: data.outcome,
+        durationSec: data.status === 'answered' ? Math.max(5, data.durationSec) : 0,
+        recordingAvailable: data.status === 'answered',
+        recordingDurationSec: data.status === 'answered' ? Math.max(5, data.durationSec) : 0,
+        notes: data.notes.trim() || undefined,
+        startedAt: curCall.startedAt,
+      };
+
+      const nextInteraction: Interaction | null = curCall.customerId
+        ? stampCreateMeta<Interaction>(
+            {
+              id: `int_call_${Date.now()}`,
+              customerId: curCall.customerId,
+              channel: 'call',
+              text: `[${curCall.direction === 'inbound' ? 'تماس ورودی' : 'تماس خروجی'} VoIP · ${entry.durationSec} ثانیه] ${data.notes.trim() || 'ثبت از پاپ‌آپ تلفن ابری'}`,
+              outcome: data.outcome,
+              at: nowIso,
+            },
+            getRepoCtx(),
+            nowIso,
+          )
+        : null;
+
+      const followUpTask: Task | null =
+        data.createFollowUpTask && curCall.customerId
+          ? {
+              id: `tsk_call_${Date.now()}`,
+              title: `پیگیری تماس VoIP با ${curCall.customerName}`,
+              customerId: curCall.customerId,
+              dueAt: new Date(Date.now() + 24 * 3600_000).toISOString(),
+              done: false,
+              priority: 'high',
+            }
+          : null;
+
+      setState((prev) => ({
+        ...prev,
+        callLogs: [entry, ...(prev.callLogs ?? [])],
+        interactions: nextInteraction ? [nextInteraction, ...prev.interactions] : prev.interactions,
+        tasks: followUpTask ? [followUpTask, ...prev.tasks] : prev.tasks,
+        auditLogs: [
+          makeAudit('تلفن ابری VoIP', 'create', `ثبت تماس ${curCall.direction === 'inbound' ? 'ورودی' : 'خروجی'} با ${curCall.customerName} (${data.status})`),
+          ...prev.auditLogs,
+        ].slice(0, 100),
+      }));
+      setActiveCall(null);
+      pushToast('گزارش تماس در تاریخچه VoIP و پرونده مشتری ثبت شد.');
+    },
+    [activeCall, pushToast],
+  );
+
+  const sendViaSmsAdapter = useCallback(
+    (data: {
+      driver?: SmsProviderDriver;
+      to: string;
+      body: string;
+      customerId?: string;
+      customerName?: string;
+    }) => {
+      const cfg = stateRef.current.integrationsConfig;
+      const driver = data.driver ?? cfg?.smsDriver ?? 'kavenegar';
+      const adapter = getSmsProvider(driver);
+      const msg = adapter.send({
+        to: data.to,
+        body: data.body,
+        senderLine: cfg?.smsSenderLine ?? '10008663',
+        customerId: data.customerId,
+        customerName: data.customerName,
+      });
+
+      setState((prev) => ({
+        ...prev,
+        outbox: [msg, ...prev.outbox],
+        integrationsConfig: prev.integrationsConfig
+          ? {
+              ...prev.integrationsConfig,
+              smsCreditToman: Math.max(0, prev.integrationsConfig.smsCreditToman - 180),
+            }
+          : prev.integrationsConfig,
+      }));
+      pushToast(`پیامک از طریق آداپتور ${adapter.displayName} ارسال شد (${msg.providerMessageId}).`);
+      return msg;
+    },
+    [pushToast],
+  );
+
+  const sendViaChatAdapter = useCallback(
+    (data: {
+      driver?: ChatProviderDriver;
+      to: string;
+      body: string;
+      customerId?: string;
+      customerName?: string;
+    }) => {
+      const cfg = stateRef.current.integrationsConfig;
+      const driver = data.driver ?? cfg?.chatDriver ?? 'eitaa';
+      const adapter = getChatProvider(driver);
+      const msg = adapter.send({
+        to: data.to,
+        body: data.body,
+        botName: cfg?.chatBotName ?? '@ClientFlowBot',
+        customerId: data.customerId,
+        customerName: data.customerName,
+      });
+
+      setState((prev) => ({
+        ...prev,
+        outbox: [msg, ...prev.outbox],
+      }));
+      pushToast(`پیام از طریق ${adapter.displayName} ارسال شد (${msg.providerMessageId}).`);
+      return msg;
+    },
+    [pushToast],
+  );
+
+  const simulateOutboxDlr = useCallback(
+    (outboxId: string, outcome: 'delivered' | 'failed') => {
+      const target = stateRef.current.outbox.find((m) => m.id === outboxId);
+      if (!target) return;
+      const msgId = target.providerMessageId ?? `MSG-${outboxId.slice(-6).toUpperCase()}`;
+      const dlr =
+        target.providerCode === 'whatsapp' || target.providerCode === 'eitaa' || target.providerCode === 'bale'
+          ? getChatProvider(target.providerCode).getDeliveryReport(msgId, outcome)
+          : getSmsProvider(target.providerCode === 'melipayamak' ? 'melipayamak' : 'kavenegar').getDeliveryReport(
+              msgId,
+              outcome,
+            );
+
+      setState((prev) => ({
+        ...prev,
+        outbox: prev.outbox.map((m) =>
+          m.id === outboxId
+            ? {
+                ...m,
+                providerMessageId: msgId,
+                deliveryStatus: dlr.status,
+                dlrUpdatedAt: dlr.checkedAt,
+                lastError: outcome === 'failed' ? dlr.carrierNote : undefined,
+              }
+            : m,
+        ),
+      }));
+      pushToast(dlr.carrierNote, outcome === 'delivered' ? 'success' : 'error');
+    },
+    [pushToast],
+  );
+
+  const addWebhookEndpoint = useCallback(
+    (data: { name: string; url: string; secret: string; events: string[] }) => {
+      const ep: WebhookEndpoint = {
+        id: `whe_${Date.now()}`,
+        name: data.name.trim(),
+        url: data.url.trim(),
+        secret: data.secret.trim() || `whsec_${Math.random().toString(36).slice(2, 12)}`,
+        events: data.events.length > 0 ? data.events : ['order.created'],
+        active: true,
+        createdAt: new Date().toISOString(),
+      };
+      setState((prev) => ({
+        ...prev,
+        webhookEndpoints: [ep, ...(prev.webhookEndpoints ?? [])],
+      }));
+      pushToast('اندپوینت وب‌هوک خروجی ثبت شد.');
+    },
+    [pushToast],
+  );
+
+  const toggleWebhookEndpoint = useCallback((id: string) => {
+    setState((prev) => ({
+      ...prev,
+      webhookEndpoints: (prev.webhookEndpoints ?? []).map((e) =>
+        e.id === id ? { ...e, active: !e.active } : e,
+      ),
+    }));
+  }, []);
+
+  const deleteWebhookEndpoint = useCallback(
+    (id: string) => {
+      setState((prev) => ({
+        ...prev,
+        webhookEndpoints: (prev.webhookEndpoints ?? []).filter((e) => e.id !== id),
+      }));
+      pushToast('اندپوینت وب‌هوک حذف شد.', 'info');
+    },
+    [pushToast],
+  );
+
+  const testFireWebhookEndpoint = useCallback(
+    (id: string, eventName: string) => {
+      const ep = (stateRef.current.webhookEndpoints ?? []).find((e) => e.id === id);
+      if (!ep) return;
+      const nowIso = new Date().toISOString();
+      const payloadJson = JSON.stringify({
+        event: eventName,
+        timestamp: nowIso,
+        tenant: stateRef.current.settings.businessName,
+        sampleId: `rec_${Date.now().toString(36)}`,
+      });
+      const sig = computeSyncHmacPreview(ep.secret, payloadJson);
+      const log: WebhookLogEntry = {
+        id: `wh_out_${Date.now()}`,
+        direction: 'outgoing',
+        urlOrTopic: ep.url,
+        ruleName: `${ep.name} (${eventName})`,
+        statusCode: 200,
+        latencyMs: 65 + Math.floor(Math.random() * 90),
+        payloadSummary: payloadJson,
+        hmacSignature: sig,
+        ok: true,
+        at: nowIso,
+      };
+      setState((prev) => ({
+        ...prev,
+        webhookEndpoints: (prev.webhookEndpoints ?? []).map((e) =>
+          e.id === id ? { ...e, lastTriggeredAt: nowIso, lastSignature: sig } : e,
+        ),
+        webhookLogs: [log, ...(prev.webhookLogs ?? [])].slice(0, 80),
+      }));
+      pushToast(`وب‌هوک خروجی به ${ep.name} با امضای HMAC ارسال شد.`);
     },
     [pushToast],
   );
@@ -7297,6 +7727,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         state,
         toasts,
         pendingNps,
+        activeCall,
         dismissPendingNps,
         pushToast,
         dismissToast,
@@ -7465,6 +7896,19 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         addSayadiCheque,
         updateSayadiChequeStatus,
         processSandboxPayment,
+        updateIntegrationsConfig,
+        startOutboundCall,
+        triggerIncomingCall,
+        answerActiveCall,
+        dismissActiveCall,
+        completeActiveCall,
+        sendViaSmsAdapter,
+        sendViaChatAdapter,
+        simulateOutboxDlr,
+        addWebhookEndpoint,
+        toggleWebhookEndpoint,
+        deleteWebhookEndpoint,
+        testFireWebhookEndpoint,
         setDashboardPersona,
         updateDashboardWidgets,
         resetDashboardWidgets,

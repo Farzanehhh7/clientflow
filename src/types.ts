@@ -472,6 +472,10 @@ export type PaymentTransaction = {
   amount: number;
   cardMasked?: string;
   refId?: string;
+  authority?: string;
+  callbackStatus?: 'OK' | 'NOK';
+  verifiedAt?: string;
+  adapterSteps?: { step: string; detail: string; at: string }[];
   status: PaymentTransactionStatus;
   errorCode?: string;
   errorMessage?: string;
@@ -1190,6 +1194,10 @@ export type OutboxMessage = {
   customerName?: string;
   body: string;
   channel: NotificationChannel;
+  subChannel?: 'sms' | 'whatsapp' | 'eitaa' | 'bale' | 'email' | 'push' | 'in_app';
+  providerCode?: string;
+  providerMessageId?: string;
+  dlrUpdatedAt?: string;
   ruleId?: string;
   ruleName?: string;
   appointmentId?: string;
@@ -1222,8 +1230,70 @@ export type WebhookLogEntry = {
   statusCode: number;
   latencyMs: number;
   payloadSummary: string;
+  hmacSignature?: string;
   ok: boolean;
   at: string;
+};
+
+export type SmsProviderDriver = 'kavenegar' | 'melipayamak';
+export type ChatProviderDriver = 'whatsapp' | 'eitaa' | 'bale';
+export type TelephonyProviderDriver = 'simotel' | 'issabel';
+
+export type CallDirection = 'inbound' | 'outbound';
+export type CallStatus = 'answered' | 'missed' | 'voicemail' | 'busy' | 'ringing';
+
+export type CallLogEntry = {
+  id: string;
+  direction: CallDirection;
+  customerId?: string;
+  customerName: string;
+  phone: string;
+  agentName: string;
+  extension: string;
+  providerDriver: TelephonyProviderDriver;
+  status: CallStatus;
+  outcome?: InteractionOutcome;
+  durationSec: number;
+  recordingAvailable: boolean;
+  recordingDurationSec?: number;
+  notes?: string;
+  startedAt: string;
+};
+
+export type WebhookEndpoint = {
+  id: string;
+  name: string;
+  url: string;
+  secret: string;
+  events: string[];
+  active: boolean;
+  lastTriggeredAt?: string;
+  lastSignature?: string;
+  createdAt: string;
+};
+
+export type AccountingSoftwarePreset = 'sepidar' | 'holoo' | 'rahkaran' | 'mahak' | 'generic_excel';
+
+export type AccountingFieldMapping = {
+  sourceKey: string;
+  sourceLabel: string;
+  targetColumn: string;
+  accountCode?: string;
+  enabled: boolean;
+};
+
+export type IntegrationsConfig = {
+  smsDriver: SmsProviderDriver;
+  smsSenderLine: string;
+  smsApiKeyMasked: string;
+  smsCreditToman: number;
+  chatDriver: ChatProviderDriver;
+  chatBotName: string;
+  telephonyDriver: TelephonyProviderDriver;
+  telephonyExtension: string;
+  telephonyServerUrl: string;
+  accountingPreset: AccountingSoftwarePreset;
+  accountingMappings: AccountingFieldMapping[];
 };
 
 export type AutomationPolicy = {
@@ -1554,6 +1624,9 @@ export type AppState = {
   automationTickCount?: number;
   outbox: OutboxMessage[];
   automationLogs: AutomationRunLog[];
+  callLogs?: CallLogEntry[];
+  webhookEndpoints?: WebhookEndpoint[];
+  integrationsConfig?: IntegrationsConfig;
   npsSurveys: NpsSurvey[];
   scheduledReports: ScheduledReport[];
   savedReports?: SavedReportConfig[];

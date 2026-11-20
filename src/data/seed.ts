@@ -1,5 +1,6 @@
 import dayjs from 'dayjs';
 import jalaliday from 'jalaliday';
+import { getDefaultAccountingMapping } from '../services/providers/webhookAndOpenApi';
 import { makeSampleNationalId } from '../utils/validators';
 import type {
   AppState,
@@ -9,6 +10,7 @@ import type {
   AutomationPolicy,
   AutomationRunLog,
   Branch,
+  CallLogEntry,
   CommissionLedgerEntry,
   CommissionRuleConfig,
   CommissionTier,
@@ -69,9 +71,11 @@ import type {
   UtmTouch,
   WaitlistEntry,
   WarrantyRecord,
+  WebhookEndpoint,
   WebhookLogEntry,
   WorkflowDefinition,
   WorkflowInstance,
+  IntegrationsConfig,
 } from '../types';
 
 dayjs.extend(jalaliday);
@@ -2839,6 +2843,96 @@ export const initialAuditLogs: AuditLogEntry[] = [
   },
 ];
 
+export const initialCallLogs: CallLogEntry[] = [
+  {
+    id: 'call1',
+    direction: 'inbound',
+    customerId: 'c1',
+    customerName: 'مریم صالحی',
+    phone: '09121110001',
+    agentName: 'سارا (پذیرش)',
+    extension: '101',
+    providerDriver: 'simotel',
+    status: 'answered',
+    outcome: 'interested',
+    durationSec: 185,
+    recordingAvailable: true,
+    recordingDurationSec: 185,
+    notes: 'تماس ورودی بابت استعلام نوبت و قیمت پکیج فیشیال تخصصی.',
+    startedAt: iso(-5),
+  },
+  {
+    id: 'call2',
+    direction: 'outbound',
+    customerId: 'c4',
+    customerName: 'کلینیک تخصصی مهر (شرکتی)',
+    phone: '09351110004',
+    agentName: 'مریم (فروش)',
+    extension: '102',
+    providerDriver: 'simotel',
+    status: 'answered',
+    outcome: 'follow_up',
+    durationSec: 312,
+    recordingAvailable: true,
+    recordingDurationSec: 312,
+    notes: 'پیگیری پیش‌فاکتور قرارداد سالانه و هماهنگی ارسال نمونه.',
+    startedAt: iso(-18),
+  },
+  {
+    id: 'call3',
+    direction: 'inbound',
+    customerId: 'c2',
+    customerName: 'نازنین رضایی',
+    phone: '09131110002',
+    agentName: 'سارا (پذیرش)',
+    extension: '101',
+    providerDriver: 'simotel',
+    status: 'missed',
+    outcome: 'no_answer',
+    durationSec: 0,
+    recordingAvailable: false,
+    notes: 'تماس از دست‌رفته در صف انتظار — نیازمند تماس مجدد.',
+    startedAt: iso(-2),
+  },
+];
+
+export const initialWebhookEndpoints: WebhookEndpoint[] = [
+  {
+    id: 'whe1',
+    name: 'اطلاع‌رسانی سفارش به انبار و ووکامرس',
+    url: 'https://hooks.example.ir/woocommerce/order-sync',
+    secret: 'whsec_cf_live_98a42f1e0d7b',
+    events: ['order.created', 'order.shipped', 'invoice.paid'],
+    active: true,
+    lastTriggeredAt: iso(-6),
+    lastSignature: 'sha256=4a9f0c8b21d3e5f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1',
+    createdAt: iso(-120),
+  },
+  {
+    id: 'whe2',
+    name: 'همگام‌سازی سرنخ‌های فرم وردپرس',
+    url: 'https://wp.example.ir/wp-json/clientflow/v1/webhook',
+    secret: 'whsec_wp_form_71c92a4d',
+    events: ['lead.created', 'ticket.created'],
+    active: true,
+    createdAt: iso(-90),
+  },
+];
+
+export const initialIntegrationsConfig: IntegrationsConfig = {
+  smsDriver: 'kavenegar',
+  smsSenderLine: '10008663',
+  smsApiKeyMasked: 'KVN-••••-••••-74F9',
+  smsCreditToman: 4850000,
+  chatDriver: 'eitaa',
+  chatBotName: '@ClientFlowClinicBot',
+  telephonyDriver: 'simotel',
+  telephonyExtension: '101',
+  telephonyServerUrl: 'https://pbx.local.clientflow.ir/api/v4',
+  accountingPreset: 'sepidar',
+  accountingMappings: getDefaultAccountingMapping('sepidar'),
+};
+
 export const createInitialState = (): AppState => ({
   customers,
   customerRelations,
@@ -2905,6 +2999,9 @@ export const createInitialState = (): AppState => ({
   automationTickCount: 1,
   outbox: initialOutbox,
   automationLogs: initialAutomationLogs,
+  callLogs: initialCallLogs,
+  webhookEndpoints: initialWebhookEndpoints,
+  integrationsConfig: initialIntegrationsConfig,
   npsSurveys: initialNpsSurveys,
   scheduledReports,
   branches,

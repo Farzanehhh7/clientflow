@@ -76,6 +76,7 @@ const DICT = {
       custom_entities: 'موجودیت‌های سفارشی',
       reports: 'گزارش‌ها و تحلیل',
       automation: 'اتوماسیون و اعلان',
+      integrations: 'یکپارچه‌سازی و VoIP',
       settings: 'تنظیمات و پک‌ها',
     },
     dash: {
@@ -124,6 +125,7 @@ const DICT = {
       custom_entities: 'Custom Entities',
       reports: 'Reports & BI',
       automation: 'Automation',
+      integrations: 'Integrations & VoIP',
       settings: 'Settings & Packs',
     },
     dash: {

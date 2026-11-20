@@ -5,6 +5,7 @@ import {
   Mail,
   Pencil,
   Phone,
+  PhoneOutgoing,
   ShieldAlert,
   UserCheck,
 } from 'lucide-react';
@@ -45,7 +46,7 @@ export function Customer360Page({
   onEdit,
   onSelectCustomer,
 }: Customer360PageProps) {
-  const { state, anonymizeCustomer } = useClientFlow();
+  const { state, anonymizeCustomer, startOutboundCall } = useClientFlow();
   const [activeTab, setActiveTab] = useState<Customer360TabKey>('overview');
   const [confirmAnon, setConfirmAnon] = useState(false);
 
@@ -146,6 +147,14 @@ export function Customer360Page({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => startOutboundCall(customer.phone, customer.id)}
+            >
+              <PhoneOutgoing size={14} className="text-emerald-600" />
+              تماس VoIP (Click-to-Call)
+            </Button>
             <Button variant="secondary" size="sm" onClick={() => onEdit(customer)}>
               <Pencil size={14} />
               ویرایش پروفایل

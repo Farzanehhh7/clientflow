@@ -14,6 +14,7 @@ import {
   Megaphone,
   Menu,
   Moon,
+  Plug,
   Search,
   Settings,
   ShoppingBag,
@@ -25,6 +26,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { CommandPaletteModal } from './components/CommandPaletteModal';
+import { IncomingCallPopup } from './components/integrations/IncomingCallPopup';
 import { NpsSurveyModal } from './components/NpsSurveyModal';
 import { OnboardingTour } from './components/OnboardingTour';
 import { AppointmentsPage } from './pages/AppointmentsPage';
@@ -33,6 +35,7 @@ import { CustomerPortalPage } from './pages/CustomerPortalPage';
 import { CustomEntitiesPage } from './pages/CustomEntitiesPage';
 import { CustomersPage } from './pages/CustomersPage';
 import { DashboardPage, type NavPageKey } from './pages/DashboardPage';
+import { IntegrationsPage } from './pages/IntegrationsPage';
 import { MarketingPage } from './pages/MarketingPage';
 import { NpsPage } from './pages/NpsPage';
 import { OrdersPage } from './pages/OrdersPage';
@@ -77,6 +80,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'custom_entities', icon: Database },
   { key: 'reports', icon: BarChart3, soloVisible: true },
   { key: 'automation', icon: Zap, adminOnly: true },
+  { key: 'integrations', icon: Plug, soloVisible: true },
   { key: 'settings', icon: Settings, adminOnly: true, soloVisible: true },
 ];
 
@@ -187,6 +191,8 @@ function AppShell() {
         return <ReportsPage />;
       case 'automation':
         return isAdmin ? <AutomationPage /> : <DashboardPage onNavigate={setPage} />;
+      case 'integrations':
+        return <IntegrationsPage />;
       case 'settings':
         return isAdmin ? (
           <SettingsPage onStartTour={() => setTourOpen(true)} />
@@ -450,6 +456,7 @@ function AppShell() {
         pages={visibleNav.map((n) => ({ key: n.key, label: n.label }))}
       />
       <NpsSurveyModal />
+      <IncomingCallPopup />
     </div>
   );
 }

@@ -25,7 +25,13 @@ export function PaymentGatewayModal({ invoice, onClose }: PaymentGatewayModalPro
   const [expYear, setExpYear] = useState('06');
   const [cvv2, setCvv2] = useState('482');
   const [otp, setOtp] = useState('');
-  const [result, setResult] = useState<{ ok: boolean; refId?: string; errorMessage?: string } | null>(null);
+  const [result, setResult] = useState<{
+    ok: boolean;
+    refId?: string;
+    authority?: string;
+    errorMessage?: string;
+    adapterSteps?: { step: string; detail: string; at: string }[];
+  } | null>(null);
 
   useEffect(() => {
     if (invoice) {
@@ -106,6 +112,11 @@ export function PaymentGatewayModal({ invoice, onClose }: PaymentGatewayModalPro
                 </div>
                 <div className="mt-1 text-xs tabular-nums text-slate-500">
                   شماره کارت: <span dir="ltr">{cardMasked}</span>
+                  {result.authority && (
+                    <span className="mr-2 font-mono text-[11px]" dir="ltr">
+                      · Authority: {result.authority}
+                    </span>
+                  )}
                 </div>
               </>
             ) : (
@@ -114,6 +125,15 @@ export function PaymentGatewayModal({ invoice, onClose }: PaymentGatewayModalPro
                 <h3 className="mt-2 text-sm font-bold text-rose-800 dark:text-rose-200">تراکنش ناموفق بود</h3>
                 <p className="mt-1 text-xs text-rose-700 dark:text-rose-300">{result.errorMessage}</p>
               </>
+            )}
+            {result.adapterSteps && result.adapterSteps.length > 0 && (
+              <div className="mt-3 space-y-1 rounded-lg border border-slate-200 bg-white/80 p-2.5 text-left font-mono text-[10px] text-slate-600 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-300" dir="ltr">
+                {result.adapterSteps.map((s, idx) => (
+                  <div key={idx} className="truncate">
+                    {s.step}: {s.detail}
+                  </div>
+                ))}
+              </div>
             )}
             <div className="mt-4 flex justify-center gap-2">
               {!result.ok && (
