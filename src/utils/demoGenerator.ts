@@ -25,6 +25,24 @@ const SOURCES = ['اینستاگرام', 'گوگل', 'معرفی مشتری', '�
 const TAG_POOL = ['VIP', 'پیگیری فوری', 'مشتری وفادار', 'خرید سازمانی', 'باشگاه مشتریان'];
 const LIFECYCLES: Customer['lifecycle'][] = ['lead', 'active', 'vip', 'churned'];
 
+function getDemoPackCustomFields(pack: IndustryPack, i: number): Record<string, string> {
+  const map: Partial<Record<IndustryPack, Record<string, string>>> = {
+    clinic: { skin_type: i % 2 === 0 ? 'مختلط' : 'خشک' },
+    shop: { shipping_pref: i % 2 === 0 ? 'تیپاکس' : 'پست پیشتاز' },
+    restaurant: { diet_pref: i % 2 === 0 ? 'معمولی' : 'گیاهخوار', favorite_table: i % 2 === 0 ? 'تراس' : 'سالن VIP' },
+    car_service: { car_model: i % 2 === 0 ? 'پژو ۲۰۷ اتومات' : 'دنا پلاس', plate_no: `12ب${100 + (i % 899)}-ایران11` },
+    law_accounting: { case_category: i % 2 === 0 ? 'مالیاتی و حسابرسی' : 'حقوقی و ملکی' },
+    travel_agency: { preferred_dest: i % 2 === 0 ? 'ترکیه و دبی' : 'تورهای داخلی و کیش' },
+    pharmacy: { chronic_need: i % 2 === 0 ? 'مراقبت پوست و مو' : 'مکمل ورزشی' },
+    wholesale: { retail_zone: i % 2 === 0 ? 'شمال تهران' : 'غرب و کرج', store_grade: 'گرید B (سوپرمارکت)' },
+    realestate: { preferred_zone: i % 2 === 0 ? 'سعادت‌آباد' : 'پونک', property_area: String(90 + (i % 4) * 25) },
+    gym: { membership_plan: i % 2 === 0 ? 'سه ماهه + کمد VIP' : 'پکیج مربی اختصاصی', fitness_goal: 'آمادگی جسمانی' },
+    school: { grade_level: i % 2 === 0 ? 'پیش‌دبستانی' : 'دبستان دوره اول' },
+    hotel: { room_preference: i % 2 === 0 ? 'دوتخته دبل' : 'سوئیت VIP' },
+  };
+  return map[pack] ?? {};
+}
+
 export type GeneratedScaleDataset = {
   customers: Customer[];
   orders: Order[];
@@ -68,22 +86,16 @@ export function generateScaleDataset(
       email: i % 3 === 0 ? `user${i}@example.ir` : undefined,
       nationalId: i % 4 === 0 ? `001${String(1000000 + (i % 8999999)).slice(0, 7)}` : undefined,
       lifecycle: LIFECYCLES[i % LIFECYCLES.length],
-      score: 40 + ((i * 13) % 60),
       source: SOURCES[i % SOURCES.length],
       ownerName: safeOwners[i % safeOwners.length],
       branchId: safeBranches[i % safeBranches.length],
       tags: i % 2 === 0 ? [TAG_POOL[i % TAG_POOL.length]] : [],
-      smsOptOut: i % 15 === 0,
-      emailOptOut: i % 20 === 0,
+      consentSms: i % 15 !== 0,
+      consentEmail: i % 20 !== 0,
       loyaltyPoints: (i * 45) % 900,
       lifetimePoints: 200 + ((i * 95) % 2500),
       referralCode: `REF-${1000 + (i % 8999)}`,
-      customFields:
-        pack === 'clinic'
-          ? { skin_type: i % 2 === 0 ? 'مختلط' : 'خشک' }
-          : pack === 'shop'
-            ? { shipping_pref: i % 2 === 0 ? 'تیپاکس' : 'پست پیشتاز' }
-            : {},
+      customFields: getDemoPackCustomFields(pack, i),
       createdAt,
       isDeleted: false,
     };
@@ -150,7 +162,7 @@ export function generateScaleDataset(
         resourceId: resourceIds[i % Math.max(1, resourceIds.length)] ?? 'r1',
         start: new Date(startMs).toISOString(),
         end: new Date(startMs + 30 * 60_000).toISOString(),
-        status: (['scheduled', 'confirmed', 'completed'] as const)[i % 3],
+        status: (['booked', 'confirmed', 'done'] as const)[i % 3],
         branchId: cust.branchId,
         isDeleted: false,
       });
@@ -160,7 +172,7 @@ export function generateScaleDataset(
         name: cust.name,
         phone: cust.phone,
         source: cust.source ?? 'وب‌سایت',
-        score: cust.score ?? 65,
+        score: 40 + ((i * 13) % 60),
         estimatedAmount: 2500000 + (i % 8) * 1200000,
         ownerName: cust.ownerName ?? safeOwners[0],
         status: (['new', 'qualified'] as const)[i % 2],

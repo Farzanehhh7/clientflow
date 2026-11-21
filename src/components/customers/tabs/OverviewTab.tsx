@@ -5,6 +5,7 @@ import type { Customer, CustomerAddress, CustomerContact } from '../../../types'
 import type { CustomerComputedStats } from '../../../utils/crmHelpers';
 import { formatCustomFieldValue } from '../../../utils/customFieldValidation';
 import { formatToman, toFa } from '../../../utils/jalali';
+import { maskNationalId, maskPhone, shouldMaskPii } from '../../../utils/security';
 import { addressSchema, contactSchema, normalizeIranMobile } from '../../../utils/validators';
 import { Button, Input } from '../../ui';
 import { OverviewRelationsConsent } from './OverviewRelationsConsent';
@@ -17,6 +18,7 @@ interface OverviewTabProps {
 
 export function OverviewTab({ customer, stats, onSelectCustomer }: OverviewTabProps) {
   const { state, updateCustomer } = useClientFlow();
+  const piiMasked = shouldMaskPii(state);
 
   const [cName, setCName] = useState('');
   const [cRole, setCRole] = useState('');
@@ -107,7 +109,7 @@ export function OverviewTab({ customer, stats, onSelectCustomer }: OverviewTabPr
           <div>
             <span className="text-slate-400">کد ملی / اقتصادی:</span>{' '}
             <span className="font-medium tabular-nums" dir="ltr">
-              {toFa(customer.nationalId || customer.economicCode || '—')}
+              {maskNationalId(customer.nationalId || customer.economicCode, piiMasked)}
             </span>
           </div>
           <div>
@@ -151,7 +153,7 @@ export function OverviewTab({ customer, stats, onSelectCustomer }: OverviewTabPr
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="tabular-nums text-slate-600 dark:text-slate-300" dir="ltr">
-                    {toFa(ct.phone)}
+                    {maskPhone(ct.phone, piiMasked)}
                   </span>
                   <button
                     type="button"

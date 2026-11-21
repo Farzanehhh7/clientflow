@@ -71,7 +71,7 @@ export function SetupWizardModal({ open, onClose }: SetupWizardModalProps) {
   };
 
   return (
-    <Modal open={open} onClose={onClose} title="ویزارد راه‌اندازی سریع کسب‌وکار (۱۰ پک صنعتی)" maxWidth="xl">
+    <Modal open={open} onClose={onClose} title={`ویزارد راه‌اندازی سریع کسب‌وکار (${toFa(INDUSTRY_PACKS.length)} پک صنعتی)`} maxWidth="xl">
       <div className="space-y-5">
         <div className="flex items-center justify-between border-b border-slate-200 pb-3 text-xs dark:border-slate-800">
           {(

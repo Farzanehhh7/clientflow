@@ -9,13 +9,13 @@ import type {
   CustomerSavedViewFilter,
 } from '../types';
 import {
-  computeCustomerStats,
+  computeAllCustomerStatsMap,
   daysUntilJalaliMonthDay,
   evaluateSegment,
-  type CustomerComputedStats,
 } from '../utils/crmHelpers';
 import { exportCustomersToCsv, exportCustomersToXlsx } from '../utils/csv';
 import { fuzzyMatchPersian } from '../utils/persianSearch';
+import { filterByUserScope } from '../utils/security';
 
 export const DEFAULT_CUSTOMER_FILTERS: CustomerSavedViewFilter = {
   query: '',
@@ -52,18 +52,18 @@ export function useCustomerCore() {
 
   const branchCustomers = useMemo(() => {
     const all = repository.list(false);
-    const activeBranch = state.settings.activeBranchId;
-    if (!activeBranch || activeBranch === 'all') return all;
-    return all.filter((c) => !c.branchId || c.branchId === activeBranch);
-  }, [repository, state.settings.activeBranchId]);
+    return filterByUserScope(
+      all,
+      state,
+      (c) => c.ownerName,
+      (c) => c.branchId,
+    );
+  }, [repository, state]);
 
-  const statsMap = useMemo(() => {
-    const map = new Map<string, CustomerComputedStats>();
-    for (const c of branchCustomers) {
-      map.set(c.id, computeCustomerStats(c, state));
-    }
-    return map;
-  }, [branchCustomers, state]);
+  const statsMap = useMemo(
+    () => computeAllCustomerStatsMap(branchCustomers, state),
+    [branchCustomers, state],
+  );
 
   const dynamicTags = useMemo(() => {
     const set = new Set<string>();
@@ -199,6 +199,24 @@ export function useCustomerCore() {
     });
   }, [filters, saveCustomerView, userKey]);
 
+  const applyFilterJson = useCallback((next: CustomerSavedViewFilter) => {
+    setActiveViewId('');
+    setFilters({ ...DEFAULT_CUSTOMER_FILTERS, ...next });
+  }, []);
+
+  const saveFilterViewDirect = useCallback(
+    (name: string, filter: CustomerSavedViewFilter) => {
+      const trimmed = name.trim();
+      if (!trimmed) return;
+      saveCustomerView({
+        name: trimmed,
+        userKey,
+        filters: { ...DEFAULT_CUSTOMER_FILTERS, ...filter },
+      });
+    },
+    [saveCustomerView, userKey],
+  );
+
   const handleDeleteSavedView = useCallback((id: string) => {
     if (activeViewId === id) setActiveViewId('');
     deleteCustomerView(id);
@@ -247,6 +265,8 @@ export function useCustomerCore() {
     resetFilters,
     applySavedView,
     handleSaveCurrentView,
+    applyFilterJson,
+    saveFilterViewDirect,
     handleDeleteSavedView,
     exportFilteredCsv,
     exportFilteredXlsx,

@@ -5,11 +5,13 @@ import {
   Edit3,
   Plus,
   ShieldAlert,
+  Sparkles,
   TrendingUp,
   Trophy,
 } from 'lucide-react';
 import { Modal } from '../Modal';
 import { JalaliDatePicker } from '../ui/JalaliDatePicker';
+import { generateContentCalendarIdeas, type AiContentIdea } from '../../services/aiService';
 import { useClientFlow } from '../../store/useClientFlowStore';
 import type { ContentItem, ContentStatus } from '../../types';
 import {
@@ -42,7 +44,7 @@ const FORMAT_LABEL: Record<ContentItem['format'], string> = {
 };
 
 export function ContentCalendarTab() {
-  const { state, addContentItem, updateContentStatus, updateContentItem } = useClientFlow();
+  const { state, addContentItem, updateContentStatus, updateContentItem, logAiUsage } = useClientFlow();
 
   const [createOpen, setCreateOpen] = useState(false);
   const [title, setTitle] = useState('');
@@ -70,6 +72,14 @@ export function ContentCalendarTab() {
   const [topMetricSort, setTopMetricSort] = useState<'engagement' | 'reach' | 'leads'>(
     'engagement',
   );
+
+  // AI Content Idea Generator
+  const [aiIdeasOpen, setAiIdeasOpen] = useState(false);
+  const [aiTopic, setAiTopic] = useState('معرفی خدمات ویژه و تجربه مشتریان');
+  const [aiIdeasLoading, setAiIdeasLoading] = useState(false);
+  const [aiIdeas, setAiIdeas] = useState<AiContentIdea[]>([]);
+  const [aiIdeasMeta, setAiIdeasMeta] = useState('');
+  const [aiIdeasError, setAiIdeasError] = useState('');
 
   const openEditModal = (item: ContentItem) => {
     setEditing(item);
@@ -146,14 +156,26 @@ export function ContentCalendarTab() {
             مدیریت تولید محتوای اینستاگرام، وب‌سایت و بلاگ به همراه ثبت رضایت‌نامه انتشار و شاخص‌های نتیجه
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => setCreateOpen(true)}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 py-2 text-xs font-medium text-white hover:bg-indigo-700"
-        >
-          <Plus size={15} />
-          ایده / محتوای جدید
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {state.settings.ai?.enabled !== false && (
+            <button
+              type="button"
+              onClick={() => setAiIdeasOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-3.5 py-2 text-xs font-medium text-indigo-700 hover:bg-indigo-100 dark:border-indigo-900/50 dark:bg-indigo-950/40 dark:text-indigo-300"
+            >
+              <Sparkles size={15} />
+              ایده‌پرداز هوشمند تقویم محتوا (AI)
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => setCreateOpen(true)}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 py-2 text-xs font-medium text-white hover:bg-indigo-700"
+          >
+            <Plus size={15} />
+            ایده / محتوای جدید
+          </button>
+        </div>
       </div>
 
       {/* 5-Stage Content Kanban */}
@@ -612,6 +634,108 @@ export function ContentCalendarTab() {
             </button>
           </div>
         </form>
+      </Modal>
+
+      {/* AI Content Idea Generator Modal */}
+      <Modal
+        open={aiIdeasOpen}
+        onClose={() => setAiIdeasOpen(false)}
+        title="ایده‌پرداز هوشمند تقویم محتوا (AI)"
+        maxWidth="xl"
+      >
+        <div className="space-y-4 text-xs">
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              value={aiTopic}
+              onChange={(e) => setAiTopic(e.target.value)}
+              placeholder="موضوع یا کمپین فصل (مثلاً مراقبت پوست تابستان، معرفی سرویس جدید)..."
+              className="min-w-[220px] flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs dark:border-slate-700 dark:bg-slate-800"
+            />
+            <button
+              type="button"
+              disabled={aiIdeasLoading || !aiTopic.trim()}
+              onClick={async () => {
+                setAiIdeasLoading(true);
+                setAiIdeasError('');
+                const res = await generateContentCalendarIdeas(
+                  state,
+                  { topic: aiTopic, count: 4 },
+                  logAiUsage,
+                );
+                setAiIdeasLoading(false);
+                if (!res.ok) {
+                  setAiIdeasError(res.error);
+                  return;
+                }
+                setAiIdeas(res.data);
+                setAiIdeasMeta(
+                  `تولیدشده با هوش مصنوعی (AI-generated · ${res.meta.mode === 'gemini' ? 'Gemini' : 'Fallback'})`,
+                );
+              }}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-2 font-medium text-white hover:bg-indigo-700 disabled:opacity-40"
+            >
+              <Sparkles size={13} />
+              {aiIdeasLoading ? 'در حال ایده‌پردازی...' : 'تولید ۴ ایده محتوا'}
+            </button>
+          </div>
+
+          {aiIdeasError && (
+            <div className="rounded-lg border border-rose-200 bg-rose-50 p-2.5 text-rose-700 dark:border-rose-900/50 dark:bg-rose-950/30 dark:text-rose-300">
+              {aiIdeasError}
+            </div>
+          )}
+
+          {aiIdeasMeta && (
+            <div className="text-[11px] font-semibold text-indigo-600 dark:text-indigo-400">
+              {aiIdeasMeta}
+            </div>
+          )}
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            {aiIdeas.map((idea, idx) => (
+              <div
+                key={idx}
+                className="flex flex-col justify-between rounded-xl border border-slate-200 bg-slate-50/70 p-3 dark:border-slate-800 dark:bg-slate-800/40"
+              >
+                <div className="space-y-1.5">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-medium text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300">
+                      {PLATFORM_LABEL[idea.platform]}
+                    </span>
+                    <span className="rounded bg-white px-1.5 py-0.5 text-[10px] text-slate-600 dark:bg-slate-900 dark:text-slate-300">
+                      {FORMAT_LABEL[idea.format]}
+                    </span>
+                  </div>
+                  <div className="font-bold text-slate-900 dark:text-white">{idea.title}</div>
+                  <div className="text-[11px] text-indigo-600 dark:text-indigo-400">
+                    قلاب (Hook): {idea.hook}
+                  </div>
+                  <p className="text-[11px] leading-relaxed text-slate-600 dark:text-slate-300">
+                    {idea.captionOutline}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    addContentItem({
+                      title: idea.title,
+                      platform: idea.platform,
+                      format: idea.format,
+                      status: 'idea',
+                      scheduledAt: jalaliToIsoUtc(getTodayJalaliAscii()) ?? new Date().toISOString(),
+                      assignee: assignee.trim() || 'تیم محتوا',
+                      caption: `${idea.hook}\n\n${idea.captionOutline}`,
+                      hasBeforeAfterConsent: false,
+                    });
+                  }}
+                  className="mt-3 w-full rounded-lg border border-indigo-200 bg-white py-1.5 font-medium text-indigo-700 hover:bg-indigo-50 dark:border-indigo-800 dark:bg-slate-900 dark:text-indigo-300"
+                >
+                  + افزودن به تقویم (ستون ایده)
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
       </Modal>
     </div>
   );

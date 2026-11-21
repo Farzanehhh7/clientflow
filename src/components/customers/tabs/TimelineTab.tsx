@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
-import { CalendarDays, LifeBuoy, MessageSquare, Receipt, ShieldCheck, ShoppingBag, Star } from 'lucide-react';
+import { CalendarDays, LifeBuoy, MessageSquare, Receipt, ShieldCheck, ShoppingBag, Sparkles, Star } from 'lucide-react';
+import { summarizeCustomerTimeline, type CustomerTimelineSummary } from '../../../services/aiService';
 import { useClientFlow } from '../../../store/useClientFlowStore';
 import type { Customer, Interaction, InteractionOutcome } from '../../../types';
 import {
@@ -41,7 +42,7 @@ interface TimelineEntry {
 }
 
 export function TimelineTab({ customer }: { customer: Customer }) {
-  const { state, addInteraction } = useClientFlow();
+  const { state, addInteraction, logAiUsage } = useClientFlow();
   const [filterKind, setFilterKind] = useState<'all' | TimelineKind>('all');
   const [channel, setChannel] = useState<Interaction['channel']>('call');
   const [outcome, setOutcome] = useState<InteractionOutcome>('answered');
@@ -49,6 +50,25 @@ export function TimelineTab({ customer }: { customer: Customer }) {
   const [createTask, setCreateTask] = useState(true);
   const [text, setText] = useState('');
   const [error, setError] = useState('');
+
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState('');
+  const [aiSummary, setAiSummary] = useState<{
+    data: CustomerTimelineSummary;
+    mode: 'gemini' | 'fallback';
+  } | null>(null);
+
+  const handleSummarizeTimeline = async () => {
+    setAiError('');
+    setAiLoading(true);
+    const res = await summarizeCustomerTimeline(state, customer, logAiUsage);
+    setAiLoading(false);
+    if (!res.ok) {
+      setAiError(res.error);
+      return;
+    }
+    setAiSummary({ data: res.data, mode: res.meta.mode });
+  };
 
   const items = useMemo<TimelineEntry[]>(() => {
     const list: TimelineEntry[] = [];
@@ -196,6 +216,62 @@ export function TimelineTab({ customer }: { customer: Customer }) {
 
   return (
     <div className="space-y-4">
+      {/* AI Customer Timeline Summary */}
+      {state.settings.ai?.enabled !== false && (
+        <div className="rounded-xl border border-indigo-200/80 bg-indigo-50/40 p-4 text-xs dark:border-indigo-900/50 dark:bg-indigo-950/20">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5 font-semibold text-indigo-800 dark:text-indigo-200">
+              <Sparkles size={15} className="text-indigo-600 dark:text-indigo-400" />
+              <span>خلاصه هوشمند تایم‌لاین و اقدام پیشنهادی بعدی</span>
+            </div>
+            <Button type="button" size="sm" variant="secondary" disabled={aiLoading} onClick={() => void handleSummarizeTimeline()}>
+              <Sparkles size={13} />
+              {aiLoading ? 'در حال تحلیل...' : aiSummary ? 'به‌روزرسانی خلاصه AI' : 'خلاصه‌سازی تایم‌لاین با AI'}
+            </Button>
+          </div>
+          {aiError && (
+            <p className="mt-2 text-rose-600 dark:text-rose-400">{aiError}</p>
+          )}
+          {aiSummary && (
+            <div className="mt-3 space-y-2 rounded-lg border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <Badge tone="indigo">تولیدشده با هوش مصنوعی (AI-generated · {aiSummary.mode === 'gemini' ? 'Gemini' : 'Fallback'})</Badge>
+                  <Badge
+                    tone={
+                      aiSummary.data.sentiment === 'مثبت'
+                        ? 'emerald'
+                        : aiSummary.data.sentiment === 'نیازمند توجه'
+                          ? 'rose'
+                          : 'neutral'
+                    }
+                  >
+                    حس و رضایت: {aiSummary.data.sentiment}
+                  </Badge>
+                </div>
+              </div>
+              <ul className="list-disc space-y-1 pr-4 text-slate-700 dark:text-slate-200">
+                {aiSummary.data.summaryBullets.map((b, idx) => (
+                  <li key={idx}>{b}</li>
+                ))}
+              </ul>
+              {aiSummary.data.riskFlags.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 pt-1">
+                  {aiSummary.data.riskFlags.map((rf, idx) => (
+                    <Badge key={idx} tone="amber">
+                      ریسک: {rf}
+                    </Badge>
+                  ))}
+                </div>
+              )}
+              <div className="rounded-md bg-emerald-50/70 px-2.5 py-1.5 font-medium text-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300">
+                اقدام پیشنهادی بعدی: {aiSummary.data.nextBestAction}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Log new interaction with outcome & follow-up */}
       <form
         onSubmit={handleSubmit}

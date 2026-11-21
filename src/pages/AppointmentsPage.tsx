@@ -36,6 +36,7 @@ import {
   toFa,
 } from '../utils/jalali';
 import { isHolidayOrTimeOff } from '../utils/overlap';
+import { hasPermission } from '../utils/security';
 
 const STATUS_META: Record<AppointmentStatus, { label: string; colorClass: string }> = {
   booked: { label: 'رزرو شده', colorClass: 'text-indigo-600 dark:text-indigo-400' },
@@ -71,8 +72,10 @@ export function AppointmentsPage() {
     bookFromWaitlist,
     simulateSmsConfirmReply,
     sendAppointmentReminder,
+    softDeleteEntity,
     pushToast,
   } = useClientFlow();
+  const canDeleteAppointment = hasPermission(state, 'appointments', 'delete');
 
   const [viewMode, setViewMode] = useState<'week' | 'month' | 'day'>('week');
   const [weekOffset, setWeekOffset] = useState(0);
@@ -137,8 +140,9 @@ export function AppointmentsPage() {
   const notifiedCount = state.waitlist.filter((w) => w.status === 'notified').length;
 
   const noShowStats = useMemo(() => {
-    const pastOrSettled = state.appointments.filter((a) => a.status !== 'cancelled');
-    const noShowApts = state.appointments.filter((a) => a.status === 'noshow');
+    const activeApts = state.appointments.filter((a) => !a.isDeleted);
+    const pastOrSettled = activeApts.filter((a) => a.status !== 'cancelled');
+    const noShowApts = activeApts.filter((a) => a.status === 'noshow');
     const byCustomer = new Map<string, number>();
     for (const a of noShowApts) {
       byCustomer.set(a.customerId, (byCustomer.get(a.customerId) ?? 0) + 1);
@@ -371,6 +375,17 @@ export function AppointmentsPage() {
               className="rounded border border-slate-200 bg-white p-1 text-slate-500 hover:text-amber-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
             >
               <Bell size={13} />
+            </button>
+          )}
+          {canDeleteAppointment && (
+            <button
+              type="button"
+              onClick={() => softDeleteEntity('appointment', apt.id)}
+              title="انتقال به سطل بازیافت"
+              aria-label={`حذف نوبت ${cust?.name ?? apt.id}`}
+              className="rounded border border-slate-200 bg-white p-1 text-slate-400 hover:border-rose-200 hover:text-rose-600 dark:border-slate-700 dark:bg-slate-900 dark:hover:border-rose-900 dark:hover:text-rose-400"
+            >
+              <Trash2 size={13} />
             </button>
           )}
         </div>
@@ -612,6 +627,7 @@ export function AppointmentsPage() {
             const dayAppointments = state.appointments
               .filter(
                 (a) =>
+                  !a.isDeleted &&
                   dayjs(a.start).format('YYYY-MM-DD') === day.dateKey &&
                   (resourceFilter === 'all' || a.resourceId === resourceFilter),
               )
@@ -705,6 +721,7 @@ export function AppointmentsPage() {
             {monthGrid.cells.map((cell) => {
               const dayApts = state.appointments.filter(
                 (a) =>
+                  !a.isDeleted &&
                   dayjs(a.start).format('YYYY-MM-DD') === cell.dateKey &&
                   a.status !== 'cancelled' &&
                   (resourceFilter === 'all' || a.resourceId === resourceFilter),
@@ -787,7 +804,7 @@ export function AppointmentsPage() {
         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
           {state.resources.map((res) => {
             const list = state.appointments
-              .filter((a) => dayjs(a.start).format('YYYY-MM-DD') === activeDayKey && a.resourceId === res.id)
+              .filter((a) => !a.isDeleted && dayjs(a.start).format('YYYY-MM-DD') === activeDayKey && a.resourceId === res.id)
               .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
 
             const blocked = isHolidayOrTimeOff(

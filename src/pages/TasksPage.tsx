@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import dayjs from 'dayjs';
-import { FolderKanban, ListChecks, Plus } from 'lucide-react';
+import { FolderKanban, ListChecks, Plus, Trash2 } from 'lucide-react';
 import { Modal } from '../components/Modal';
 import { JalaliDatePicker } from '../components/ui/JalaliDatePicker';
 import { useClientFlow } from '../store/useClientFlowStore';
@@ -20,7 +20,7 @@ const PRIORITY_META: Record<'low' | 'medium' | 'high', { label: string; cls: str
 };
 
 export function TasksPage() {
-  const { state, toggleTaskDone, addTask, addTaskSubtask, toggleTaskSubtask } = useClientFlow();
+  const { state, toggleTaskDone, addTask, addTaskSubtask, toggleTaskSubtask, softDeleteEntity } = useClientFlow();
   const [filter, setFilter] = useState<'today_overdue' | 'all' | 'done'>('today_overdue');
   const [createOpen, setCreateOpen] = useState(false);
 
@@ -39,11 +39,12 @@ export function TasksPage() {
   const nowMs = Date.now();
 
   const { overdueTasks, todayTasks, doneTasks, allOpenTasks } = useMemo(() => {
-    const overdue = state.tasks
+    const activeTasks = state.tasks.filter((t) => !t.isDeleted);
+    const overdue = activeTasks
       .filter((t) => !t.done && new Date(t.dueAt).getTime() < nowMs)
       .sort((a, b) => new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime());
 
-    const today = state.tasks
+    const today = activeTasks
       .filter(
         (t) =>
           !t.done &&
@@ -52,8 +53,8 @@ export function TasksPage() {
       )
       .sort((a, b) => new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime());
 
-    const done = state.tasks.filter((t) => t.done);
-    const allOpen = state.tasks
+    const done = activeTasks.filter((t) => t.done);
+    const allOpen = activeTasks
       .filter((t) => !t.done)
       .sort((a, b) => new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime());
 
@@ -143,15 +144,26 @@ export function TasksPage() {
                   </div>
                 </label>
 
-                <button
-                  type="button"
-                  onClick={() => setExpandedTaskId((prev) => (prev === task.id ? null : task.id))}
-                  title="مدیریت زیرتسک‌ها"
-                  className="inline-flex shrink-0 items-center gap-1 rounded border border-slate-200 px-2 py-1 text-[11px] text-slate-500 hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800"
-                >
-                  <ListChecks size={13} />
-                  زیرتسک ({toFa(subtasks.length)})
-                </button>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setExpandedTaskId((prev) => (prev === task.id ? null : task.id))}
+                    title="مدیریت زیرتسک‌ها"
+                    className="inline-flex shrink-0 items-center gap-1 rounded border border-slate-200 px-2 py-1 text-[11px] text-slate-500 hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800"
+                  >
+                    <ListChecks size={13} />
+                    زیرتسک ({toFa(subtasks.length)})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => softDeleteEntity('task', task.id)}
+                    title="انتقال به سطل بازیافت"
+                    aria-label={`حذف تسک ${task.title}`}
+                    className="rounded border border-slate-200 p-1 text-slate-400 hover:border-rose-200 hover:text-rose-600 dark:border-slate-700 dark:hover:border-rose-900 dark:hover:text-rose-400"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
               </div>
 
               {isExpanded && (

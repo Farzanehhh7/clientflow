@@ -1,6 +1,10 @@
 import { useState } from 'react';
 import {
+  Bell,
+  Bot,
   Building2,
+  CalendarOff,
+  Coins,
   Compass,
   Database,
   Download,
@@ -13,6 +17,7 @@ import {
   Plus,
   RotateCcw,
   Save,
+  ShieldCheck,
   Sparkles,
   Trash2,
   Upload,
@@ -20,18 +25,31 @@ import {
   WifiOff,
 } from 'lucide-react';
 import { FieldsAndFormsTab } from '../components/settings/FieldsAndFormsTab';
+import { IndustryPackDiffModal } from '../components/settings/IndustryPackDiffModal';
+import { SecurityComplianceTab } from '../components/settings/SecurityComplianceTab';
+import { TenantsBackupDataTab } from '../components/settings/TenantsBackupDataTab';
+import { TrashRestoreTab } from '../components/settings/TrashRestoreTab';
+import { UsersRolesTab } from '../components/settings/UsersRolesTab';
 import { SetupWizardModal } from '../components/SetupWizardModal';
+import { JalaliDatePicker } from '../components/ui/JalaliDatePicker';
 import { INDUSTRY_PACKS } from '../data/packs';
+import { getAiMissingKeyFriendlyNotice, isGeminiApiKeyConfigured } from '../services/aiService';
 import { useClientFlow } from '../store/useClientFlowStore';
 import type {
+  AiBrandTone,
+  BusinessProfileSettings,
+  CurrencyCode,
   EntityRelationType,
   IndustryPack,
+  NotificationPreferences,
   NumberingConfig,
   PackTemplate,
   UserRole,
 } from '../types';
+import { AI_BRAND_TONE_LABELS, DEFAULT_AI_CONFIG } from '../utils/aiGuardrails';
 import { formatDocumentNumber } from '../utils/i18n';
-import { formatJalaliDateTime, formatToman, toFa } from '../utils/jalali';
+import { formatJalaliDateTime, formatToman, getTodayJalaliAscii, jalaliToIsoUtc, toFa } from '../utils/jalali';
+import { computePackSwitchDiff } from '../utils/packDiff';
 import { PWAInstallButton, useOnlineStatus } from '../utils/usePWA';
 
 const WEEKDAY_OPTIONS: { dayIndex: number; label: string }[] = [
@@ -46,9 +64,17 @@ const WEEKDAY_OPTIONS: { dayIndex: number; label: string }[] = [
 
 interface SettingsPageProps {
   onStartTour?: () => void;
+  onTriggerLockScreen?: () => void;
+  onOpenAiCenter?: () => void;
+  onOpenPackManager?: () => void;
 }
 
-export function SettingsPage({ onStartTour }: SettingsPageProps) {
+export function SettingsPage({
+  onStartTour,
+  onTriggerLockScreen,
+  onOpenAiCenter,
+  onOpenPackManager,
+}: SettingsPageProps) {
   const {
     state,
     updateSettings,
@@ -65,6 +91,8 @@ export function SettingsPage({ onStartTour }: SettingsPageProps) {
     restoreConfigSnapshot,
     addService,
     addResource,
+    addOfficialHoliday,
+    removeOfficialHoliday,
     applyIndustryPack,
     saveCustomPack,
     importCustomPack,
@@ -73,8 +101,19 @@ export function SettingsPage({ onStartTour }: SettingsPageProps) {
     pushToast,
   } = useClientFlow();
 
-  const [tab, setTab] = useState<'general' | 'packs' | 'config' | 'entities' | 'audit'>('general');
+  const [tab, setTab] = useState<
+    | 'general'
+    | 'users'
+    | 'packs'
+    | 'config'
+    | 'tenants_data'
+    | 'security'
+    | 'trash'
+    | 'entities'
+    | 'audit'
+  >('general');
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [pendingPackKey, setPendingPackKey] = useState<IndustryPack | null>(null);
   const realOnline = useOnlineStatus();
 
   const [businessName, setBusinessName] = useState(state.settings.businessName);
@@ -82,6 +121,27 @@ export function SettingsPage({ onStartTour }: SettingsPageProps) {
   const [workEndHour, setWorkEndHour] = useState(state.settings.workEndHour);
   const [workDays, setWorkDays] = useState<number[]>(state.settings.workDays);
   const [commissionPct, setCommissionPct] = useState(String(state.settings.commissionPct));
+
+  // Business Profile, Tax, Currency, Units & Notifications
+  const [profile, setProfile] = useState<BusinessProfileSettings>(state.settings.profile ?? {});
+  const [taxRatePct, setTaxRatePct] = useState(String(state.settings.taxRatePct ?? 9));
+  const [currency, setCurrency] = useState<CurrencyCode>(state.settings.currency ?? 'toman');
+  const [defaultUnit, setDefaultUnit] = useState(state.settings.defaultUnit ?? 'عدد');
+  const [notifications, setNotifications] = useState<NotificationPreferences>(
+    state.settings.notifications ?? {
+      smsReminders: true,
+      emailDigest: true,
+      inAppToasts: true,
+      slaBreachAlerts: true,
+      dailySummaryHour: 9,
+      quietHoursStart: 22,
+      quietHoursEnd: 8,
+    },
+  );
+
+  // Official Holidays (Jalali)
+  const [holidayJalali, setHolidayJalali] = useState(getTodayJalaliAscii());
+  const [holidayTitle, setHolidayTitle] = useState('');
 
   // Jalali Numbering Config (FR-CORE-05)
   const [numbering, setNumbering] = useState<NumberingConfig>(state.settings.numbering);
@@ -125,6 +185,16 @@ export function SettingsPage({ onStartTour }: SettingsPageProps) {
   const [resName, setResName] = useState('');
   const [resType, setResType] = useState<'staff' | 'room' | 'device'>('staff');
 
+  const trashCount =
+    state.customers.filter((x) => x.isDeleted).length +
+    state.leads.filter((x) => x.isDeleted).length +
+    state.opportunities.filter((x) => x.isDeleted).length +
+    state.orders.filter((x) => x.isDeleted).length +
+    state.appointments.filter((x) => x.isDeleted).length +
+    state.tickets.filter((x) => x.isDeleted).length +
+    state.tasks.filter((x) => x.isDeleted).length +
+    state.products.filter((x) => x.isDeleted).length;
+
   const toggleWorkDay = (dayIdx: number) => {
     setWorkDays((prev) =>
       prev.includes(dayIdx) ? prev.filter((d) => d !== dayIdx) : [...prev, dayIdx],
@@ -139,6 +209,10 @@ export function SettingsPage({ onStartTour }: SettingsPageProps) {
       workEndHour,
       workDays: workDays.length > 0 ? workDays : [6, 0, 1, 2, 3, 4],
       commissionPct: Math.min(50, Math.max(0, Number(commissionPct) || 5)),
+      profile,
+      taxRatePct: Math.min(30, Math.max(0, Number(taxRatePct) || 0)),
+      currency,
+      defaultUnit: defaultUnit.trim() || 'عدد',
     });
   };
 
@@ -267,10 +341,14 @@ export function SettingsPage({ onStartTour }: SettingsPageProps) {
         <div className="flex flex-wrap items-center gap-1 rounded-lg bg-slate-100 p-1 w-fit dark:bg-slate-900">
           {(
             [
-              ['general', 'هسته، شعب، شماره‌گذاری و PWA'],
-              ['packs', '۱۰ بسته صنعتی و Pack Builder'],
-              ['config', 'فیلدها و فرم‌ها (Fields & Forms)'],
-              ['entities', 'موجودیت‌های سفارشی و نسخه‌گذاری'],
+              ['general', 'پروفایل، ساعات و تنظیمات'],
+              ['users', 'کاربران، نقش‌ها و شعب'],
+              ['packs', 'تغییر پک صنعتی (Diff)'],
+              ['config', 'فیلدها، خدمات و فرم‌ها'],
+              ['tenants_data', 'چندسازمانی، دمو و پشتیبان'],
+              ['security', 'امنیت و دسترسی PII'],
+              ['trash', `سطل زباله (${toFa(trashCount)})`],
+              ['entities', 'موجودیت‌های سفارشی'],
               ['audit', `گزارش ممیزی (${toFa(state.auditLogs.length)})`],
             ] as const
           ).map(([key, label]) => (
@@ -304,18 +382,90 @@ export function SettingsPage({ onStartTour }: SettingsPageProps) {
         <>
           <form
             onSubmit={handleSaveGeneral}
-            className="space-y-4 rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900"
+            className="space-y-5 rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900"
           >
-            <h2 className="text-sm font-semibold">مشخصات کسب‌وکار، ساعات کاری و پورسانت پایه</h2>
+            <h2 className="text-sm font-semibold">پروفایل کسب‌وکار، مالیات، واحدها و ساعات کاری</h2>
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
-              <div className="sm:col-span-4">
+              <div className="sm:col-span-2">
                 <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">
-                  نام کسب‌وکار
+                  نام تجاری کسب‌وکار
                 </label>
                 <input
                   type="text"
                   value={businessName}
                   onChange={(e) => setBusinessName(e.target.value)}
+                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800"
+                />
+              </div>
+              <div className="sm:col-span-2">
+                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">
+                  نام حقوقی / ثبتی
+                </label>
+                <input
+                  type="text"
+                  value={profile.legalName ?? ''}
+                  onChange={(e) => setProfile({ ...profile, legalName: e.target.value })}
+                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">
+                  کد اقتصادی / شناسه ملی
+                </label>
+                <input
+                  type="text"
+                  dir="ltr"
+                  value={profile.economicCode ?? ''}
+                  onChange={(e) => setProfile({ ...profile, economicCode: e.target.value })}
+                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-left font-mono text-xs dark:border-slate-700 dark:bg-slate-800"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">
+                  شماره ثبت
+                </label>
+                <input
+                  type="text"
+                  dir="ltr"
+                  value={profile.registrationNo ?? ''}
+                  onChange={(e) => setProfile({ ...profile, registrationNo: e.target.value })}
+                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-left font-mono text-xs dark:border-slate-700 dark:bg-slate-800"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">
+                  تلفن پشتیبانی / دفتر
+                </label>
+                <input
+                  type="text"
+                  dir="ltr"
+                  value={profile.phone ?? ''}
+                  onChange={(e) => setProfile({ ...profile, phone: e.target.value })}
+                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-left font-mono text-xs dark:border-slate-700 dark:bg-slate-800"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">
+                  وب‌سایت / ایمیل
+                </label>
+                <input
+                  type="text"
+                  dir="ltr"
+                  value={profile.website ?? ''}
+                  onChange={(e) => setProfile({ ...profile, website: e.target.value })}
+                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-left font-mono text-xs dark:border-slate-700 dark:bg-slate-800"
+                />
+              </div>
+
+              <div className="sm:col-span-4">
+                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">
+                  نشانی دفتر مرکزی
+                </label>
+                <input
+                  type="text"
+                  value={profile.address ?? ''}
+                  onChange={(e) => setProfile({ ...profile, address: e.target.value })}
                   className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800"
                 />
               </div>
@@ -355,17 +505,54 @@ export function SettingsPage({ onStartTour }: SettingsPageProps) {
               </div>
 
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">
-                  نرخ پورسانت پایه (٪)
+                <label className="mb-1 flex items-center gap-1 text-xs font-medium text-slate-600 dark:text-slate-400">
+                  <Coins size={13} className="text-amber-500" />
+                  واحد پول / ارزش افزوده (٪)
                 </label>
-                <input
-                  type="number"
-                  min={0}
-                  max={50}
-                  value={commissionPct}
-                  onChange={(e) => setCommissionPct(e.target.value)}
-                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm tabular-nums dark:border-slate-700 dark:bg-slate-800"
-                />
+                <div className="flex gap-2">
+                  <select
+                    value={currency}
+                    onChange={(e) => setCurrency(e.target.value as CurrencyCode)}
+                    className="flex-1 rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs dark:border-slate-700 dark:bg-slate-800"
+                  >
+                    <option value="toman">تومان</option>
+                    <option value="rial">ریال</option>
+                    <option value="usd">دلار ($)</option>
+                  </select>
+                  <input
+                    type="number"
+                    min={0}
+                    max={30}
+                    value={taxRatePct}
+                    onChange={(e) => setTaxRatePct(e.target.value)}
+                    title="نرخ مالیات بر ارزش افزوده (٪)"
+                    className="w-20 rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs tabular-nums dark:border-slate-700 dark:bg-slate-800"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">
+                  واحد پیش‌فرض / پورسانت (٪)
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={defaultUnit}
+                    onChange={(e) => setDefaultUnit(e.target.value)}
+                    placeholder="عدد / جلسه"
+                    className="flex-1 rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs dark:border-slate-700 dark:bg-slate-800"
+                  />
+                  <input
+                    type="number"
+                    min={0}
+                    max={50}
+                    value={commissionPct}
+                    onChange={(e) => setCommissionPct(e.target.value)}
+                    title="نرخ پورسانت پایه (٪)"
+                    className="w-20 rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs tabular-nums dark:border-slate-700 dark:bg-slate-800"
+                  />
+                </div>
               </div>
 
               <div className="sm:col-span-4">
@@ -399,10 +586,156 @@ export function SettingsPage({ onStartTour }: SettingsPageProps) {
                 type="submit"
                 className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-medium text-white hover:bg-indigo-700"
               >
-                ذخیره تنظیمات پایه
+                ذخیره پروفایل و تنظیمات پایه
               </button>
             </div>
           </form>
+
+          {/* Holidays (Jalali) & Notification Preferences */}
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+              <h2 className="flex items-center gap-2 text-sm font-semibold">
+                <CalendarOff size={16} className="text-rose-500" />
+                تعطیلات رسمی و تقویم تعطیلی (شمسی · {toFa(state.officialHolidays.length)})
+              </h2>
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (!holidayJalali.trim() || !holidayTitle.trim()) return;
+                  const iso = jalaliToIsoUtc(holidayJalali.trim());
+                  const dateKey = iso ? iso.slice(0, 10) : new Date().toISOString().slice(0, 10);
+                  addOfficialHoliday({ dateKey, jalaliDate: holidayJalali.trim(), title: holidayTitle.trim() });
+                  setHolidayTitle('');
+                }}
+                className="flex flex-wrap items-end gap-2"
+              >
+                <div className="w-40">
+                  <JalaliDatePicker value={holidayJalali} onChange={setHolidayJalali} />
+                </div>
+                <input
+                  type="text"
+                  required
+                  placeholder="عنوان تعطیلی (مثلاً عید نوروز)..."
+                  value={holidayTitle}
+                  onChange={(e) => setHolidayTitle(e.target.value)}
+                  className="flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs dark:border-slate-700 dark:bg-slate-800"
+                />
+                <button
+                  type="submit"
+                  className="rounded-lg bg-indigo-600 px-3 py-2 text-xs font-medium text-white hover:bg-indigo-700"
+                >
+                  افزودن
+                </button>
+              </form>
+              <div className="max-h-48 divide-y divide-slate-200 overflow-y-auto rounded-lg border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
+                {state.officialHolidays.map((h) => (
+                  <div key={h.id} className="flex items-center justify-between px-3 py-2 text-xs">
+                    <div>
+                      <span className="font-mono font-semibold text-indigo-600 tabular-nums dark:text-indigo-400" dir="ltr">
+                        {toFa(h.jalaliDate)}
+                      </span>
+                      <span className="mx-2 text-slate-400">·</span>
+                      <span>{h.title}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => removeOfficialHoliday(h.id)}
+                      className="p-1 text-slate-400 hover:text-rose-600"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+              <div className="flex items-center justify-between">
+                <h2 className="flex items-center gap-2 text-sm font-semibold">
+                  <Bell size={16} className="text-indigo-500" />
+                  ترجیحات اعلان و ساعات سکوت (Notification Preferences)
+                </h2>
+                <button
+                  type="button"
+                  onClick={() => updateSettings({ notifications })}
+                  className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700"
+                >
+                  ذخیره اعلان‌ها
+                </button>
+              </div>
+
+              <div className="space-y-2 text-xs">
+                <label className="flex cursor-pointer items-center justify-between rounded-lg bg-slate-50 px-3 py-2 dark:bg-slate-800/50">
+                  <span>ارسال یادآور خودکار پیامکی نوبت و فاکتور</span>
+                  <input
+                    type="checkbox"
+                    checked={notifications.smsReminders}
+                    onChange={(e) => setNotifications({ ...notifications, smsReminders: e.target.checked })}
+                    className="h-4 w-4 rounded border-slate-300 text-indigo-600"
+                  />
+                </label>
+                <label className="flex cursor-pointer items-center justify-between rounded-lg bg-slate-50 px-3 py-2 dark:bg-slate-800/50">
+                  <span>گزارش روزانه ایمیلی عملکرد فروش و تیکت‌ها</span>
+                  <input
+                    type="checkbox"
+                    checked={notifications.emailDigest}
+                    onChange={(e) => setNotifications({ ...notifications, emailDigest: e.target.checked })}
+                    className="h-4 w-4 rounded border-slate-300 text-indigo-600"
+                  />
+                </label>
+                <label className="flex cursor-pointer items-center justify-between rounded-lg bg-slate-50 px-3 py-2 dark:bg-slate-800/50">
+                  <span>هشدار لحظه‌ای نقض SLA تیکت‌ها و چک‌های سررسید</span>
+                  <input
+                    type="checkbox"
+                    checked={notifications.slaBreachAlerts}
+                    onChange={(e) => setNotifications({ ...notifications, slaBreachAlerts: e.target.checked })}
+                    className="h-4 w-4 rounded border-slate-300 text-indigo-600"
+                  />
+                </label>
+                <div className="grid grid-cols-3 gap-2 pt-1">
+                  <div>
+                    <label className="mb-1 block text-[11px] text-slate-500">ساعت خلاصه روزانه</label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={23}
+                      value={notifications.dailySummaryHour}
+                      onChange={(e) =>
+                        setNotifications({ ...notifications, dailySummaryHour: Number(e.target.value) || 9 })
+                      }
+                      className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs tabular-nums dark:border-slate-700 dark:bg-slate-800"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] text-slate-500">شروع سکوت (شب)</label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={23}
+                      value={notifications.quietHoursStart}
+                      onChange={(e) =>
+                        setNotifications({ ...notifications, quietHoursStart: Number(e.target.value) || 22 })
+                      }
+                      className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs tabular-nums dark:border-slate-700 dark:bg-slate-800"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] text-slate-500">پایان سکوت (صبح)</label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={23}
+                      value={notifications.quietHoursEnd}
+                      onChange={(e) =>
+                        setNotifications({ ...notifications, quietHoursEnd: Number(e.target.value) || 8 })
+                      }
+                      className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs tabular-nums dark:border-slate-700 dark:bg-slate-800"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
 
           {/* Multi-Branch Hierarchy (FR-CORE-04) */}
           <div className="space-y-4 rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
@@ -772,6 +1105,118 @@ export function SettingsPage({ onStartTour }: SettingsPageProps) {
           </div>
 
           <div className="space-y-4 rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Bot size={16} className="text-indigo-600 dark:text-indigo-400" />
+                <h2 className="text-sm font-semibold">تنظیمات دستیار هوش مصنوعی (AI & Guardrails)</h2>
+              </div>
+              {onOpenAiCenter && (
+                <button
+                  type="button"
+                  onClick={onOpenAiCenter}
+                  className="inline-flex items-center gap-1 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100 dark:border-indigo-900/50 dark:bg-indigo-950/40 dark:text-indigo-300"
+                >
+                  <Sparkles size={13} />
+                  مشاهده مصرف AI و آزمون ۱۰ پرسش
+                </button>
+              )}
+            </div>
+
+            {(() => {
+              const aiCfg = state.settings.ai ?? DEFAULT_AI_CONFIG;
+              const hasEnvKey = isGeminiApiKeyConfigured();
+              return (
+                <div className="space-y-3 text-xs">
+                  <div
+                    className={`flex items-center gap-2 rounded-lg border p-3 ${
+                      hasEnvKey
+                        ? 'border-emerald-200 bg-emerald-50/70 text-emerald-800 dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-300'
+                        : 'border-amber-200 bg-amber-50/70 text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-300'
+                    }`}
+                  >
+                    <ShieldCheck size={15} className="shrink-0" />
+                    <span>
+                      {hasEnvKey
+                        ? 'متغیر محیطی VITE_GEMINI_API_KEY در سرور/بیلد شناسایی شد و Gemini فعال است.'
+                        : getAiMissingKeyFriendlyNotice()}
+                    </span>
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="flex cursor-pointer items-center justify-between rounded-lg border border-slate-200 p-3 dark:border-slate-800">
+                      <div>
+                        <div className="font-semibold text-slate-800 dark:text-slate-100">
+                          فعال‌سازی هوش مصنوعی (AI)
+                        </div>
+                        <div className="text-[11px] text-slate-500">
+                          با خاموش کردن، تمام فراخوانی‌های AI و چت متوقف می‌شوند.
+                        </div>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={aiCfg.enabled}
+                        onChange={(e) =>
+                          updateSettings({ ai: { ...aiCfg, enabled: e.target.checked } })
+                        }
+                        className="h-4 w-4 rounded accent-indigo-600"
+                      />
+                    </label>
+
+                    <div className="rounded-lg border border-slate-200 p-3 dark:border-slate-800">
+                      <label className="mb-1 block font-semibold text-slate-800 dark:text-slate-100">
+                        لحن پیش‌فرض برند در پیامک و پاسخ تیکت
+                      </label>
+                      <select
+                        value={aiCfg.brandTone}
+                        onChange={(e) =>
+                          updateSettings({
+                            ai: { ...aiCfg, brandTone: e.target.value as AiBrandTone },
+                          })
+                        }
+                        className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-800"
+                      >
+                        {(Object.keys(AI_BRAND_TONE_LABELS) as AiBrandTone[]).map((toneKey) => (
+                          <option key={toneKey} value={toneKey}>
+                            {AI_BRAND_TONE_LABELS[toneKey]}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-slate-200 p-3 dark:border-slate-800">
+                      <input
+                        type="checkbox"
+                        checked={aiCfg.maskPiiBeforeSend}
+                        onChange={(e) =>
+                          updateSettings({
+                            ai: { ...aiCfg, maskPiiBeforeSend: e.target.checked },
+                          })
+                        }
+                        className="h-4 w-4 rounded accent-indigo-600"
+                      />
+                      <span>ماسک خودکار موبایل، کد ملی و ایمیل (PII) پیش از ارسال</span>
+                    </label>
+
+                    <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-slate-200 p-3 dark:border-slate-800">
+                      <input
+                        type="checkbox"
+                        checked={aiCfg.logUsage}
+                        onChange={(e) =>
+                          updateSettings({ ai: { ...aiCfg, logUsage: e.target.checked } })
+                        }
+                        className="h-4 w-4 rounded accent-indigo-600"
+                      />
+                      <span>ثبت گزارش فراخوانی و مصرف توکن در AI Usage</span>
+                    </label>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+
+          <div className="space-y-4 rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
             <h2 className="text-sm font-semibold">نقش کاربری و دسترسی (RBAC)</h2>
             <p className="text-xs text-slate-500 dark:text-slate-400">
               در نقش «کارشناس (Staff)»، بخش‌های اتوماسیون و تنظیمات مخفی می‌شوند و امکان حذف یا ناشناس‌سازی مشتری وجود ندارد.
@@ -801,9 +1246,9 @@ export function SettingsPage({ onStartTour }: SettingsPageProps) {
 
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
             <div>
-              <h2 className="text-sm font-semibold">پشتیبان‌گیری، خروجی پیکربندی JSON و بازنشانی</h2>
+              <h2 className="text-sm font-semibold">خروجی و ورود پیکربندی JSON (Fields & Workflows)</h2>
               <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-                می‌توانید فقط تنظیمات و فیلدها (Config JSON) را جابجا کنید یا از کل برنامه و داده‌ها پشتیبان بگیرید.
+                فقط ساختار فیلدهای سفارشی، پایپ‌لاین و قوانین را بین Tenantها جابجا کنید (بدون تغییر داده‌های مشتریان).
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -846,15 +1291,31 @@ export function SettingsPage({ onStartTour }: SettingsPageProps) {
         </>
       )}
 
-      {/* TAB 2: 10 INDUSTRY PACKS & PACK BUILDER */}
+      {/* TAB: USERS, ROLES, TEAMS & BRANCHES */}
+      {tab === 'users' && <UsersRolesTab />}
+
+      {/* TAB 2: INDUSTRY PACKS & PACK BUILDER */}
       {tab === 'packs' && (
         <div className="space-y-6">
           <div className="space-y-4 rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
-            <div>
-              <h2 className="text-sm font-semibold">کتابخانه ۱۰ بسته صنعتی آماده (Industry Packs - بخش ۷)</h2>
-              <p className="mt-0.5 text-xs text-slate-500">
-                با نصب هر بسته، فیلدهای سفارشی، موجودیت‌های تخصصی، خدمات، محصولات و قوانین اتوماسیون متناسب با آن صنعت به‌صورت غیرمخرب به سیستم اضافه می‌شوند.
-              </p>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="text-sm font-semibold">
+                  کتابخانه {toFa(INDUSTRY_PACKS.length)} بسته صنعتی آماده (Industry Packs)
+                </h2>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  با نصب هر بسته، فیلدهای سفارشی، موجودیت‌های تخصصی، خدمات، محصولات، قالب پیام‌ها و گزارش‌ها به‌صورت غیرمخرب اضافه می‌شوند.
+                </p>
+              </div>
+              {onOpenPackManager && (
+                <button
+                  type="button"
+                  onClick={onOpenPackManager}
+                  className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700"
+                >
+                  باز کردن Pack Manager کامل (پیش‌نمایش و خروجی)
+                </button>
+              )}
             </div>
 
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -894,14 +1355,14 @@ export function SettingsPage({ onStartTour }: SettingsPageProps) {
                     <div className="mt-3 flex items-center justify-between gap-2 border-t border-slate-200/70 pt-3 dark:border-slate-800">
                       <button
                         type="button"
-                        onClick={() => applyIndustryPack(pk.key as IndustryPack, true)}
+                        onClick={() => setPendingPackKey(pk.key as IndustryPack)}
                         className={`flex-1 rounded-lg px-3 py-1.5 text-xs font-medium ${
                           active
                             ? 'bg-emerald-600 text-white hover:bg-emerald-700'
                             : 'bg-indigo-600 text-white hover:bg-indigo-700'
                         }`}
                       >
-                        {active ? 'فعال (نصب مجدد اقلام پک)' : 'نصب و فعال‌سازی پک'}
+                        {active ? 'فعال (بررسی Diff و نصب مجدد)' : 'پیش‌نمایش Diff و تغییر پک'}
                       </button>
                       <button
                         type="button"
@@ -1393,6 +1854,15 @@ export function SettingsPage({ onStartTour }: SettingsPageProps) {
         </div>
       )}
 
+      {/* TAB: TENANTS, DEMO SCALE & BACKUP */}
+      {tab === 'tenants_data' && <TenantsBackupDataTab />}
+
+      {/* TAB: SECURITY, PASSWORD POLICY & DATA ACCESS LOG */}
+      {tab === 'security' && <SecurityComplianceTab onTriggerLockScreen={onTriggerLockScreen} />}
+
+      {/* TAB: SOFT DELETE TRASH & RESTORE */}
+      {tab === 'trash' && <TrashRestoreTab />}
+
       {/* TAB 5: AUDIT LOGS */}
       {tab === 'audit' && (
         <div className="divide-y divide-slate-200 rounded-xl border border-slate-200 bg-white dark:divide-slate-800 dark:border-slate-800 dark:bg-slate-900">
@@ -1416,6 +1886,17 @@ export function SettingsPage({ onStartTour }: SettingsPageProps) {
           )}
         </div>
       )}
+
+      <IndustryPackDiffModal
+        diff={pendingPackKey ? computePackSwitchDiff(state, pendingPackKey) : null}
+        onClose={() => setPendingPackKey(null)}
+        onConfirm={(installDefaults, installSampleData) => {
+          if (pendingPackKey) {
+            applyIndustryPack(pendingPackKey, installDefaults, { installSampleData });
+          }
+          setPendingPackKey(null);
+        }}
+      />
 
       <SetupWizardModal open={wizardOpen} onClose={() => setWizardOpen(false)} />
     </div>

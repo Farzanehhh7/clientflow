@@ -77,6 +77,8 @@ export type NavPageKey =
   | 'reports'
   | 'automation'
   | 'integrations'
+  | 'ai_center'
+  | 'packs'
   | 'settings';
 
 interface DashboardPageProps {

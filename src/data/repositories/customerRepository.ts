@@ -118,25 +118,45 @@ export class LocalStorageCustomerRepository implements CustomerRepository {
       }
     }
 
-    // 3. Name similarity (normalized + Levenshtein <= 2 for non-short names)
-    for (let i = 0; i < active.length; i++) {
-      const a = active[i];
-      const nameA = compactPersian(a.name);
-      if (nameA.length < 4) continue;
-      for (let j = i + 1; j < active.length; j++) {
-        const b = active[j];
-        const nameB = compactPersian(b.name);
-        if (nameB.length < 4) continue;
-        if (nameA === nameB) {
-          addPair(a, b, 'شباهت نام و نام خانوادگی', 88);
-          continue;
-        }
-        if (Math.abs(nameA.length - nameB.length) <= 2) {
-          const normA = normalizePersian(a.name);
-          const normB = normalizePersian(b.name);
-          const dist = levenshtein(normA, normB);
-          if (dist <= 2 && Math.min(normA.length, normB.length) >= 6) {
-            addPair(a, b, 'شباهت نام و نام خانوادگی', 80 - dist * 5);
+    // 3. Name similarity (indexed by 3-char prefix & suffix buckets for O(N) scale at 10k+ records)
+    const nameBuckets = new Map<string, Customer[]>();
+    const addBucket = (key: string, c: Customer) => {
+      if (key.length < 3) return;
+      const arr = nameBuckets.get(key) ?? [];
+      arr.push(c);
+      nameBuckets.set(key, arr);
+    };
+
+    for (const c of active) {
+      const compact = compactPersian(c.name);
+      if (compact.length < 4) continue;
+      addBucket(`p:${compact.slice(0, 3)}`, c);
+      addBucket(`s:${compact.slice(-3)}`, c);
+    }
+
+    for (const bucket of nameBuckets.values()) {
+      if (bucket.length < 2) continue;
+      // Guard ultra-dense generic buckets on synthetic datasets
+      const limit = Math.min(bucket.length, 60);
+      for (let i = 0; i < limit; i++) {
+        const a = bucket[i];
+        const nameA = compactPersian(a.name);
+        const normA = normalizePersian(a.name);
+        for (let j = i + 1; j < limit; j++) {
+          const b = bucket[j];
+          const nameB = compactPersian(b.name);
+          if (nameA === nameB) {
+            addPair(a, b, 'شباهت نام و نام خانوادگی', 88);
+            continue;
+          }
+          if (Math.abs(nameA.length - nameB.length) <= 2) {
+            const normB = normalizePersian(b.name);
+            if (Math.min(normA.length, normB.length) >= 6) {
+              const dist = levenshtein(normA, normB);
+              if (dist <= 2) {
+                addPair(a, b, 'شباهت نام و نام خانوادگی', 80 - dist * 5);
+              }
+            }
           }
         }
       }

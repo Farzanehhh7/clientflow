@@ -9,6 +9,61 @@ import type {
   PackSalesConfig,
   PackTemplate,
 } from '../types';
+import { PHASE13_PACKS_A } from './packsExtendedA';
+import { PHASE13_PACKS_B } from './packsExtendedB';
+
+export const ALL_CRM_MODULE_KEYS = [
+  'dashboard',
+  'customers',
+  'appointments',
+  'orders',
+  'sales',
+  'workflows',
+  'marketing',
+  'tasks',
+  'tickets',
+  'nps',
+  'custom_entities',
+  'reports',
+  'automation',
+  'integrations',
+  'ai_center',
+  'packs',
+  'settings',
+] as const;
+
+export const CRM_MODULE_LABELS: Record<string, { fa: string; en: string }> = {
+  dashboard: { fa: 'داشبورد و شاخص‌ها', en: 'Dashboard' },
+  customers: { fa: 'مشتریان / پرونده‌ها', en: 'Customers' },
+  appointments: { fa: 'نوبت‌دهی و تقویم', en: 'Appointments' },
+  orders: { fa: 'سفارش‌ها و مالی', en: 'Orders & Finance' },
+  sales: { fa: 'قیف فروش و پیش‌فاکتور', en: 'Sales Pipeline' },
+  workflows: { fa: 'گردش کار (BPMS)', en: 'Workflows' },
+  marketing: { fa: 'بازاریابی، باشگاه و تقویم محتوا', en: 'Marketing & Loyalty' },
+  tasks: { fa: 'پیگیری‌ها و وظایف', en: 'Tasks' },
+  tickets: { fa: 'پشتیبانی، تیکت و SLA', en: 'Support & KB' },
+  nps: { fa: 'رضایت‌سنجی (NPS/CSAT)', en: 'Surveys' },
+  custom_entities: { fa: 'موجودیت‌های تخصصی', en: 'Custom Entities' },
+  reports: { fa: 'گزارش‌ها و BI', en: 'Reports' },
+  automation: { fa: 'موتور اتوماسیون و پیام', en: 'Automation' },
+  integrations: { fa: 'یکپارچه‌سازی و VoIP', en: 'Integrations' },
+  ai_center: { fa: 'دستیار هوشمند', en: 'AI Center' },
+  packs: { fa: 'مدیر پک‌های صنعت', en: 'Pack Manager' },
+  settings: { fa: 'تنظیمات و امنیت', en: 'Settings' },
+};
+
+export const PHASE13_TARGET_KEYS: IndustryPack[] = [
+  'restaurant',
+  'car_service',
+  'law_accounting',
+  'travel_agency',
+  'pharmacy',
+  'wholesale',
+  'realestate',
+  'gym',
+  'school',
+  'hotel',
+];
 
 export const DEFAULT_PACK_KPIS: PackKpiDef[] = [
   { id: 'kpi_rev', metricKey: 'revenue', label: 'درآمد کل وصولی', unit: 'toman', targetValue: 60_000_000, higherIsBetter: true },
@@ -594,113 +649,36 @@ export const INDUSTRY_PACKS: PackTemplate[] = [
     ],
   },
   {
-    id: 'pack_realestate',
-    key: 'realestate',
-    name: 'املاک و نمایشگاه خودرو',
-    nameEn: 'Real Estate & Auto',
-    tier: 'light',
-    description: 'پرونده ملک/خودرو، ثبت بازدید حضوری، قیف مذاکره و تطبیق بودجه خریدار',
-    descriptionEn: 'Property/Vehicle listings, viewing appointments, negotiation pipeline & buyer matching',
-    kpiDefs: [
-      { id: 're_won', metricKey: 'won_deals_revenue', label: 'ارزش کل قراردادهای بسته‌شده', unit: 'toman', targetValue: 300_000_000, higherIsBetter: true },
-      { id: 're_pipe', metricKey: 'active_pipeline_value', label: 'ارزش فایل‌های در حال مذاکره', unit: 'toman', targetValue: 450_000_000, higherIsBetter: true },
-      { id: 're_apts', metricKey: 'done_appointments', label: 'بازدیدهای حضوری انجام‌شده', unit: 'count', targetValue: 25, higherIsBetter: true },
-      { id: 're_cust', metricKey: 'new_customers', label: 'خریداران و متقاضیان جدید', unit: 'count', targetValue: 20, higherIsBetter: true },
-    ],
-    salesMeta: {
-      pipelineName: 'قیف معاملات ملک و خودرو',
-      leadSingular: 'خریدار / متقاضی',
-      leadPlural: 'متقاضیان خرید',
-      dealSingular: 'پرونده معامله',
-      dealPlural: 'پرونده‌های معامله',
-      quoteLabel: 'برآورد هزینه و مبایعه‌نامه',
-      defaultStages: [
-        { key: 'lead', label: 'ثبت تقاضای خرید', probability: 20, slaHours: 12 },
-        { key: 'contacted', label: 'معرفی فایل و بازدید', probability: 40, slaHours: 24 },
-        { key: 'proposal', label: 'پیشنهاد قیمت و شرایط', probability: 60, slaHours: 48 },
-        { key: 'negotiation', label: 'نشست مبایعه‌نامه', probability: 80, slaHours: 72 },
-        { key: 'won', label: 'عقد قرارداد قطعی', probability: 100, slaHours: 0 },
-        { key: 'lost', label: 'منتفی‌شده', probability: 0, slaHours: 0 },
-      ],
-    },
-    customFields: [
-      { key: 'budget_max', label: 'بودجه خریدار (تومان)', entity: 'customer', type: 'money', active: true, showInTable: true, order: 1 },
-      { key: 'property_area', label: 'متراژ درخواستی (متر مربع)', entity: 'customer', type: 'number', active: true, showInTable: true, order: 2 },
-      { key: 'preferred_zone', label: 'منطقه / مدل درخواستی', entity: 'customer', type: 'text', active: true, order: 3 },
-    ],
-    customEntities: [
-      {
-        key: 'property_listing',
-        name: 'فایل ملک / خودرو',
-        pluralName: 'فایل‌های ملک و خودرو',
-        description: 'ثبت مشخصات، قیمت و وضعیت آگهی ملک یا خودرو',
-        fields: [
-          { id: 're_1', key: 'listing_title', label: 'عنوان فایل (متراژ / مدل)', type: 'text', required: true, order: 1 },
-          { id: 're_2', key: 'asking_price', label: 'قیمت اعلامی', type: 'money', order: 2 },
-          { id: 're_3', key: 'district', label: 'محله / موقعیت', type: 'text', order: 3 },
-        ],
-      },
-    ],
-    services: [
-      { name: 'بازدید حضوری ملک / کارشناسی خودرو', durationMin: 45, price: 0, bufferBeforeMin: 15, bufferAfterMin: 15 },
-    ],
-    products: [],
-    rules: [
-      {
-        name: 'پیگیری پس از بازدید ملک/خودرو',
-        trigger: 'تغییر مرحله معامله به مذاکره',
-        condition: 'مرحله = negotiation',
-        action: 'ثبت وظیفه مبایعه‌نامه + ارسال واتساپ پیگیری',
-        active: false,
-        pack: 'realestate',
-        triggerType: 'on_stage_change',
-        targetEntity: 'opportunity',
-        conditionLogic: 'AND',
-        conditions: [{ id: 'rc_re1', field: 'stage', op: 'eq', value: 'negotiation' }],
-        actions: [
-          { id: 'ra_re1', type: 'create_task', taskTitleTemplate: 'تهیه پیش‌نویس مبایعه‌نامه برای {{customer.name}}' },
-          { id: 'ra_re2', type: 'send_whatsapp', channel: 'whatsapp', messageTemplate: '{{customer.name}} گرامی، شرایط پیشنهادی نشست مبایعه‌نامه در {{businessName}} آماده بررسی است.' },
-        ],
-      },
-    ],
-    workflowTemplates: [
-      {
-        key: 'realestate_contract_closing',
-        name: 'نشست مبایعه‌نامه و انتقال سند',
-        description: 'کنترل مدارک مالکیت، تأیید کمیسیون و زمان‌بندی محضر',
-        type: 'custom',
-        version: 1,
-        status: 'draft',
-        pack: 'realestate',
-        slaHours: 72,
-        nodes: [
-          { id: 're_n1', type: 'start', label: 'توافق قیمت بازدید', role: 'staff', x: 50, y: 110 },
-          { id: 're_n2', type: 'task', label: 'تطبیق مدارک سند و قولنامه', role: 'staff', stepSlaHours: 12, x: 240, y: 110 },
-          { id: 're_n3', type: 'approval', label: 'تأیید سرپرست حقوقی بنگاه', role: 'admin', stepSlaHours: 24, x: 450, y: 110 },
-          { id: 're_n4', type: 'end', label: 'امضای مبایعه‌نامه', role: 'staff', x: 660, y: 110 },
-        ],
-        edges: [
-          { id: 're_e1', fromId: 're_n1', toId: 're_n2' },
-          { id: 're_e2', fromId: 're_n2', toId: 're_n3' },
-          { id: 're_e3', fromId: 're_n3', toId: 're_n4' },
-        ],
-      },
-    ],
-  },
-  {
     id: 'pack_salon',
     key: 'salon',
-    name: 'آرایشگاه، سالن زیبایی و باشگاه',
-    nameEn: 'Beauty Salon & Fitness',
+    name: 'آرایشگاه، سالن زیبایی و مراقبت',
+    nameEn: 'Beauty Salon & Spa',
     tier: 'light',
-    description: 'عضویت و اشتراک، رزرو آرایشگر/مربی، یادآور ۲ ساعته نوبت و تبریک خودکار تولد',
-    descriptionEn: 'Memberships, stylist/coach booking, 2h reminders & automated birthday perks',
+    category: 'services',
+    description: 'عضویت و اشتراک، رزرو آرایشگر/متخصص، یادآور ۲ ساعته نوبت و تبریک خودکار تولد',
+    descriptionEn: 'Memberships, stylist booking, 2h reminders & automated birthday perks',
+    enabledModules: [
+      'dashboard',
+      'customers',
+      'appointments',
+      'orders',
+      'sales',
+      'workflows',
+      'marketing',
+      'tasks',
+      'tickets',
+      'nps',
+      'reports',
+      'automation',
+      'packs',
+      'settings',
+    ],
     salesMeta: {
-      pipelineName: 'قیف عضویت و پکیج خدمات',
-      leadSingular: 'متقاضی عضویت',
-      leadPlural: 'متقاضیان عضویت',
+      pipelineName: 'قیف عضویت و پکیج خدمات زیبایی',
+      leadSingular: 'متقاضی خدمات سالن',
+      leadPlural: 'متقاضیان خدمات',
       dealSingular: 'پکیج / اشتراک',
-      dealPlural: 'پکیج‌های عضویت',
+      dealPlural: 'پکیج‌های زیبایی',
       quoteLabel: 'پیش‌فاکتور پکیج خدمات',
       defaultStages: [
         { key: 'lead', label: 'استعلام پکیج', probability: 25, slaHours: 12 },
@@ -716,26 +694,26 @@ export const INDUSTRY_PACKS: PackTemplate[] = [
       contentLabel: 'تقویم محتوای اینستاگرام و نمونه‌کار',
     },
     kpiDefs: [
-      { id: 'sl_rev', metricKey: 'revenue', label: 'درآمد سالن و باشگاه', unit: 'toman', targetValue: 65_000_000, higherIsBetter: true },
+      { id: 'sl_rev', metricKey: 'revenue', label: 'درآمد سالن و مراقبت زیبایی', unit: 'toman', targetValue: 65_000_000, higherIsBetter: true },
       { id: 'sl_apts', metricKey: 'done_appointments', label: 'جلسات و نوبت‌های انجام‌شده', unit: 'count', targetValue: 40, higherIsBetter: true },
       { id: 'sl_ns', metricKey: 'no_show_rate', label: 'نرخ کنسلی/عدم حضور', unit: 'pct', targetValue: 8, higherIsBetter: false },
       { id: 'sl_nps', metricKey: 'nps_score', label: 'رضایت مشتریان (NPS)', unit: 'score', targetValue: 75, higherIsBetter: true },
     ],
     customFields: [
-      { key: 'preferred_stylist', label: 'متخصص / مربی دلخواه', entity: 'customer', type: 'text', active: true, showInTable: true, order: 1 },
-      { key: 'membership_tier', label: 'سطح عضویت باشگاه/سالن', entity: 'customer', type: 'select', options: ['برنزی', 'نقره‌ای', 'طلایی VIP'], active: true, order: 2 },
+      { key: 'preferred_stylist', label: 'متخصص / آرایشگر دلخواه', entity: 'customer', type: 'text', active: true, showInTable: true, order: 1 },
+      { key: 'membership_tier', label: 'سطح عضویت VIP سالن', entity: 'customer', type: 'select', options: ['برنزی', 'نقره‌ای', 'طلایی VIP'], active: true, order: 2 },
     ],
     customEntities: [],
     services: [
       { name: 'پکیج رنگ و مراقبت مو', durationMin: 90, price: 2200000, bufferBeforeMin: 10, bufferAfterMin: 15 },
-      { name: 'جلسه تمرین اختصاصی (PT)', durationMin: 60, price: 750000, bufferBeforeMin: 5, bufferAfterMin: 10 },
+      { name: 'میکاپ و استایلینگ تخصصی', durationMin: 75, price: 3500000, bufferBeforeMin: 10, bufferAfterMin: 15 },
     ],
     products: [
       { name: 'ماسک مو کراتینه حرفه‌ای', sku: 'SLN-201', price: 920000, stock: 18, minStock: 4, active: true },
     ],
     rules: [
       {
-        name: 'یادآوری ۲ ساعته نوبت سالن/باشگاه',
+        name: 'یادآوری ۲ ساعته نوبت سالن زیبایی',
         trigger: 'زمان‌بندی (بسته سالن)',
         condition: 'زمان نوبت تا ۲ ساعت آینده (now+2h)',
         action: 'ارسال پیامک/واتساپ یادآور با زمان شمسی',
@@ -758,17 +736,17 @@ export const INDUSTRY_PACKS: PackTemplate[] = [
     workflowTemplates: [
       {
         key: 'salon_vip_package_freeze',
-        name: 'درخواست تعلیق یا تمدید اشتراک باشگاه/سالن',
-        description: 'ثبت درخواست فریز اشتراک و تایید مدیریت سالن',
+        name: 'درخواست تعلیق یا تمدید پکیج سالن زیبایی',
+        description: 'ثبت درخواست تغییر زمان پکیج و تایید مدیریت سالن',
         type: 'custom',
         version: 1,
         status: 'draft',
         pack: 'salon',
         slaHours: 12,
         nodes: [
-          { id: 'sl_n1', type: 'start', label: 'درخواست فریز اشتراک', role: 'staff', x: 50, y: 110 },
+          { id: 'sl_n1', type: 'start', label: 'درخواست تغییر زمان پکیج', role: 'staff', x: 50, y: 110 },
           { id: 'sl_n2', type: 'task', label: 'بررسی تعداد جلسات باقی‌مانده', role: 'staff', stepSlaHours: 4, x: 250, y: 110 },
-          { id: 'sl_n3', type: 'approval', label: 'تأیید مدیریت مجموعه', role: 'admin', stepSlaHours: 6, x: 460, y: 110 },
+          { id: 'sl_n3', type: 'approval', label: 'تأیید مدیریت سالن', role: 'admin', stepSlaHours: 6, x: 460, y: 110 },
           { id: 'sl_n4', type: 'end', label: 'به‌روزرسانی تاریخ اعتبار', role: 'staff', x: 660, y: 110 },
         ],
         edges: [
@@ -779,100 +757,8 @@ export const INDUSTRY_PACKS: PackTemplate[] = [
       },
     ],
   },
-  {
-    id: 'pack_restaurant',
-    key: 'restaurant',
-    name: 'رستوران، کافه و کترینگ',
-    nameEn: 'Restaurant & Cafe',
-    tier: 'light',
-    description: 'منوی غذا و نوشیدنی، ثبت سفارش سریع، باشگاه مشتریان و کد تخفیف وفاداری',
-    descriptionEn: 'Menu items, fast order tracking, loyalty club & promo coupons',
-    kpiDefs: [
-      { id: 'rs_rev', metricKey: 'revenue', label: 'فروش وصول‌شده رستوران/کافه', unit: 'toman', targetValue: 70_000_000, higherIsBetter: true },
-      { id: 'rs_ord', metricKey: 'orders_count', label: 'تعداد سفارش‌های ثبت‌شده', unit: 'count', targetValue: 60, higherIsBetter: true },
-      { id: 'rs_apts', metricKey: 'done_appointments', label: 'رزرو میزهای تکمیل‌شده', unit: 'count', targetValue: 20, higherIsBetter: true },
-      { id: 'rs_nps', metricKey: 'nps_score', label: 'رضایت مهمانان (NPS)', unit: 'score', targetValue: 72, higherIsBetter: true },
-    ],
-    salesMeta: {
-      pipelineName: 'قیف قراردادهای کترینگ و رویداد',
-      leadSingular: 'متقاضی کترینگ',
-      leadPlural: 'متقاضیان کترینگ',
-      dealSingular: 'سفارش رویداد / شرکتی',
-      dealPlural: 'قراردادهای کترینگ',
-      quoteLabel: 'پیش‌فاکتور منو و پذیرایی',
-      defaultStages: [
-        { key: 'lead', label: 'درخواست منو', probability: 25, slaHours: 12 },
-        { key: 'contacted', label: 'تست و انتخاب غذا', probability: 45, slaHours: 24 },
-        { key: 'proposal', label: 'ارسال پیش‌فاکتور رویداد', probability: 65, slaHours: 36 },
-        { key: 'negotiation', label: 'تایید نهایی تعداد نفرات', probability: 85, slaHours: 24 },
-        { key: 'won', label: 'رزرو قطعی کترینگ', probability: 100, slaHours: 0 },
-        { key: 'lost', label: 'لغو رویداد', probability: 0, slaHours: 0 },
-      ],
-    },
-    orderMeta: {
-      channelDefault: 'phone',
-      statusLabels: {
-        new: 'دریافت سفارش',
-        confirmed: 'در حال آماده‌سازی',
-        shipped: 'ارسال با پیک',
-        delivered: 'تحویل مشتری',
-        cancelled: 'لغوشده',
-      },
-      transitions: DEFAULT_ORDER_META.transitions,
-    },
-    customFields: [
-      { key: 'favorite_table', label: 'ترجیح میز / ذائقه غذایی', entity: 'customer', type: 'text', active: true, order: 1 },
-      { key: 'diet_pref', label: 'رژیم غذایی', entity: 'customer', type: 'select', options: ['معمولی', 'گیاهخوار', 'بدون گلوتن'], active: true, showInTable: true, order: 2 },
-    ],
-    customEntities: [],
-    services: [
-      { name: 'رزرو میز VIP (تولد / جلسه)', durationMin: 120, price: 500000, bufferBeforeMin: 15, bufferAfterMin: 15 },
-    ],
-    products: [
-      { name: 'پکیج پذیرایی ویژه کافه و برانچ', sku: 'RST-101', price: 680000, stock: 50, minStock: 10, active: true },
-    ],
-    rules: [
-      {
-        name: 'دعوت باشگاه مشتریان پس از تحویل سفارش کافه/رستوران',
-        trigger: 'تغییر وضعیت سفارش به تحویل‌شده',
-        condition: 'وضعیت سفارش = delivered',
-        action: 'ارسال پیامک کد تخفیف + برچسب وفاداری',
-        active: false,
-        pack: 'restaurant',
-        triggerType: 'on_stage_change',
-        targetEntity: 'order',
-        conditionLogic: 'AND',
-        conditions: [{ id: 'rk_rs_1', field: 'status', op: 'eq', value: 'delivered' }],
-        actions: [
-          { id: 'ra_rs_1', type: 'send_sms', channel: 'sms', messageTemplate: 'نوش جان {{customer.name}} عزیز! با ثبت نظر خود در {{businessName}} کد تخفیف ۱۵٪ هدیه بگیرید.' },
-          { id: 'ra_rs_2', type: 'add_tag', tag: 'مشتری-سفارش‌موفق' },
-        ],
-      },
-    ],
-    workflowTemplates: [
-      {
-        key: 'restaurant_catering_event',
-        name: 'هماهنگی سفارش کترینگ و رویداد شرکتی',
-        description: 'انتخاب منو، پیش‌پرداخت ۵۰٪ و زمان‌بندی آماده سازی آشپزخانه',
-        type: 'order_fulfillment',
-        version: 1,
-        status: 'draft',
-        pack: 'restaurant',
-        slaHours: 24,
-        nodes: [
-          { id: 'rs_n1', type: 'start', label: 'درخواست کترینگ', role: 'staff', x: 50, y: 110 },
-          { id: 'rs_n2', type: 'task', label: 'ثبت منو و تعداد نفرات', role: 'staff', stepSlaHours: 4, x: 240, y: 110 },
-          { id: 'rs_n3', type: 'approval', label: 'تایید سرآشپز و مالی', role: 'admin', stepSlaHours: 8, x: 450, y: 110 },
-          { id: 'rs_n4', type: 'end', label: 'برنامه‌ریزی پخت و ارسال', role: 'staff', x: 660, y: 110 },
-        ],
-        edges: [
-          { id: 'rs_e1', fromId: 'rs_n1', toId: 'rs_n2' },
-          { id: 'rs_e2', fromId: 'rs_n2', toId: 'rs_n3' },
-          { id: 'rs_e3', fromId: 'rs_n3', toId: 'rs_n4' },
-        ],
-      },
-    ],
-  },
+  ...PHASE13_PACKS_A,
+  ...PHASE13_PACKS_B,
   {
     id: 'pack_freelancer',
     key: 'freelancer',
@@ -1029,30 +915,78 @@ export function buildPackFromState(
   state: AppState,
   meta: { key: string; name: string; nameEn?: string; description: string; tier?: PackTemplate['tier'] },
 ): PackTemplate {
+  const curKey = state.settings.industryPack;
+  const basePack =
+    INDUSTRY_PACKS.find((p) => p.key === curKey) ??
+    state.customPacks.find((p) => p.key === curKey);
+  const currentKpis = getPackKpiDefs(curKey, state.customPacks).map((k) => ({
+    ...k,
+    targetValue: state.settings.kpiTargets?.[k.id] ?? k.targetValue,
+  }));
+  const currentSales = getPackSalesConfig(curKey, state.customPacks);
+
   return {
     id: `pack_custom_${Date.now()}`,
     key: meta.key.trim().replace(/[^a-zA-Z0-9_-]/g, '').toLowerCase() || `custom_${Date.now().toString(36)}`,
     name: meta.name.trim() || 'بسته سفارشی',
     nameEn: meta.nameEn?.trim() || 'Custom Pack',
     tier: meta.tier ?? 'medium',
-    description: meta.description.trim() || 'ساخته‌شده از پیکربندی فعلی Tenant در Pack Builder',
+    category: basePack?.category ?? 'services',
+    description: meta.description.trim() || 'ساخته‌شده از پیکربندی فعلی Tenant در Pack Manager',
     descriptionEn: 'Exported from current Tenant configuration',
+    enabledModules: state.settings.enabledModules ?? basePack?.enabledModules ?? [...ALL_CRM_MODULE_KEYS],
+    customerMeta: basePack?.customerMeta ?? getPackCustomerConfig(curKey, state.customFieldDefs, state.customPacks),
+    salesMeta: {
+      ...currentSales,
+      defaultStages: state.pipelineStages.length > 0 ? state.pipelineStages : currentSales.defaultStages,
+    },
+    orderMeta: basePack?.orderMeta ?? DEFAULT_ORDER_META,
+    marketingMeta: basePack?.marketingMeta ?? { showContentCalendar: true },
+    kpiDefs: currentKpis,
     customFields: state.customFieldDefs.map(({ id: _id, ...rest }) => rest),
     customEntities: state.customEntityDefs.map(({ id: _id, createdAt: _ca, ...rest }) => rest),
     services: state.services.map(({ id: _id, ...rest }) => rest),
     products: state.products.map(({ id: _id, ...rest }) => rest),
     rules: state.rules.map(({ id: _id, ...rest }) => rest),
     workflowTemplates: state.workflowDefinitions.map(({ id: _id, updatedAt: _ua, ...rest }) => rest),
+    messageTemplates: (state.messageTemplates ?? []).map(({ id: _id, updatedAt: _ua, ...rest }) => rest),
+    defaultReports: (state.savedReports ?? []).map(({ id: _id, createdAt: _ca, updatedAt: _ua, ...rest }) => rest),
+    sampleData: {
+      customers: state.customers
+        .filter((c) => !c.isDeleted)
+        .slice(0, 3)
+        .map((c) => ({
+          name: c.name,
+          phone: c.phone,
+          personType: c.personType,
+          companyName: c.companyName,
+          lifecycle: c.lifecycle,
+          source: c.source,
+          tags: c.tags,
+          customFields: c.customFields,
+        })),
+    },
     exportedAt: new Date().toISOString(),
     isCustom: true,
   };
 }
 
+export function findPackByKey(
+  packKey: IndustryPack | string,
+  customPacks?: PackTemplate[],
+): PackTemplate | undefined {
+  return (
+    INDUSTRY_PACKS.find((p) => p.key === packKey) ??
+    customPacks?.find((p) => p.key === packKey)
+  );
+}
+
 export function getPackCustomerConfig(
   packKey: IndustryPack,
   customFieldDefs: CustomFieldDef[],
+  customPacks?: PackTemplate[],
 ): PackCustomerConfig {
-  const pack = INDUSTRY_PACKS.find((p) => p.key === packKey);
+  const pack = findPackByKey(packKey, customPacks);
   if (pack?.customerMeta) return pack.customerMeta;
   const firstField = customFieldDefs
     .filter((f) => (f.entity ?? 'customer') === 'customer' && f.active !== false)
@@ -1069,9 +1003,7 @@ export function getPackSalesConfig(
   packKey: IndustryPack,
   customPacks?: PackTemplate[],
 ): PackSalesConfig {
-  const pack =
-    INDUSTRY_PACKS.find((p) => p.key === packKey) ??
-    customPacks?.find((p) => p.key === packKey);
+  const pack = findPackByKey(packKey, customPacks);
   if (pack?.salesMeta) return pack.salesMeta;
   const generalPack = INDUSTRY_PACKS.find((p) => p.key === 'general')!;
   return generalPack.salesMeta!;
@@ -1081,9 +1013,7 @@ export function getPackOrderConfig(
   packKey: IndustryPack,
   customPacks?: PackTemplate[],
 ): PackOrderConfig {
-  const pack =
-    INDUSTRY_PACKS.find((p) => p.key === packKey) ??
-    customPacks?.find((p) => p.key === packKey);
+  const pack = findPackByKey(packKey, customPacks);
   return pack?.orderMeta ?? DEFAULT_ORDER_META;
 }
 
@@ -1091,9 +1021,7 @@ export function getPackMarketingConfig(
   packKey: IndustryPack,
   customPacks?: PackTemplate[],
 ): PackMarketingConfig {
-  const pack =
-    INDUSTRY_PACKS.find((p) => p.key === packKey) ??
-    customPacks?.find((p) => p.key === packKey);
+  const pack = findPackByKey(packKey, customPacks);
   return pack?.marketingMeta ?? { showContentCalendar: false };
 }
 
@@ -1101,10 +1029,19 @@ export function getPackKpiDefs(
   packKey: IndustryPack,
   customPacks?: PackTemplate[],
 ): PackKpiDef[] {
-  const pack =
-    INDUSTRY_PACKS.find((p) => p.key === packKey) ??
-    customPacks?.find((p) => p.key === packKey);
+  const pack = findPackByKey(packKey, customPacks);
   return pack?.kpiDefs && pack.kpiDefs.length > 0 ? pack.kpiDefs : DEFAULT_PACK_KPIS;
 }
+
+export function getPackEnabledModules(
+  packKey: IndustryPack,
+  customPacks?: PackTemplate[],
+): string[] {
+  const pack = findPackByKey(packKey, customPacks);
+  return pack?.enabledModules && pack.enabledModules.length > 0
+    ? pack.enabledModules
+    : [...ALL_CRM_MODULE_KEYS];
+}
+
 
 

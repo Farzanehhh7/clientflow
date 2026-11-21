@@ -10,8 +10,10 @@ import {
   Plus,
   Search,
   ShieldAlert,
+  Sparkles,
   Trash2,
 } from 'lucide-react';
+import { suggestTicketCategoryAndPriority } from '../services/aiService';
 import { DynamicFieldsRenderer } from '../components/DynamicFieldsRenderer';
 import { Modal } from '../components/Modal';
 import { ComplaintsAnalyticsTab } from '../components/support/ComplaintsAnalyticsTab';
@@ -50,13 +52,17 @@ import {
   formatRemainingMinutesFa,
   isTicketClosedStatus,
 } from '../utils/slaEngine';
+import { hasPermission } from '../utils/security';
 
 interface TicketsPageProps {
   onOpenPortal?: () => void;
+  initialTicketId?: string | null;
+  onClearInitialTicketId?: () => void;
 }
 
-export function TicketsPage({ onOpenPortal }: TicketsPageProps) {
-  const { state, addTicket, updateTicket, checkAndEscalateTickets } = useClientFlow();
+export function TicketsPage({ onOpenPortal, initialTicketId, onClearInitialTicketId }: TicketsPageProps) {
+  const { state, addTicket, updateTicket, checkAndEscalateTickets, softDeleteEntity, logAiUsage } = useClientFlow();
+  const canDeleteTicket = hasPermission(state, 'tickets', 'delete');
 
   const [tab, setTab] = useState<'tickets' | 'sla' | 'kb' | 'complaints'>('tickets');
   const [statusFilter, setStatusFilter] = useState<'all' | TicketStatus>('all');
@@ -86,9 +92,15 @@ export function TicketsPage({ onOpenPortal }: TicketsPageProps) {
   const [draftAttachments, setDraftAttachments] = useState<TicketAttachment[]>([]);
   const [ticketCustomFields, setTicketCustomFields] = useState<Record<string, string>>({});
   const [ticketCustomErrors, setTicketCustomErrors] = useState<Record<string, string>>({});
+  const [triageLoading, setTriageLoading] = useState(false);
+  const [triageHint, setTriageHint] = useState('');
 
   // Detail modal
-  const [activeTicketId, setActiveTicketId] = useState<string | null>(null);
+  const [activeTicketId, setActiveTicketId] = useState<string | null>(initialTicketId ?? null);
+
+  useEffect(() => {
+    if (initialTicketId) setActiveTicketId(initialTicketId);
+  }, [initialTicketId]);
 
   const agents = useMemo(() => {
     const base = new Set(state.settings.salesTeam);
@@ -108,7 +120,7 @@ export function TicketsPage({ onOpenPortal }: TicketsPageProps) {
   );
 
   const kpis = useMemo(() => {
-    const valid = state.tickets.filter((t) => !t.mergedIntoTicketId);
+    const valid = state.tickets.filter((t) => !t.isDeleted && !t.mergedIntoTicketId);
     const active = valid.filter((t) => !isTicketClosedStatus(t.status));
     let breached = 0;
     let warning = 0;
@@ -129,6 +141,7 @@ export function TicketsPage({ onOpenPortal }: TicketsPageProps) {
 
   const filtered = useMemo(() => {
     return state.tickets.filter((t) => {
+      if (t.isDeleted) return false;
       if (statusFilter !== 'all' && t.status !== statusFilter) return false;
       if (channelFilter !== 'all' && (t.channel ?? 'portal') !== channelFilter) return false;
       if (teamFilter !== 'all' && t.team !== teamFilter) return false;
@@ -505,14 +518,27 @@ export function TicketsPage({ onOpenPortal }: TicketsPageProps) {
                           </td>
                         ))}
                         <td className="px-4 py-3">
-                          <button
-                            type="button"
-                            onClick={() => setActiveTicketId(t.id)}
-                            className="inline-flex items-center gap-1 font-medium text-indigo-600 hover:underline dark:text-indigo-400"
-                          >
-                            <MessageSquare size={13} />
-                            جزئیات / گفتگو
-                          </button>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setActiveTicketId(t.id)}
+                              className="inline-flex items-center gap-1 font-medium text-indigo-600 hover:underline dark:text-indigo-400"
+                            >
+                              <MessageSquare size={13} />
+                              جزئیات / گفتگو
+                            </button>
+                            {canDeleteTicket && (
+                              <button
+                                type="button"
+                                onClick={() => softDeleteEntity('ticket', t.id)}
+                                title="انتقال به سطل بازیافت"
+                                aria-label={`حذف تیکت ${t.subject}`}
+                                className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600 dark:hover:bg-rose-950/30 dark:hover:text-rose-400"
+                              >
+                                <Trash2 size={13} />
+                              </button>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     );
@@ -570,7 +596,34 @@ export function TicketsPage({ onOpenPortal }: TicketsPageProps) {
           </div>
 
           <div>
-            <label className="mb-1 block text-xs font-medium">موضوع تیکت</label>
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <label className="block text-xs font-medium">موضوع تیکت</label>
+              {state.settings.ai?.enabled !== false && (
+                <button
+                  type="button"
+                  disabled={triageLoading || (!subject.trim() && !initialBody.trim())}
+                  onClick={async () => {
+                    setTriageLoading(true);
+                    setTriageHint('');
+                    const res = await suggestTicketCategoryAndPriority(state, subject, initialBody, logAiUsage);
+                    setTriageLoading(false);
+                    if (res.ok) {
+                      setCategory(res.data.category);
+                      setPriority(res.data.priority);
+                      setSeverity(res.data.severity);
+                      if (res.data.category === 'شکایت و کیفیت') setIsComplaint(true);
+                      setTriageHint(`تولیدشده با هوش مصنوعی (AI-generated): ${res.data.reason}`);
+                    } else {
+                      setTriageHint(res.error);
+                    }
+                  }}
+                  className="inline-flex items-center gap-1 rounded-md border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[11px] font-medium text-indigo-700 hover:bg-indigo-100 disabled:opacity-40 dark:border-indigo-900/50 dark:bg-indigo-950/40 dark:text-indigo-300"
+                >
+                  <Sparkles size={11} />
+                  {triageLoading ? 'در حال تشخیص...' : 'پیشنهاد خودکار دسته و اولویت (AI)'}
+                </button>
+              )}
+            </div>
             <input
               required
               value={subject}
@@ -578,6 +631,9 @@ export function TicketsPage({ onOpenPortal }: TicketsPageProps) {
               placeholder="مثلاً: پیگیری مرسوله یا تغییر ساعت نوبت"
               className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800"
             />
+            {triageHint && (
+              <p className="mt-1 text-[11px] text-indigo-600 dark:text-indigo-400">{triageHint}</p>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -741,7 +797,10 @@ export function TicketsPage({ onOpenPortal }: TicketsPageProps) {
       {/* TICKET CONVERSATION & DETAIL MODAL */}
       <TicketDetailModal
         ticketId={activeTicketId}
-        onClose={() => setActiveTicketId(null)}
+        onClose={() => {
+          setActiveTicketId(null);
+          onClearInitialTicketId?.();
+        }}
         agents={agents}
       />
     </div>

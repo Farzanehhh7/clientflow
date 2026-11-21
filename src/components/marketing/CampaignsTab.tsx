@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { Modal } from '../Modal';
 import { JalaliDatePicker } from '../ui/JalaliDatePicker';
+import { draftCampaignCopyInBrandTone } from '../../services/aiService';
 import { useClientFlow } from '../../store/useClientFlowStore';
 import type {
   CampaignRecipientStatus,
@@ -89,6 +90,7 @@ export function CampaignsTab() {
     launchCampaign,
     simulateCampaignStats,
     updateCampaignRecipientStatus,
+    logAiUsage,
   } = useClientFlow();
 
   const [createOpen, setCreateOpen] = useState(false);
@@ -114,6 +116,10 @@ export function CampaignsTab() {
   const [inspectCampaignId, setInspectCampaignId] = useState<string | null>(null);
   const [recFilter, setRecFilter] = useState<'all' | CampaignRecipientStatus>('all');
   const [showRoiTable, setShowRoiTable] = useState(true);
+
+  const [aiOfferText, setAiOfferText] = useState('۱۵٪ تخفیف ویژه');
+  const [aiDraftLoading, setAiDraftLoading] = useState(false);
+  const [aiDraftMeta, setAiDraftMeta] = useState<string>('');
 
   const segmentTargetCount = useMemo(
     () => getSegmentMatchingCustomers(state, cmpSegmentId || undefined).length,
@@ -684,6 +690,68 @@ export function CampaignsTab() {
             )}
           </div>
 
+          {/* AI Brand-Tone Draft Copy Helper */}
+          {state.settings.ai?.enabled !== false && (
+            <div className="space-y-2 rounded-lg border border-indigo-200/80 bg-indigo-50/40 p-3 text-xs dark:border-indigo-900/50 dark:bg-indigo-950/20">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="flex items-center gap-1.5 font-semibold text-indigo-800 dark:text-indigo-200">
+                  <Sparkles size={13} className="text-indigo-600 dark:text-indigo-400" />
+                  تولید متن پیامک / کمپین مطابق لحن برند سازمان (A/B)
+                </span>
+                {aiDraftMeta && (
+                  <span className="rounded bg-white px-2 py-0.5 text-[10px] font-semibold text-indigo-700 dark:bg-slate-900 dark:text-indigo-300">
+                    {aiDraftMeta}
+                  </span>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  value={aiOfferText}
+                  onChange={(e) => setAiOfferText(e.target.value)}
+                  placeholder="پیشنهاد/تخفیف کمپین (مثلاً ۱۵٪ تخفیف وفاداری)"
+                  className="min-w-[200px] flex-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-900"
+                />
+                <button
+                  type="button"
+                  disabled={aiDraftLoading}
+                  onClick={async () => {
+                    setAiDraftLoading(true);
+                    setAiDraftMeta('');
+                    const segName =
+                      state.customerSegments.find((s) => s.id === cmpSegmentId)?.name ?? 'کل مشتریان';
+                    const res = await draftCampaignCopyInBrandTone(
+                      state,
+                      {
+                        goal: cmpName.trim() || 'جشنواره ویژه مشتریان',
+                        channel: cmpChannel,
+                        audienceLabel: segName,
+                        discountText: aiOfferText,
+                      },
+                      logAiUsage,
+                    );
+                    setAiDraftLoading(false);
+                    if (res.ok) {
+                      setCmpSubjA(res.data.subjectA);
+                      setCmpBodyA(res.data.bodyA);
+                      setCmpSubjB(res.data.subjectB);
+                      setCmpBodyB(res.data.bodyB);
+                      setCmpAbEnabled(true);
+                      setAiDraftMeta(
+                        `تولیدشده با هوش مصنوعی (AI-generated) · لحن: ${res.data.toneLabel}`,
+                      );
+                    } else {
+                      setAiDraftMeta(res.error);
+                    }
+                  }}
+                  className="inline-flex items-center gap-1 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-40"
+                >
+                  <Sparkles size={12} />
+                  {aiDraftLoading ? 'در حال نگارش...' : 'نگارش دو نسخه A/B با AI'}
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* A/B Toggle + Variant Content */}
           <label className="flex items-center gap-2 text-xs font-medium">
             <input
@@ -696,8 +764,11 @@ export function CampaignsTab() {
 
           <div className={`grid gap-3 ${cmpAbEnabled ? 'sm:grid-cols-2' : ''}`}>
             <div className="space-y-2 rounded-lg border border-slate-200 p-3 dark:border-slate-800">
-              <div className="text-xs font-semibold text-indigo-600 dark:text-indigo-400">
-                نسخه A
+              <div className="flex items-center justify-between text-xs font-semibold text-indigo-600 dark:text-indigo-400">
+                <span>نسخه A</span>
+                <span className="text-[10px] font-normal tabular-nums text-slate-400">
+                  {toFa(cmpBodyA.length)} کاراکتر
+                </span>
               </div>
               <input
                 value={cmpSubjA}

@@ -1,13 +1,14 @@
 import { useMemo, useState } from 'react';
 import dayjs from 'dayjs';
 import jalaliday from 'jalaliday';
-import { AlertTriangle, BarChart3, Clock, GripVertical, History, UserPlus } from 'lucide-react';
+import { AlertTriangle, BarChart3, Clock, GripVertical, History, Trash2, UserPlus } from 'lucide-react';
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { useClientFlow } from '../../store/useClientFlowStore';
 import type { Opportunity, PackSalesConfig, PipelineStage } from '../../types';
 import { formatDurationHoursFa } from '../../utils/crmHelpers';
 import { formatCustomFieldValue, getTableCustomFields } from '../../utils/customFieldValidation';
 import { formatJalali, formatToman, toFa } from '../../utils/jalali';
+import { hasPermission } from '../../utils/security';
 import { Modal } from '../Modal';
 
 dayjs.extend(jalaliday);
@@ -34,7 +35,8 @@ export function PipelineKanbanTab({
   onSelectPipeline,
   onCreateQuoteForOpp,
 }: PipelineKanbanTabProps) {
-  const { state, moveOpportunityStage, convertOpportunityToCustomer } = useClientFlow();
+  const { state, moveOpportunityStage, convertOpportunityToCustomer, softDeleteEntity } = useClientFlow();
+  const canDeleteOpp = hasPermission(state, 'sales', 'delete');
 
   const [dragOppId, setDragOppId] = useState<string | null>(null);
   const [dragOverStage, setDragOverStage] = useState<PipelineStage | null>(null);
@@ -58,6 +60,7 @@ export function PipelineKanbanTab({
   const pipelineOpps = useMemo(() => {
     const activeBranch = state.settings.activeBranchId;
     return state.opportunities.filter((o) => {
+      if (o.isDeleted) return false;
       const matchesPipeline = (o.pipelineId ?? defaultPipelineId) === activePipeline?.id;
       const matchesBranch = !activeBranch || activeBranch === 'all' || !o.branchId || o.branchId === activeBranch;
       return matchesPipeline && matchesBranch;
@@ -144,7 +147,7 @@ export function PipelineKanbanTab({
             >
               {state.pipelines.map((pl) => (
                 <option key={pl.id} value={pl.id}>
-                  {pl.name} ({toFa(state.opportunities.filter((o) => (o.pipelineId ?? defaultPipelineId) === pl.id).length)})
+                  {pl.name} ({toFa(state.opportunities.filter((o) => !o.isDeleted && (o.pipelineId ?? defaultPipelineId) === pl.id).length)})
                 </option>
               ))}
             </select>
@@ -380,6 +383,17 @@ export function PipelineKanbanTab({
                             >
                               <UserPlus size={11} />
                               تبدیل مشتری
+                            </button>
+                          )}
+                          {canDeleteOpp && (
+                            <button
+                              type="button"
+                              onClick={() => softDeleteEntity('opportunity', opp.id)}
+                              title="انتقال به سطل بازیافت"
+                              aria-label={`حذف معامله ${opp.title}`}
+                              className="inline-flex items-center justify-center rounded border border-slate-200 bg-white px-1.5 py-1 text-slate-400 hover:border-rose-200 hover:text-rose-600 dark:border-slate-700 dark:bg-slate-900 dark:hover:border-rose-900 dark:hover:text-rose-400"
+                            >
+                              <Trash2 size={11} />
                             </button>
                           )}
                         </div>

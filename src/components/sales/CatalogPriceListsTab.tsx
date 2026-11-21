@@ -25,6 +25,7 @@ export function CatalogPriceListsTab() {
     deletePriceList,
     addCoupon,
     toggleCoupon,
+    softDeleteEntity,
   } = useClientFlow();
 
   const [section, setSection] = useState<'catalog' | 'pricelists' | 'coupons'>('catalog');
@@ -69,18 +70,20 @@ export function CatalogPriceListsTab() {
   );
 
   const catalogItems = useMemo(() => {
-    const prods = state.products.map((p) => ({
-      kind: 'product' as const,
-      id: p.id,
-      name: p.name,
-      code: p.sku,
-      category: p.category || 'کالا',
-      unit: p.unit || 'عدد',
-      taxRate: p.taxRate ?? 10,
-      price: p.price,
-      active: p.active,
-      raw: p,
-    }));
+    const prods = state.products
+      .filter((p) => !p.isDeleted)
+      .map((p) => ({
+        kind: 'product' as const,
+        id: p.id,
+        name: p.name,
+        code: p.sku,
+        category: p.category || 'کالا',
+        unit: p.unit || 'عدد',
+        taxRate: p.taxRate ?? 10,
+        price: p.price,
+        active: p.active,
+        raw: p,
+      }));
     const svcs = state.services.map((s) => ({
       kind: 'service' as const,
       id: s.id,
@@ -341,18 +344,31 @@ export function CatalogPriceListsTab() {
                       </Badge>
                     </td>
                     <td className="px-4 py-3">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          item.kind === 'product'
-                            ? openEditProduct(item.raw as Product)
-                            : openEditService(item.raw as Service)
-                        }
-                        className="inline-flex items-center gap-1 whitespace-nowrap rounded border border-slate-200 px-2.5 py-1 text-[11px] hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800"
-                      >
-                        <Pencil size={11} />
-                        ویرایش
-                      </button>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            item.kind === 'product'
+                              ? openEditProduct(item.raw as Product)
+                              : openEditService(item.raw as Service)
+                          }
+                          className="inline-flex items-center gap-1 whitespace-nowrap rounded border border-slate-200 px-2.5 py-1 text-[11px] hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800"
+                        >
+                          <Pencil size={11} />
+                          ویرایش
+                        </button>
+                        {item.kind === 'product' && (
+                          <button
+                            type="button"
+                            onClick={() => softDeleteEntity('product', item.id)}
+                            title="انتقال به سطل بازیافت"
+                            aria-label={`حذف محصول ${item.name}`}
+                            className="rounded border border-slate-200 p-1 text-slate-400 hover:border-rose-200 hover:text-rose-600 dark:border-slate-700 dark:hover:border-rose-900 dark:hover:text-rose-400"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}

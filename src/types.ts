@@ -35,6 +35,7 @@ export type BaseEntityMeta = {
   createdBy?: string;
   isDeleted?: boolean;
   deletedAt?: string;
+  deletedBy?: string;
   version?: number;
 };
 
@@ -1379,6 +1380,14 @@ export type IndustryPack =
   | 'salon'
   | 'restaurant'
   | 'freelancer'
+  | 'car_service'
+  | 'law_accounting'
+  | 'travel_agency'
+  | 'pharmacy'
+  | 'wholesale'
+  | 'gym'
+  | 'school'
+  | 'hotel'
   | 'general';
 
 export type PackCustomerConfig = {
@@ -1431,14 +1440,59 @@ export type PackKpiDef = {
   higherIsBetter: boolean;
 };
 
+export type PackSampleData = {
+  customers: {
+    name: string;
+    phone: string;
+    personType?: CustomerPersonType;
+    companyName?: string;
+    lifecycle?: CustomerLifecycle;
+    source?: string;
+    tags?: string[];
+    customFields?: Record<string, string>;
+  }[];
+  leads?: {
+    name: string;
+    phone: string;
+    source: string;
+    estimatedAmount?: number;
+    score?: number;
+    notes?: string;
+  }[];
+  orders?: {
+    customerIndex: number;
+    productName: string;
+    qty: number;
+    price: number;
+    status: OrderStatus;
+    notes?: string;
+  }[];
+  appointments?: {
+    customerIndex: number;
+    serviceName: string;
+    offsetHours: number;
+    status: AppointmentStatus;
+    notes?: string;
+  }[];
+  tickets?: {
+    customerIndex: number;
+    subject: string;
+    priority: 'low' | 'normal' | 'high';
+    category?: string;
+    status: TicketStatus;
+  }[];
+};
+
 export type PackTemplate = {
   id: string;
   key: string;
   name: string;
   nameEn: string;
   tier: 'full' | 'medium' | 'light';
+  category?: 'healthcare' | 'commerce' | 'services' | 'hospitality' | 'b2b' | 'education';
   description: string;
   descriptionEn: string;
+  enabledModules?: string[];
   customerMeta?: PackCustomerConfig;
   salesMeta?: PackSalesConfig;
   orderMeta?: PackOrderConfig;
@@ -1450,6 +1504,9 @@ export type PackTemplate = {
   products: Omit<Product, 'id'>[];
   rules: Omit<Rule, 'id'>[];
   workflowTemplates?: Omit<WorkflowDefinition, 'id' | 'updatedAt'>[];
+  messageTemplates?: Omit<MessageTemplate, 'id' | 'updatedAt'>[];
+  defaultReports?: Omit<SavedReportConfig, 'id' | 'createdAt' | 'updatedAt'>[];
+  sampleData?: PackSampleData;
   exportedAt?: string;
   isCustom?: boolean;
 };
@@ -1673,6 +1730,44 @@ export type TenantMeta = {
   updatedAt: string;
 };
 
+export type AiBrandTone = 'friendly' | 'formal' | 'clinical_expert' | 'luxury';
+
+export type AiFeatureKey =
+  | 'chat_rag'
+  | 'timeline_summary'
+  | 'ticket_reply'
+  | 'ticket_triage'
+  | 'lead_scoring'
+  | 'nl_to_filter'
+  | 'campaign_draft'
+  | 'content_ideas'
+  | 'evaluation';
+
+export type AiConfig = {
+  enabled: boolean;
+  brandTone: AiBrandTone;
+  maskPiiBeforeSend: boolean;
+  logUsage: boolean;
+  model: string;
+};
+
+export type AiUsageLogEntry = {
+  id: string;
+  feature: AiFeatureKey;
+  mode: 'gemini' | 'fallback';
+  model: string;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  piiRedactedCount: number;
+  latencyMs: number;
+  actorName: string;
+  actorRole: string;
+  promptPreview: string;
+  status: 'success' | 'fallback' | 'blocked';
+  createdAt: string;
+};
+
 export type UiMode = 'solo' | 'enterprise';
 export type AppLanguage = 'fa' | 'en';
 
@@ -1697,6 +1792,7 @@ export type BusinessSettings = {
   defaultUnit?: string;
   notifications?: NotificationPreferences;
   security?: SecurityPolicyConfig;
+  ai?: AiConfig;
   uiMode: UiMode;
   language: AppLanguage;
   latinDigits?: boolean;
@@ -1706,6 +1802,7 @@ export type BusinessSettings = {
   dashboardWidgets: DashboardWidgetConfig[];
   dashboardLayoutsByRole?: Partial<Record<DashboardPersonaRole, DashboardWidgetConfig[]>>;
   kpiTargets?: Record<string, number>;
+  enabledModules?: string[];
 };
 
 export type AppState = {
@@ -1786,6 +1883,7 @@ export type AppState = {
   teams?: TeamDefinition[];
   users?: CrmUser[];
   dataAccessLogs?: DataAccessLogEntry[];
+  aiUsageLogs?: AiUsageLogEntry[];
   customPacks: PackTemplate[];
   auditLogs: AuditLogEntry[];
   processedRuleKeys: string[];

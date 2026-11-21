@@ -12,6 +12,7 @@ import {
   validateCustomFieldValues,
 } from '../../utils/customFieldValidation';
 import { formatJalaliDateTime, formatToman, toFa } from '../../utils/jalali';
+import { hasPermission } from '../../utils/security';
 import { OrderDetailModal } from './OrderDetailModal';
 import {
   CARRIER_LABEL,
@@ -31,7 +32,8 @@ const makeIdempotencyKey = () =>
   `ord-key-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 
 export function OrdersTab({ branchOrders, createOpen, setCreateOpen }: OrdersTabProps) {
-  const { state, addOrder, createInvoiceForOrder } = useClientFlow();
+  const { state, addOrder, createInvoiceForOrder, softDeleteEntity } = useClientFlow();
+  const canDeleteOrder = hasPermission(state, 'orders', 'delete');
 
   const packOrderConfig = useMemo(
     () => getPackOrderConfig(state.settings.industryPack, state.customPacks),
@@ -74,12 +76,14 @@ export function OrdersTab({ branchOrders, createOpen, setCreateOpen }: OrdersTab
 
   const nowMs = Date.now();
   const filteredOrders = useMemo(() => {
-    return branchOrders.filter((o) => {
-      if (channelFilter !== 'all' && (o.channel ?? 'website') !== channelFilter) return false;
-      if (statusFilter === 'all') return true;
-      if (statusFilter === 'overdue') return isOrderOverdue(o, nowMs);
-      return o.status === statusFilter;
-    });
+    return branchOrders
+      .filter((o) => !o.isDeleted)
+      .filter((o) => {
+        if (channelFilter !== 'all' && (o.channel ?? 'website') !== channelFilter) return false;
+        if (statusFilter === 'all') return true;
+        if (statusFilter === 'overdue') return isOrderOverdue(o, nowMs);
+        return o.status === statusFilter;
+      });
   }, [branchOrders, statusFilter, channelFilter, nowMs]);
 
   const orderActiveFields = useMemo(
@@ -289,6 +293,17 @@ export function OrdersTab({ branchOrders, createOpen, setCreateOpen }: OrdersTab
                           <Eye size={14} />
                           پیگیری / ارسال
                         </button>
+                        {canDeleteOrder && (
+                          <button
+                            type="button"
+                            onClick={() => softDeleteEntity('order', o.id)}
+                            title="انتقال به سطل بازیافت"
+                            aria-label={`حذف سفارش ${o.id}`}
+                            className="rounded-md border border-slate-200 p-1 text-slate-400 hover:border-rose-200 hover:text-rose-600 dark:border-slate-700 dark:hover:border-rose-900 dark:hover:text-rose-400"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>

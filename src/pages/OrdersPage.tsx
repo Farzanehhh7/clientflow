@@ -18,17 +18,24 @@ export function OrdersPage() {
   const activeBranch = state.settings.activeBranchId;
 
   const branchOrders = useMemo(() => {
-    if (!activeBranch || activeBranch === 'all') return state.orders;
-    return state.orders.filter((o) => !o.branchId || o.branchId === activeBranch);
+    const active = state.orders.filter((o) => !o.isDeleted);
+    if (!activeBranch || activeBranch === 'all') return active;
+    return active.filter((o) => !o.branchId || o.branchId === activeBranch);
   }, [state.orders, activeBranch]);
 
   const branchInvoices = useMemo(() => {
-    if (!activeBranch || activeBranch === 'all') return state.invoices;
-    return state.invoices.filter((inv) => !inv.branchId || inv.branchId === activeBranch);
+    const active = state.invoices.filter((inv) => !inv.isDeleted);
+    if (!activeBranch || activeBranch === 'all') return active;
+    return active.filter((inv) => !inv.branchId || inv.branchId === activeBranch);
   }, [state.invoices, activeBranch]);
 
+  const activeProductsCount = useMemo(
+    () => state.products.filter((p) => !p.isDeleted).length,
+    [state.products],
+  );
+
   const lowStockProducts = useMemo(
-    () => state.products.filter((p) => p.stock <= (p.minStock ?? 8)),
+    () => state.products.filter((p) => !p.isDeleted && p.stock <= (p.minStock ?? 8)),
     [state.products],
   );
 
@@ -39,7 +46,7 @@ export function OrdersPage() {
       key: 'contracts_warranty',
       label: `قراردادها و گارانتی (${toFa(state.contracts.length + state.warranties.length)})`,
     },
-    { key: 'inventory', label: `انبار و کوپن (${toFa(state.products.length)})` },
+    { key: 'inventory', label: `انبار و کوپن (${toFa(activeProductsCount)})` },
     { key: 'projects', label: `پروژه‌ها و استقرار (${toFa(state.projects.length)})` },
   ];
 

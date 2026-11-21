@@ -7,6 +7,7 @@ import type {
   CustomFieldDef,
   Customer,
   CustomerSegment,
+  Invoice,
   LoyaltyConfig,
   LoyaltyTier,
   Quote,
@@ -62,6 +63,69 @@ export function computeCustomerStats(customer: Customer, state: AppState): Custo
     interactionsCount,
     score,
   };
+}
+
+/** O(N + M) batch stats calculator for 10,000+ customer lists without O(N*M) scans */
+export function computeAllCustomerStatsMap(
+  customers: Customer[],
+  state: AppState,
+): Map<string, CustomerComputedStats> {
+  const aptCountMap = new Map<string, { total: number; done: number }>();
+  for (const a of state.appointments) {
+    if (a.isDeleted) continue;
+    const cur = aptCountMap.get(a.customerId) ?? { total: 0, done: 0 };
+    cur.total += 1;
+    if (a.status === 'done') cur.done += 1;
+    aptCountMap.set(a.customerId, cur);
+  }
+
+  const spendMap = new Map<string, number>();
+  for (const o of state.orders) {
+    if (o.isDeleted || o.status === 'cancelled') continue;
+    const orderTotal =
+      o.items.reduce((s, it) => s + it.qty * it.price, 0) - (o.discountAmount ?? 0);
+    spendMap.set(o.customerId, (spendMap.get(o.customerId) ?? 0) + orderTotal);
+  }
+
+  const npsMap = new Map<string, { sum: number; count: number }>();
+  for (const n of state.npsSurveys) {
+    const cur = npsMap.get(n.customerId) ?? { sum: 0, count: 0 };
+    cur.sum += n.score;
+    cur.count += 1;
+    npsMap.set(n.customerId, cur);
+  }
+
+  const intMap = new Map<string, number>();
+  for (const i of state.interactions) {
+    intMap.set(i.customerId, (intMap.get(i.customerId) ?? 0) + 1);
+  }
+
+  const result = new Map<string, CustomerComputedStats>();
+  for (const customer of customers) {
+    const apt = aptCountMap.get(customer.id) ?? { total: 0, done: 0 };
+    const totalSpent = spendMap.get(customer.id) ?? 0;
+    const nps = npsMap.get(customer.id);
+    const avgNps = nps && nps.count > 0 ? nps.sum / nps.count : null;
+    const interactionsCount = intMap.get(customer.id) ?? 0;
+
+    const spendPts = Math.min(35, Math.round((totalSpent / 5_000_000) * 35));
+    const aptPts = Math.min(25, apt.done * 5);
+    const lc = customer.lifecycle ?? 'active';
+    const lcPts = lc === 'vip' ? 20 : lc === 'active' ? 12 : lc === 'lead' ? 6 : 2;
+    const npsPts = avgNps !== null ? Math.round((avgNps / 10) * 12) : 6;
+    const intPts = Math.min(8, interactionsCount * 2);
+    const score = Math.min(100, Math.max(5, spendPts + aptPts + lcPts + npsPts + intPts));
+
+    result.set(customer.id, {
+      totalSpent,
+      completedAppointments: apt.done,
+      totalAppointments: apt.total,
+      avgNps,
+      interactionsCount,
+      score,
+    });
+  }
+  return result;
 }
 
 export function evaluateSegment(
@@ -378,5 +442,72 @@ export function getSegmentMatchingCustomers(state: AppState, segmentId?: string)
   if (!seg) return eligible;
   return eligible.filter((c) => evaluateSegment(c, seg, computeCustomerStats(c, state)));
 }
+
+export type AgingBucketKey = '0_30' | '31_60' | '61_90' | 'over_90';
+
+export interface AgingBucketSummary {
+  key: AgingBucketKey;
+  label: string;
+  amount: number;
+  count: number;
+  color: string;
+}
+
+export interface ReceivablesAgingReport {
+  totalOpen: number;
+  overdueInvoicesCount: number;
+  buckets: AgingBucketSummary[];
+}
+
+/** Pure invoices receivables aging calculator (0-30, 31-60, 61-90, 90+ days past due) */
+export function computeReceivablesAgingReport(
+  invoices: Pick<Invoice, 'grandTotal' | 'paidAmount' | 'dueAt' | 'isDeleted'>[],
+  nowMs: number = Date.now(),
+): ReceivablesAgingReport {
+  const amounts: Record<AgingBucketKey, number> = {
+    '0_30': 0,
+    '31_60': 0,
+    '61_90': 0,
+    over_90: 0,
+  };
+  const counts: Record<AgingBucketKey, number> = {
+    '0_30': 0,
+    '31_60': 0,
+    '61_90': 0,
+    over_90: 0,
+  };
+
+  let totalOpen = 0;
+  let overdueInvoicesCount = 0;
+
+  for (const inv of invoices) {
+    if (inv.isDeleted) continue;
+    const open = Math.max(0, inv.grandTotal - inv.paidAmount);
+    if (open <= 0) continue;
+
+    totalOpen += open;
+    const dueMs = new Date(inv.dueAt).getTime();
+    const rawDays = Number.isFinite(dueMs) ? Math.floor((nowMs - dueMs) / (24 * 3600_000)) : 0;
+    const days = Math.max(0, rawDays);
+    if (rawDays > 0) overdueInvoicesCount += 1;
+
+    const bucket: AgingBucketKey =
+      days <= 30 ? '0_30' : days <= 60 ? '31_60' : days <= 90 ? '61_90' : 'over_90';
+    amounts[bucket] += open;
+    counts[bucket] += 1;
+  }
+
+  return {
+    totalOpen,
+    overdueInvoicesCount,
+    buckets: [
+      { key: '0_30', label: '۰ تا ۳۰ روز', amount: amounts['0_30'], count: counts['0_30'], color: '#10b981' },
+      { key: '31_60', label: '۳۱ تا ۶۰ روز', amount: amounts['31_60'], count: counts['31_60'], color: '#f59e0b' },
+      { key: '61_90', label: '۶۱ تا ۹۰ روز', amount: amounts['61_90'], count: counts['61_90'], color: '#f97316' },
+      { key: 'over_90', label: 'بالای ۹۰ روز', amount: amounts.over_90, count: counts.over_90, color: '#ef4444' },
+    ],
+  };
+}
+
 
 

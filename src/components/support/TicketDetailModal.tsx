@@ -12,6 +12,12 @@ import {
   Sparkles,
   Trash2,
 } from 'lucide-react';
+import {
+  suggestTicketCategoryAndPriority,
+  suggestTicketReply,
+  type TicketReplySuggestion,
+  type TicketTriageSuggestion,
+} from '../../services/aiService';
 import { useClientFlow } from '../../store/useClientFlowStore';
 import type {
   ComplaintStatus,
@@ -50,6 +56,7 @@ export function TicketDetailModal({ ticketId, onClose, agents }: TicketDetailMod
     mergeTickets,
     escalateTicket,
     createWorkflowInstance,
+    logAiUsage,
   } = useClientFlow();
 
   const [msgVisibility, setMsgVisibility] = useState<'public' | 'internal'>('public');
@@ -58,9 +65,19 @@ export function TicketDetailModal({ ticketId, onClose, agents }: TicketDetailMod
   const [draftAttachments, setDraftAttachments] = useState<TicketAttachment[]>([]);
   const [mergeTargetId, setMergeTargetId] = useState('');
   const [nowTickMs, setNowTickMs] = useState(() => Date.now());
+  const [aiReplyLoading, setAiReplyLoading] = useState(false);
+  const [aiReplyDraft, setAiReplyDraft] = useState<{
+    data: TicketReplySuggestion;
+    mode: 'gemini' | 'fallback';
+  } | null>(null);
+  const [aiTriageResult, setAiTriageResult] = useState<TicketTriageSuggestion | null>(null);
+  const [aiError, setAiError] = useState('');
 
   useEffect(() => {
     if (!ticketId) return;
+    setAiReplyDraft(null);
+    setAiTriageResult(null);
+    setAiError('');
     const timer = window.setInterval(() => setNowTickMs(Date.now()), 15_000);
     return () => window.clearInterval(timer);
   }, [ticketId]);
@@ -539,6 +556,129 @@ export function TicketDetailModal({ ticketId, onClose, agents }: TicketDetailMod
                 </div>
               ))}
             </div>
+          </div>
+        )}
+
+        {/* AI Reply & Triage Assistant (Human Approval Required) */}
+        {state.settings.ai?.enabled !== false && (
+          <div className="space-y-2 rounded-xl border border-indigo-200/80 bg-indigo-50/30 p-3 text-xs dark:border-indigo-900/50 dark:bg-indigo-950/20">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 font-semibold text-indigo-800 dark:text-indigo-200">
+                <Sparkles size={14} className="text-indigo-600 dark:text-indigo-400" />
+                <span>دستیار پاسخ و طبقه‌بندی تیکت (نیاز به تأیید کارشناس پیش از ارسال)</span>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  disabled={aiReplyLoading}
+                  onClick={async () => {
+                    setAiError('');
+                    setAiReplyLoading(true);
+                    const res = await suggestTicketCategoryAndPriority(
+                      state,
+                      ticket.subject,
+                      messages[0]?.body ?? '',
+                      logAiUsage,
+                    );
+                    setAiReplyLoading(false);
+                    if (!res.ok) setAiError(res.error);
+                    else setAiTriageResult(res.data);
+                  }}
+                  className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                >
+                  پیشنهاد دسته و اولویت (AI)
+                </button>
+                <button
+                  type="button"
+                  disabled={aiReplyLoading}
+                  onClick={async () => {
+                    setAiError('');
+                    setAiReplyLoading(true);
+                    const res = await suggestTicketReply(
+                      state,
+                      ticket,
+                      customer,
+                      messages,
+                      state.kbArticles,
+                      logAiUsage,
+                    );
+                    setAiReplyLoading(false);
+                    if (!res.ok) setAiError(res.error);
+                    else setAiReplyDraft({ data: res.data, mode: res.meta.mode });
+                  }}
+                  className="inline-flex items-center gap-1 rounded-lg bg-indigo-600 px-3 py-1 text-[11px] font-medium text-white hover:bg-indigo-700 disabled:opacity-40"
+                >
+                  <Sparkles size={12} />
+                  {aiReplyLoading ? 'در حال نگارش...' : 'پیشنهاد پاسخ هوشمند (AI)'}
+                </button>
+              </div>
+            </div>
+
+            {aiError && <p className="text-rose-600 dark:text-rose-400">{aiError}</p>}
+
+            {aiTriageResult && (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white p-2.5 dark:border-slate-800 dark:bg-slate-900">
+                <div>
+                  <span className="ml-2 rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300">
+                    AI-generated
+                  </span>
+                  <span>
+                    پیشنهاد: دسته «{aiTriageResult.category}» · اولویت «{aiTriageResult.priority}» · شدت «{aiTriageResult.severity}» — {aiTriageResult.reason}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    updateTicket(ticket.id, {
+                      category: aiTriageResult.category,
+                      priority: aiTriageResult.priority,
+                      severity: aiTriageResult.severity,
+                    });
+                    setAiTriageResult(null);
+                  }}
+                  className="rounded-md bg-emerald-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-emerald-700"
+                >
+                  اعمال در تیکت
+                </button>
+              </div>
+            )}
+
+            {aiReplyDraft && (
+              <div className="space-y-2 rounded-lg border border-indigo-200 bg-white p-3 dark:border-indigo-800 dark:bg-slate-900">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-[10px]">
+                  <span className="font-semibold text-indigo-600 dark:text-indigo-400">
+                    تولیدشده با هوش مصنوعی (AI-generated · {aiReplyDraft.mode === 'gemini' ? 'Gemini' : 'Fallback'}) · لحن: {aiReplyDraft.data.toneNote}
+                  </span>
+                  <span className="text-amber-700 dark:text-amber-300">
+                    پیش‌نویس تا پیش از تأیید شما ارسال نمی‌شود
+                  </span>
+                </div>
+                <p className="whitespace-pre-line rounded bg-slate-50 p-2.5 leading-relaxed text-slate-700 dark:bg-slate-800/60 dark:text-slate-200">
+                  {aiReplyDraft.data.draftReply}
+                </p>
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setAiReplyDraft(null)}
+                    className="rounded-lg border border-slate-200 px-2.5 py-1 text-[11px] text-slate-600 dark:border-slate-700 dark:text-slate-300"
+                  >
+                    رد کردن
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMsgVisibility('public');
+                      setMsgAuthorType('agent');
+                      setMsgBody(aiReplyDraft.data.draftReply);
+                      setAiReplyDraft(null);
+                    }}
+                    className="rounded-lg bg-emerald-600 px-3 py-1 text-[11px] font-semibold text-white hover:bg-emerald-700"
+                  >
+                    تأیید و درج در کادر پاسخ
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
 

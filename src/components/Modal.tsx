@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { X } from 'lucide-react';
 
 interface ModalProps {
@@ -18,13 +18,28 @@ const WIDTH_CLASS: Record<NonNullable<ModalProps['maxWidth']>, string> = {
 };
 
 export function Modal({ open, onClose, title, maxWidth = 'lg', children }: ModalProps) {
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+
   useEffect(() => {
     if (!open) return;
+    previousFocusRef.current = document.activeElement as HTMLElement | null;
+
+    const timer = window.setTimeout(() => {
+      if (panelRef.current && !panelRef.current.contains(document.activeElement)) {
+        panelRef.current.focus();
+      }
+    }, 0);
+
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('keydown', onKey);
+      previousFocusRef.current?.focus?.();
+    };
   }, [open, onClose]);
 
   if (!open) return null;
@@ -40,7 +55,9 @@ export function Modal({ open, onClose, title, maxWidth = 'lg', children }: Modal
       }}
     >
       <div
-        className={`w-full ${WIDTH_CLASS[maxWidth]} max-h-[90vh] flex flex-col rounded-xl border border-slate-200 bg-white text-slate-900 shadow-lg dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100`}
+        ref={panelRef}
+        tabIndex={-1}
+        className={`w-full ${WIDTH_CLASS[maxWidth]} max-h-[90vh] flex flex-col rounded-xl border border-slate-200 bg-white text-slate-900 shadow-lg focus:outline-none dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100`}
       >
         <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-800">
           <h2 className="text-base font-semibold">{title}</h2>

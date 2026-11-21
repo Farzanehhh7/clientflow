@@ -3275,6 +3275,13 @@ export const createInitialState = (): AppState => ({
       quietHoursEnd: 8,
     },
     security: { ...DEFAULT_SECURITY_POLICY },
+    ai: {
+      enabled: true,
+      brandTone: 'friendly',
+      maskPiiBeforeSend: true,
+      logUsage: true,
+      model: 'gemini-4-hydrogen',
+    },
     uiMode: 'enterprise',
     language: 'fa',
     latinDigits: false,
@@ -3282,4 +3289,5 @@ export const createInitialState = (): AppState => ({
     simulatedOffline: false,
     dashboardWidgets: defaultDashboardWidgets,
   },
+  aiUsageLogs: [],
 });

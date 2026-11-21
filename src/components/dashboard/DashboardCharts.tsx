@@ -40,6 +40,7 @@ import {
   isIsoInJalaliRange,
   toFa,
 } from '../../utils/jalali';
+import { computeReceivablesAgingReport } from '../../utils/crmHelpers';
 import { evaluateTicketSla } from '../../utils/slaEngine';
 import dayjs from 'dayjs';
 
@@ -600,24 +601,10 @@ export function AgingChartWidget({ scope }: { scope: DashboardAnalyticsScope }) 
   const axisColor = isDark ? '#94a3b8' : '#64748b';
   const nowMs = Date.now();
 
-  const agingBuckets = useMemo(() => {
-    const b = { b0: 0, b31: 0, b61: 0, b90: 0 };
-    for (const inv of scope.branchInvoices) {
-      const open = Math.max(0, inv.grandTotal - inv.paidAmount);
-      if (open <= 0) continue;
-      const days = Math.max(0, Math.floor((nowMs - new Date(inv.dueAt).getTime()) / (24 * 3600_000)));
-      if (days <= 30) b.b0 += open;
-      else if (days <= 60) b.b31 += open;
-      else if (days <= 90) b.b61 += open;
-      else b.b90 += open;
-    }
-    return [
-      { label: '۰ تا ۳۰ روز', amount: b.b0, color: '#10b981' },
-      { label: '۳۱ تا ۶۰ روز', amount: b.b31, color: '#f59e0b' },
-      { label: '۶۱ تا ۹۰ روز', amount: b.b61, color: '#f97316' },
-      { label: 'بالای ۹۰ روز', amount: b.b90, color: '#ef4444' },
-    ];
-  }, [scope.branchInvoices, nowMs]);
+  const agingBuckets = useMemo(
+    () => computeReceivablesAgingReport(scope.branchInvoices, nowMs).buckets,
+    [scope.branchInvoices, nowMs],
+  );
 
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">

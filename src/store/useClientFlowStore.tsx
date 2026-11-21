@@ -1,6 +1,13 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { getDefaultWidgetsForPersona } from '../data/dashboardCatalog';
-import { INDUSTRY_PACKS, buildPackFromState, getPackSalesConfig } from '../data/packs';
+import {
+  INDUSTRY_PACKS,
+  buildPackFromState,
+  getPackEnabledModules,
+  getPackKpiDefs,
+  getPackOrderConfig,
+  getPackSalesConfig,
+} from '../data/packs';
 import { DEFAULT_TENANT_ID } from '../data/repositories/customerRepository';
 import { stampCreateMeta, stampUpdateMeta } from '../data/repositories/types';
 import { createInitialState, defaultDashboardWidgets } from '../data/seed';
@@ -9,7 +16,9 @@ import { notificationProvider } from '../services/providers/notificationProvider
 import { getPaymentGatewayProvider } from '../services/providers/paymentGatewayAdapter';
 import { getTelephonyProvider } from '../services/providers/telephonyAdapter';
 import { computeSyncHmacPreview } from '../services/providers/webhookAndOpenApi';
+import { DEFAULT_AI_CONFIG } from '../utils/aiGuardrails';
 import type {
+  AiUsageLogEntry,
   AppState,
   Appointment,
   AppointmentStatus,
@@ -286,6 +295,7 @@ function mergeLoadedState(parsed: Partial<AppState> | null | undefined): AppStat
     teams: parsed.teams ?? fallback.teams,
     users: parsed.users ?? fallback.users,
     dataAccessLogs: parsed.dataAccessLogs ?? fallback.dataAccessLogs ?? [],
+    aiUsageLogs: parsed.aiUsageLogs ?? fallback.aiUsageLogs ?? [],
     schemaVersion: CURRENT_SCHEMA_VERSION,
     settings: {
       ...fallback.settings,
@@ -307,6 +317,11 @@ function mergeLoadedState(parsed: Partial<AppState> | null | undefined): AppStat
         ...DEFAULT_SECURITY_POLICY,
         ...(fallback.settings.security ?? {}),
         ...(parsed.settings?.security ?? {}),
+      },
+      ai: {
+        ...DEFAULT_AI_CONFIG,
+        ...(fallback.settings.ai ?? {}),
+        ...(parsed.settings?.ai ?? {}),
       },
       taxRatePct: parsed.settings?.taxRatePct ?? fallback.settings.taxRatePct ?? 9,
       currency: parsed.settings?.currency ?? fallback.settings.currency ?? 'toman',
@@ -783,9 +798,19 @@ type ClientFlowContextValue = {
   deleteScheduledReport: (id: string) => void;
   runScheduledReportNow: (id: string) => void;
 
-  // Packs & Pack Builder (Section 7)
-  applyIndustryPack: (packKey: IndustryPack, installDefaults?: boolean) => void;
-  saveCustomPack: (meta: { key: string; name: string; nameEn?: string; description: string }) => PackTemplate;
+  // Packs & Pack Builder (Section 7 + Phase 13)
+  applyIndustryPack: (
+    packKey: IndustryPack,
+    installDefaults?: boolean,
+    options?: { installSampleData?: boolean },
+  ) => void;
+  saveCustomPack: (meta: {
+    key: string;
+    name: string;
+    nameEn?: string;
+    description: string;
+    tier?: PackTemplate['tier'];
+  }) => PackTemplate;
   importCustomPack: (pack: PackTemplate) => void;
 
   // Multi-Branch (FR-CORE-04) & Settings & System
@@ -827,6 +852,8 @@ type ClientFlowContextValue = {
   deleteTeamDefinition: (teamId: string) => void;
   logDataAccess: (entry: Omit<DataAccessLogEntry, 'id' | 'at' | 'actorUserId' | 'actorName' | 'actorRole'>) => void;
   clearDataAccessLogs: () => void;
+  logAiUsage: (entry: Omit<AiUsageLogEntry, 'id' | 'createdAt'>) => void;
+  clearAiUsageLogs: () => void;
   softDeleteEntity: (entityType: TrashEntityType, id: string) => void;
   restoreEntity: (entityType: TrashEntityType, id: string) => void;
   permanentlyDeleteEntity: (entityType: TrashEntityType, id: string) => void;
@@ -7605,18 +7632,31 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
     [pushToast],
   );
 
-  // --- INDUSTRY PACKS & PACK BUILDER (Section 7) ---
+  // --- INDUSTRY PACKS & PACK BUILDER (Section 7 + Phase 13) ---
   const applyIndustryPack = useCallback(
-    (packKey: IndustryPack, installDefaults = true) => {
+    (
+      packKey: IndustryPack,
+      installDefaults = true,
+      options?: { installSampleData?: boolean },
+    ) => {
       const packDef =
         INDUSTRY_PACKS.find((p) => p.key === packKey) ??
         stateRef.current.customPacks.find((p) => p.key === packKey);
 
+      const enabledModules = getPackEnabledModules(packKey, stateRef.current.customPacks);
+
       if (!installDefaults || !packDef) {
         setState((prev) => ({
           ...prev,
-          settings: { ...prev.settings, industryPack: packKey },
-          auditLogs: [makeAudit('پیکربندی', 'update', `بسته صنعتی به ${packKey} تغییر یافت.`), ...prev.auditLogs].slice(0, 100),
+          settings: {
+            ...prev.settings,
+            industryPack: packKey,
+            enabledModules,
+          },
+          auditLogs: [
+            makeAudit('پیکربندی', 'update', `بسته صنعتی به ${packKey} تغییر یافت.`),
+            ...prev.auditLogs,
+          ].slice(0, 100),
         }));
         pushToast('بسته صنعتی فعال تغییر کرد.');
         return;
@@ -7624,6 +7664,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
 
       const cur = stateRef.current;
       const nowMs = Date.now();
+      const nowIso = new Date(nowMs).toISOString();
       const existingFieldKeys = new Set(cur.customFieldDefs.map((f) => f.key));
       const newFields: CustomFieldDef[] = packDef.customFields
         .filter((f) => !existingFieldKeys.has(f.key))
@@ -7632,7 +7673,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
       const existingEntKeys = new Set(cur.customEntityDefs.map((e) => e.key));
       const newEntities: CustomEntityDef[] = packDef.customEntities
         .filter((e) => !existingEntKeys.has(e.key))
-        .map((e, i) => ({ ...e, id: `ent_pk_${nowMs}_${i}`, createdAt: new Date().toISOString() }));
+        .map((e, i) => ({ ...e, id: `ent_pk_${nowMs}_${i}`, createdAt: nowIso }));
 
       const existingSvcNames = new Set(cur.services.map((s) => s.name));
       const newServices: Service[] = packDef.services
@@ -7645,7 +7686,6 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         .map((p, i) => ({ ...p, id: `prd_pk_${nowMs}_${i}` }));
 
       const existingRuleNames = new Set(cur.rules.map((r) => r.name));
-      // Pack rules pre-created DISABLED by default so the user explicitly enables them
       const newRules: Rule[] = packDef.rules
         .filter((r) => !existingRuleNames.has(r.name))
         .map((r, i) => ({ ...r, active: false, id: `rul_pk_${nowMs}_${i}` }));
@@ -7657,19 +7697,189 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
           ...w,
           status: 'draft' as const,
           id: `wfd_pk_${nowMs}_${i}`,
-          updatedAt: new Date().toISOString(),
+          updatedAt: nowIso,
         }));
+
+      const existingTplNames = new Set((cur.messageTemplates ?? []).map((t) => t.name));
+      const newTemplates: MessageTemplate[] = (packDef.messageTemplates ?? [])
+        .filter((t) => !existingTplNames.has(t.name))
+        .map((t, i) => ({
+          ...t,
+          id: `tpl_pk_${nowMs}_${i}`,
+          updatedAt: nowIso,
+        }));
+
+      const existingRepTitles = new Set((cur.savedReports ?? []).map((r) => r.title));
+      const newReports: SavedReportConfig[] = (packDef.defaultReports ?? [])
+        .filter((r) => !existingRepTitles.has(r.title))
+        .map((r, i) => ({
+          ...r,
+          id: `rpt_pk_${nowMs}_${i}`,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        }));
+
+      const packKpis = getPackKpiDefs(packKey, cur.customPacks);
+      const nextKpiTargets = { ...(cur.settings.kpiTargets ?? {}) };
+      for (const k of packKpis) {
+        if (nextKpiTargets[k.id] === undefined) {
+          nextKpiTargets[k.id] = k.targetValue;
+        }
+      }
+
+      // Optional non-destructive sample data installation
+      const allServices = [...cur.services, ...newServices];
+      const allProducts = [...cur.products, ...newProducts];
+      const defaultBranch = cur.branches[0]?.id ?? 'br1';
+      const defaultOwner = cur.settings.salesTeam[0] ?? 'کارشناس فروش';
+      const defaultResourceId = cur.resources[0]?.id ?? 'r1';
+
+      const newCustomers: Customer[] = [];
+      const newLeads: SalesLead[] = [];
+      const newOrders: Order[] = [];
+      const newAppointments: Appointment[] = [];
+      const newTickets: Ticket[] = [];
+
+      if (options?.installSampleData && packDef.sampleData) {
+        const sd = packDef.sampleData;
+        const phoneToCustomerId = new Map(cur.customers.map((c) => [c.phone, c.id]));
+        const indexToCustomerId = new Map<number, string>();
+
+        sd.customers.forEach((sc, idx) => {
+          const existingId = phoneToCustomerId.get(sc.phone);
+          if (existingId) {
+            indexToCustomerId.set(idx, existingId);
+            return;
+          }
+          const cid = `c_pk_${nowMs}_${idx}`;
+          indexToCustomerId.set(idx, cid);
+          phoneToCustomerId.set(sc.phone, cid);
+          newCustomers.push({
+            id: cid,
+            name: sc.name,
+            phone: sc.phone,
+            personType: sc.personType ?? 'individual',
+            companyName: sc.companyName,
+            lifecycle: sc.lifecycle ?? 'active',
+            source: sc.source ?? 'پک صنعت',
+            ownerName: defaultOwner,
+            branchId: defaultBranch,
+            tags: sc.tags ?? [],
+            customFields: sc.customFields ?? {},
+            consentSms: true,
+            consentEmail: true,
+            loyaltyPoints: 150,
+            lifetimePoints: 250,
+            createdAt: nowIso,
+          });
+        });
+
+        const existingLeadPhones = new Set(cur.leads.map((l) => `${l.name}:${l.phone}`));
+        (sd.leads ?? []).forEach((sl, idx) => {
+          if (existingLeadPhones.has(`${sl.name}:${sl.phone}`)) return;
+          newLeads.push({
+            id: `ld_pk_${nowMs}_${idx}`,
+            name: sl.name,
+            phone: sl.phone,
+            source: sl.source,
+            estimatedAmount: sl.estimatedAmount ?? 0,
+            score: sl.score ?? 75,
+            ownerName: defaultOwner,
+            status: 'new',
+            notes: sl.notes,
+            branchId: defaultBranch,
+            createdAt: nowIso,
+            updatedAt: nowIso,
+          });
+        });
+
+        const packOrderCfg = getPackOrderConfig(packKey, cur.customPacks);
+        (sd.orders ?? []).forEach((so, idx) => {
+          const cid = indexToCustomerId.get(so.customerIndex);
+          if (!cid) return;
+          const alreadyHas = cur.orders.some(
+            (o) => !o.isDeleted && o.customerId === cid && o.items.some((it) => it.name === so.productName),
+          );
+          if (alreadyHas) return;
+          const matchedProd = allProducts.find((p) => p.name === so.productName);
+          newOrders.push({
+            id: `ord_pk_${nowMs}_${idx}`,
+            customerId: cid,
+            channel: packOrderCfg.channelDefault ?? 'website',
+            items: [
+              {
+                productId: matchedProd?.id ?? `prd_ref_${idx}`,
+                name: so.productName,
+                qty: so.qty,
+                price: so.price,
+                unitPriceSnapshot: so.price,
+              },
+            ],
+            status: so.status,
+            branchId: defaultBranch,
+            createdAt: nowIso,
+          });
+        });
+
+        (sd.appointments ?? []).forEach((sa, idx) => {
+          const cid = indexToCustomerId.get(sa.customerIndex);
+          if (!cid) return;
+          const srv = allServices.find((s) => s.name === sa.serviceName) ?? allServices[0];
+          if (!srv) return;
+          const alreadyHas = cur.appointments.some(
+            (a) => !a.isDeleted && a.customerId === cid && a.serviceId === srv.id,
+          );
+          if (alreadyHas) return;
+          const startMs = nowMs + sa.offsetHours * 3600_000;
+          newAppointments.push({
+            id: `apt_pk_${nowMs}_${idx}`,
+            customerId: cid,
+            serviceId: srv.id,
+            resourceId: defaultResourceId,
+            start: new Date(startMs).toISOString(),
+            end: new Date(startMs + srv.durationMin * 60_000).toISOString(),
+            status: sa.status,
+            branchId: defaultBranch,
+          });
+        });
+
+        const existingSubjects = new Set(cur.tickets.map((t) => t.subject));
+        (sd.tickets ?? []).forEach((st, idx) => {
+          const cid = indexToCustomerId.get(st.customerIndex);
+          if (!cid || existingSubjects.has(st.subject)) return;
+          newTickets.push({
+            id: `tk_pk_${nowMs}_${idx}`,
+            trackingCode: `TK-PK-${(nowMs % 10000) + idx}`,
+            customerId: cid,
+            subject: st.subject,
+            channel: 'portal',
+            priority: st.priority,
+            severity: st.priority === 'high' ? 'major' : 'minor',
+            category: st.category ?? 'عمومی',
+            status: st.status,
+            assignee: defaultOwner,
+            createdAt: nowIso,
+          });
+        });
+      }
 
       const packSales = getPackSalesConfig(packKey, cur.customPacks);
 
       setState((prev) => ({
         ...prev,
+        customers: [...newCustomers, ...prev.customers],
+        leads: [...newLeads, ...prev.leads],
+        orders: [...newOrders, ...prev.orders],
+        appointments: [...newAppointments, ...prev.appointments],
+        tickets: [...newTickets, ...prev.tickets],
         customFieldDefs: [...prev.customFieldDefs, ...newFields],
         customEntityDefs: [...prev.customEntityDefs, ...newEntities],
         services: [...prev.services, ...newServices],
         products: [...prev.products, ...newProducts],
         rules: [...prev.rules, ...newRules],
         workflowDefinitions: [...prev.workflowDefinitions, ...newWorkflows],
+        messageTemplates: [...(prev.messageTemplates ?? []), ...newTemplates],
+        savedReports: [...(prev.savedReports ?? []), ...newReports],
         pipelineStages: packSales.defaultStages,
         pipelines: prev.pipelines.map((pl) =>
           pl.isDefault ? { ...pl, name: packSales.pipelineName, stages: packSales.defaultStages } : pl,
@@ -7677,29 +7887,31 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         settings: {
           ...prev.settings,
           industryPack: packKey,
+          enabledModules,
+          kpiTargets: nextKpiTargets,
           uiMode: packKey === 'freelancer' ? 'solo' : prev.settings.uiMode,
         },
         auditLogs: [
           makeAudit(
             'بسته صنعتی',
             'update',
-            `بسته «${packDef.name}» نصب شد (${newFields.length} فیلد، ${newRules.length} قانون آماده غیرفعال، ${newWorkflows.length} الگوی گردش‌کار پیش‌نویس).`,
+            `بسته «${packDef.name}» نصب شد (${newFields.length} فیلد، ${newRules.length} قانون متوقف، ${newTemplates.length} قالب پیام، ${newReports.length} گزارش${newCustomers.length > 0 ? `، ${newCustomers.length} مشتری نمونه` : ''}).`,
           ),
           ...prev.auditLogs,
         ].slice(0, 100),
       }));
-      pushToast(`بسته «${packDef.name}» نصب شد؛ قوانین و گردش‌کارهای آماده (در حالت پیش‌نویس/متوقف) قابل فعال‌سازی هستند.`);
+      pushToast(`بسته «${packDef.name}» نصب شد؛ قوانین، قالب‌های پیام، گزارش‌ها و ماژول‌ها بدون حذف داده‌های قبلی آماده استفاده هستند.`);
     },
     [pushToast],
   );
 
   const saveCustomPack = useCallback(
-    (meta: { key: string; name: string; nameEn?: string; description: string }) => {
+    (meta: { key: string; name: string; nameEn?: string; description: string; tier?: PackTemplate['tier'] }) => {
       const pack = buildPackFromState(stateRef.current, meta);
       setState((prev) => ({
         ...prev,
         customPacks: [pack, ...prev.customPacks],
-        auditLogs: [makeAudit('Pack Builder', 'create', `بسته سفارشی «${pack.name}» از پیکربندی فعلی ساخته شد.`), ...prev.auditLogs].slice(0, 100),
+        auditLogs: [makeAudit('Pack Manager', 'create', `بسته سفارشی «${pack.name}» از پیکربندی فعلی ساخته شد.`), ...prev.auditLogs].slice(0, 100),
       }));
       pushToast(`بسته سفارشی «${pack.name}» ذخیره شد و آماده خروجی JSON است.`);
       return pack;
@@ -8168,6 +8380,24 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
     pushToast('تاریخچه دسترسی به پرونده‌ها پاک‌سازی شد.', 'info');
   }, [pushToast]);
 
+  const logAiUsage = useCallback((entry: Omit<AiUsageLogEntry, 'id' | 'createdAt'>) => {
+    const nowMs = Date.now();
+    const item: AiUsageLogEntry = {
+      ...entry,
+      id: `ai_log_${nowMs}_${Math.random().toString(36).slice(2, 6)}`,
+      createdAt: new Date(nowMs).toISOString(),
+    };
+    setState((prev) => ({
+      ...prev,
+      aiUsageLogs: [item, ...(prev.aiUsageLogs ?? [])].slice(0, 250),
+    }));
+  }, []);
+
+  const clearAiUsageLogs = useCallback(() => {
+    setState((prev) => ({ ...prev, aiUsageLogs: [] }));
+    pushToast('گزارش مصرف هوش مصنوعی پاک‌سازی شد.', 'info');
+  }, [pushToast]);
+
   const softDeleteEntity = useCallback(
     (entityType: TrashEntityType, id: string) => {
       const nowIso = new Date().toISOString();
@@ -8341,6 +8571,7 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
           callLogs: [],
           npsSurveys: [],
           dataAccessLogs: [],
+          aiUsageLogs: [],
           auditLogs: [makeAudit('مدیریت داده', 'delete', 'تمام داده‌های عملیاتی Tenant پاک‌سازی شد.')],
         };
       });
@@ -8644,6 +8875,8 @@ export function ClientFlowProvider({ children }: { children: React.ReactNode }) 
         deleteTeamDefinition,
         logDataAccess,
         clearDataAccessLogs,
+        logAiUsage,
+        clearAiUsageLogs,
         softDeleteEntity,
         restoreEntity,
         permanentlyDeleteEntity,

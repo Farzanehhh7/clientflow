@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ArrowRight,
   Building2,
@@ -14,6 +14,7 @@ import { useClientFlow } from '../../store/useClientFlowStore';
 import type { Customer } from '../../types';
 import { computeCustomerStats } from '../../utils/crmHelpers';
 import { formatJalali, toFa } from '../../utils/jalali';
+import { maskEmail, maskPhone, shouldMaskPii } from '../../utils/security';
 import { Badge, Button, ConfirmDialog, Tabs } from '../ui';
 import { CustomerFilesTab, CustomerNotesTab } from './tabs/FilesNotesTabs';
 import { CustomerAppointmentsTab, CustomerOrdersTab } from './tabs/OrdersAppointmentsTabs';
@@ -46,12 +47,24 @@ export function Customer360Page({
   onEdit,
   onSelectCustomer,
 }: Customer360PageProps) {
-  const { state, anonymizeCustomer, startOutboundCall } = useClientFlow();
+  const { state, anonymizeCustomer, startOutboundCall, logDataAccess } = useClientFlow();
   const [activeTab, setActiveTab] = useState<Customer360TabKey>('overview');
   const [confirmAnon, setConfirmAnon] = useState(false);
 
   const customer = state.customers.find((c) => c.id === customerId && !c.isDeleted);
   const isAdmin = state.settings.role === 'admin';
+  const piiMasked = shouldMaskPii(state);
+
+  useEffect(() => {
+    if (!customer) return;
+    logDataAccess({
+      entityType: 'customer',
+      entityId: customer.id,
+      entityLabel: customer.name,
+      action: 'view_360',
+      piiMasked,
+    });
+  }, [customer, logDataAccess, piiMasked]);
 
   const stats = useMemo(
     () => (customer ? computeCustomerStats(customer, state) : null),
@@ -117,12 +130,12 @@ export function Customer360Page({
             <div className="flex flex-wrap items-center gap-4 text-xs text-slate-500 dark:text-slate-400">
               <span className="inline-flex items-center gap-1 tabular-nums" dir="ltr">
                 <Phone size={13} />
-                {toFa(customer.phone)}
+                {maskPhone(customer.phone, piiMasked)}
               </span>
               {customer.email && (
                 <span className="inline-flex items-center gap-1" dir="ltr">
                   <Mail size={13} />
-                  {customer.email}
+                  {maskEmail(customer.email, piiMasked)}
                 </span>
               )}
               {customer.ownerName && (

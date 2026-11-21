@@ -1,4 +1,4 @@
-import { getPackSalesConfig, INDUSTRY_PACKS } from '../data/packs';
+import { getPackEnabledModules, getPackSalesConfig, INDUSTRY_PACKS } from '../data/packs';
 import type { AppState, IndustryPack, PackTemplate } from '../types';
 
 export type PackSwitchDiff = {
@@ -12,6 +12,10 @@ export type PackSwitchDiff = {
   newProducts: { name: string; price: number }[];
   newRules: { name: string }[];
   newWorkflows: { title: string }[];
+  newMessageTemplates: { name: string }[];
+  newDefaultReports: { title: string }[];
+  enabledModules: string[];
+  sampleDataCount: number;
   oldPipelineName: string;
   newPipelineName: string;
   oldStagesLabels: string[];
@@ -21,7 +25,7 @@ export type PackSwitchDiff = {
   preservedCustomFieldValuesCount: number;
 };
 
-export function computePackSwitchDiff(state: AppState, targetKey: IndustryPack): PackSwitchDiff | null {
+export function computePackSwitchDiff(state: AppState, targetKey: IndustryPack | string): PackSwitchDiff | null {
   const targetPack =
     INDUSTRY_PACKS.find((p) => p.key === targetKey) ??
     state.customPacks.find((p) => p.key === targetKey);
@@ -59,10 +63,29 @@ export function computePackSwitchDiff(state: AppState, targetKey: IndustryPack):
   const existingWfKeys = new Set(state.workflowDefinitions.map((w) => w.key));
   const newWorkflows = (targetPack.workflowTemplates ?? [])
     .filter((w) => !existingWfKeys.has(w.key))
-    .map((w) => ({ title: w.title }));
+    .map((w) => ({ title: w.name }));
+
+  const existingTplNames = new Set((state.messageTemplates ?? []).map((t) => t.name));
+  const newMessageTemplates = (targetPack.messageTemplates ?? [])
+    .filter((t) => !existingTplNames.has(t.name))
+    .map((t) => ({ name: t.name }));
+
+  const existingReportTitles = new Set((state.savedReports ?? []).map((r) => r.title));
+  const newDefaultReports = (targetPack.defaultReports ?? [])
+    .filter((r) => !existingReportTitles.has(r.title))
+    .map((r) => ({ title: r.title }));
+
+  const enabledModules = getPackEnabledModules(targetKey as IndustryPack, state.customPacks);
+  const sd = targetPack.sampleData;
+  const sampleDataCount =
+    (sd?.customers?.length ?? 0) +
+    (sd?.leads?.length ?? 0) +
+    (sd?.orders?.length ?? 0) +
+    (sd?.appointments?.length ?? 0) +
+    (sd?.tickets?.length ?? 0);
 
   const oldSales = getPackSalesConfig(state.settings.industryPack, state.customPacks);
-  const newSales = getPackSalesConfig(targetKey, state.customPacks);
+  const newSales = getPackSalesConfig(targetKey as IndustryPack, state.customPacks);
 
   const preservedCustomFieldValuesCount = state.customers.filter(
     (c) => !c.isDeleted && c.customFields && Object.keys(c.customFields).length > 0,
@@ -79,6 +102,10 @@ export function computePackSwitchDiff(state: AppState, targetKey: IndustryPack):
     newProducts,
     newRules,
     newWorkflows,
+    newMessageTemplates,
+    newDefaultReports,
+    enabledModules,
+    sampleDataCount,
     oldPipelineName: oldSales.pipelineName,
     newPipelineName: newSales.pipelineName,
     oldStagesLabels: state.pipelineStages.map((s) => s.label),

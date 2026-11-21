@@ -93,6 +93,7 @@ export function migrateTenantBackup(rawJson: string): MigrationResult {
       working.teams = Array.isArray(working.teams) ? working.teams : undefined;
       working.users = Array.isArray(working.users) ? working.users : undefined;
       working.dataAccessLogs = Array.isArray(working.dataAccessLogs) ? working.dataAccessLogs : [];
+      working.aiUsageLogs = Array.isArray(working.aiUsageLogs) ? working.aiUsageLogs : [];
       if (working.settings) {
         working.settings = {
           ...working.settings,
@@ -102,6 +103,14 @@ export function migrateTenantBackup(rawJson: string): MigrationResult {
           security: {
             ...DEFAULT_SECURITY_POLICY,
             ...(working.settings.security ?? {}),
+          },
+          ai: {
+            enabled: true,
+            brandTone: 'friendly',
+            maskPiiBeforeSend: true,
+            logUsage: true,
+            model: 'gemini-4-hydrogen',
+            ...(working.settings.ai ?? {}),
           },
           notifications: {
             smsReminders: true,
